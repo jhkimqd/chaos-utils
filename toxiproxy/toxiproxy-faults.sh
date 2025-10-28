@@ -1,29 +1,33 @@
 #!/bin/bash
-# Script to start chaos utility sidecars for agglayer container on kt-op network,
-# apply initial Comcast and Toxiproxy faults, and keep containers running for dynamic fault management.
-set -e
+set -euo pipefail
 
-# Remove existing containers
-docker rm -f toxiproxy-sidecar-agglayer
-docker rm -f comcast-sidecar-agglayer
-
-# Variables
+# ------------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------------
 NETWORK="kt-op"
 NAME_PATTERN="agglayer--"
-TOXIPROXY_ADMIN_PORT="8474"
+TOXIPROXY_ADMIN="8474"
 
-# Find the agglayer container
-TARGET_NAME=$(docker network inspect $NETWORK | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | test("'"$NAME_PATTERN"'")) | .value.Name')
+PORTS=(
+  "4443:aglr-grpc:54443"
+  "4444:aglr-readrpc:54444"
+  "4446:aglr-admin:54446"
+)
+
+# ------------------------------------------------------------------
+# Find agglayer container
+# ------------------------------------------------------------------
+TARGET_NAME=$(docker network inspect "$NETWORK" | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | test("'"$NAME_PATTERN"'")) | .value.Name')
 if [[ -z "$TARGET_NAME" ]]; then
   echo "Error: No container found with name matching $NAME_PATTERN on network $NETWORK"
   exit 1
 fi
-TARGET_ID=$(docker network inspect $NETWORK | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | test("'"$NAME_PATTERN"'")) | .key')
-TARGET_IP=$(docker network inspect $NETWORK | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | test("'"$NAME_PATTERN"'")) | .value.IPv4Address | split("/")[0]')
+TARGET_ID=$(docker network inspect "$NETWORK" | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | test("'"$NAME_PATTERN"'")) | .key')
+TARGET_IP=$(docker network inspect "$NETWORK" | jq -r '.[] | .Containers | to_entries[] | select(.value.Name | test("'"$NAME_PATTERN"'")) | .value.IPv4Address | split("/")[0]')
 
 echo "Target: $TARGET_NAME ($TARGET_ID), IP: $TARGET_IP"
 
-# Get PID and interface
+# Get interface
 PID=$(docker inspect -f '{{.State.Pid}}' $TARGET_ID)
 INTERFACE=$(sudo nsenter -t $PID -n ip link | grep -oP '^\d+: \Keth\d+')
 if [[ -z "$INTERFACE" ]]; then
@@ -32,114 +36,206 @@ if [[ -z "$INTERFACE" ]]; then
 fi
 echo "Interface: $INTERFACE"
 
-# Clean up existing rules
-sudo nsenter -t $PID -n iptables -F 2>/dev/null || true
-sudo nsenter -t $PID -n iptables -t nat -F 2>/dev/null || true
-sudo nsenter -t $PID -n iptables -t filter -F FORWARD 2>/dev/null || true
+# ------------------------------------------------------------------
+# Clean old side-car
+# ------------------------------------------------------------------
+docker rm -f toxiproxy-sidecar-agglayer 2>/dev/null || true
 
-# Start Toxiproxy sidecar
+# ------------------------------------------------------------------
+# Start Toxiproxy side-car with lo up and rp_filter disabled
+# ------------------------------------------------------------------
 docker run --rm -d \
   --name toxiproxy-sidecar-agglayer \
-  --net=container:$TARGET_ID \
+  --net=container:$TARGET_NAME \
   --cap-add=NET_ADMIN --cap-add=NET_RAW \
-  jhkimqd/toxiproxy:latest
+  --sysctl net.ipv4.conf.all.rp_filter=0 \
+  --sysctl net.ipv4.conf.default.rp_filter=0 \
+  --sysctl net.ipv4.conf.lo.rp_filter=0 \
+  --sysctl "net.ipv4.conf.$INTERFACE.rp_filter=0" \
+  jhkimqd/toxiproxy:latest sh -c "ip link set lo up && toxiproxy-server"
 
-# Configure Toxiproxy and iptables
-docker exec toxiproxy-sidecar-agglayer bash -c "
-  TARGET_IP='$TARGET_IP'
-  # Wait for Toxiproxy server
-  for i in {1..5}; do
-    if curl -s http://localhost:$TOXIPROXY_ADMIN_PORT/version > /dev/null; then
-      echo 'Toxiproxy server ready'
-      break
-    fi
-    echo 'Waiting for Toxiproxy server...'
-    sleep 1
-  done
-
-  # Create proxy for port 4446
-  curl -s -X POST http://localhost:$TOXIPROXY_ADMIN_PORT/proxies -d '{
-    \"name\": \"port_4446_proxy\",
-    \"listen\": \"0.0.0.0:54446\",
-    \"upstream\": \"'\$TARGET_IP':4446\",
-    \"enabled\": true
-  }' && echo 'Created proxy for 4446' || echo 'Failed to create proxy for 4446'
-
-  # Clear iptables
-  iptables -t nat -F 2>/dev/null || true
-  iptables -t filter -F FORWARD 2>/dev/null || true
-
-  # Redirect traffic to Toxiproxy
-  iptables -t nat -I PREROUTING 1 -p tcp -d \$TARGET_IP --dport 4446 -j DNAT --to-destination 127.0.0.1:54446
-  # Block direct connections
-  iptables -t filter -I FORWARD 1 -p tcp -d \$TARGET_IP --dport 4446 -j DROP
-
-  # Verify iptables
-  echo 'NAT rules:'
-  iptables -t nat -L PREROUTING -v -n --line-numbers
-  echo 'FILTER rules:'
-  iptables -t filter -L FORWARD -v -n --line-numbers
-  # Verify listeners
-  echo 'Listeners:'
-  netstat -tuln | grep ':54446' || echo 'No Toxiproxy listener on 54446'
-"
-
-# Start tcpdump
-docker exec -d toxiproxy-sidecar-agglayer bash -c "tcpdump -i any 'port 4446 or port 54446' -n > /tmp/tcpdump_4446.log 2>&1"
-
-# Test interception
-echo "=== Proxy Interception Test ==="
-echo "Initial NAT counters:"
-docker exec toxiproxy-sidecar-agglayer iptables -t nat -L PREROUTING -v -n --line-numbers
-
-# Disable proxy
-echo "Disabling proxy for 4446..."
-docker exec toxiproxy-sidecar-agglayer curl -s -X PUT http://localhost:$TOXIPROXY_ADMIN_PORT/proxies/port_4446_proxy -d '{"enabled": false}'
-
-echo "Testing with proxy disabled (should fail)..."
-docker run --rm --network $NETWORK busybox nc -zv $TARGET_IP 4446 && echo "UNEXPECTED: Connection succeeded" || echo "Connection failed as expected"
-
-# Re-enable proxy
-echo "Re-enabling proxy for 4446..."
-docker exec toxiproxy-sidecar-agglayer curl -s -X PUT http://localhost:$TOXIPROXY_ADMIN_PORT/proxies/port_4446_proxy -d '{"enabled": true}'
-
-echo "Testing with proxy enabled (should succeed)..."
-docker run --rm --network $NETWORK busybox nc -zv $TARGET_IP 4446 && echo "Connection succeeded as expected" || echo "UNEXPECTED: Connection failed"
-
-# Sidecar test
-echo "Testing from sidecar with proxy enabled..."
-docker exec toxiproxy-sidecar-agglayer bash -c "nc -zv $TARGET_IP 4446 && echo 'Connection succeeded as expected' || echo 'UNEXPECTED: Connection failed'"
-
-echo "NAT counters after interception:"
-docker exec toxiproxy-sidecar-agglayer iptables -t nat -L PREROUTING -v -n --line-numbers
-
-# Add latency toxic
-echo "Adding latency toxic..."
-docker exec toxiproxy-sidecar-agglayer curl -s -X POST http://localhost:$TOXIPROXY_ADMIN_PORT/proxies/port_4446_proxy/toxics -d '{"name":"latency_4446","type":"latency","toxicity":1.0,"attributes":{"latency":5000}}'
-
-# Test latency
-echo "Testing latency toxic..."
-docker run --rm --network $NETWORK busybox sh -c "
-  start_time=\$(date +%s)
-  nc -zv $TARGET_IP 4446
-  result=\$?
-  end_time=\$(date +%s)
-  duration=\$((end_time - start_time))
-  echo \"Connection took \$duration seconds, exit code: \$result\"
-  if [ \$result -eq 0 ] && [ \$duration -ge 4 ] && [ \$duration -le 6 ]; then
-    echo 'SUCCESS: Connection delayed by ~5s'
-  else
-    echo 'UNEXPECTED: Expected ~5s delay'
+# Wait for Toxiproxy
+for i in {1..10}; do
+  if docker exec toxiproxy-sidecar-agglayer curl -s http://localhost:$TOXIPROXY_ADMIN/version > /dev/null; then
+    echo 'Toxiproxy server ready'
+    break
   fi
-"
+  echo 'Waiting for Toxiproxy server...'
+  sleep 1
+done
+if [[ $i -eq 10 ]]; then
+  echo "Error: Toxiproxy not ready"
+  exit 1
+fi
 
-# Stop tcpdump and show output
+# ------------------------------------------------------------------
+# Create proxies
+# ------------------------------------------------------------------
+for p in "${PORTS[@]}"; do
+  IFS=: read -r tport sname pport <<<"$p"
+  docker exec toxiproxy-sidecar-agglayer curl -s -X POST http://localhost:$TOXIPROXY_ADMIN/proxies -d '{
+    "name": "port_'"$tport"'_proxy",
+    "listen": "0.0.0.0:'"$pport"'",
+    "upstream": "'"$TARGET_IP"':'"$tport"'",
+    "enabled": true
+  }' && echo "Created proxy for $tport" || echo "Failed to create proxy for $tport"
+done
+
+# ------------------------------------------------------------------
+# nftables - raw for notrack, nat for DNAT to TARGET_IP, filter for drop on external interface
+# ------------------------------------------------------------------
+docker exec toxiproxy-sidecar-agglayer bash -c '
+  set -euo pipefail
+  TARGET_IP='"$TARGET_IP"'
+  INTERFACE='"$INTERFACE"'
+
+  nft flush ruleset 2>/dev/null || true
+  nft add table inet toxiproxy
+
+  # Raw prerouting for notrack (avoid conntrack/rp_filter issues)
+  nft add chain inet toxiproxy raw_preroute "{ type filter hook prerouting priority raw ; policy accept ; }"
+
+  # Nat prerouting for DNAT
+  nft add chain inet toxiproxy nat_preroute "{ type nat hook prerouting priority dstnat ; policy accept ; }"
+
+  # Nat output for local DNAT (use 127.0.0.1 to avoid loop)
+  nft add chain inet toxiproxy nat_output "{ type nat hook output priority 100 ; policy accept ; }"
+
+  # Filter input for drop
+  nft add chain inet toxiproxy filter_input "{ type filter hook input priority filter ; policy accept ; }"
+
+  # Notrack in raw
+  '"$(for p in "${PORTS[@]}"; do
+        IFS=: read -r tport _ pport <<<"$p"
+        echo "nft add rule inet toxiproxy raw_preroute ip daddr \$TARGET_IP tcp dport $tport notrack"
+      done)"'
+
+  # DNAT in nat prerouting to TARGET_IP:pport (for external)
+  '"$(for p in "${PORTS[@]}"; do
+        IFS=: read -r tport _ pport <<<"$p"
+        echo "nft add rule inet toxiproxy nat_preroute ip daddr \$TARGET_IP tcp dport $tport dnat to \$TARGET_IP:$pport"
+      done)"'
+
+  # DNAT in nat output to 127.0.0.1:pport (for local)
+  '"$(for p in "${PORTS[@]}"; do
+        IFS=: read -r tport _ pport <<<"$p"
+        echo "nft add rule inet toxiproxy nat_output ip daddr \$TARGET_IP tcp dport $tport dnat to 127.0.0.1:$pport"
+      done)"'
+
+  # Drop in filter for original port on external interface
+  '"$(for p in "${PORTS[@]}"; do
+        IFS=: read -r tport _ _ <<<"$p"
+        echo "nft add rule inet toxiproxy filter_input iifname \"\$INTERFACE\" tcp dport $tport drop"
+      done)"'
+
+  echo "NFTables rules:"
+  nft list ruleset
+'
+
+# ------------------------------------------------------------------
+# Verify listeners
+# ------------------------------------------------------------------
+echo "Listeners:"
+docker exec toxiproxy-sidecar-agglayer netstat -tuln | grep ':54' || echo 'No Toxiproxy listeners'
+
+# ------------------------------------------------------------------
+# tcpdump for all ports
+# ------------------------------------------------------------------
+FILTER=$(printf '(tcp port %s or tcp port %s) or ' \
+          $(for p in "${PORTS[@]}"; do IFS=: read -r t _ x <<<"$p"; echo "$t $x"; done) | sed 's/ or $//')
+echo "tcpdump filter: $FILTER"
+docker exec -d toxiproxy-sidecar-agglayer bash -c "tcpdump -i any '$FILTER' -nn -s0 > /tmp/tcpdump_agglayer.log 2>&1" || echo "Warning: tcpdump failed to start"
+
+# ------------------------------------------------------------------
+# Helper: nc with timeout
+# ------------------------------------------------------------------
+nc_test() {
+  local ip=$1 port=$2
+  docker run --rm --network "$NETWORK" busybox nc -zv -w 5 $ip $port && echo "OK" || echo "FAIL"
+}
+
+nc_test_latency() {
+  local ip=$1 port=$2
+  docker run --rm --network "$NETWORK" busybox sh -c "start=\$(date +%s); nc -zv -w 10 $ip $port; result=\$?; end=\$(date +%s); duration=\$((end - start)); echo \"\$duration \$result\""
+}
+
+# ------------------------------------------------------------------
+# Interception test
+# ------------------------------------------------------------------
+echo "=== Proxy Interception Test ==="
+echo "Initial NFT rules:"
+docker exec toxiproxy-sidecar-agglayer nft list ruleset
+
+for p in "${PORTS[@]}"; do
+  IFS=: read -r tport sname _ <<<"$p"
+  echo "Testing interception for port $tport ($sname)..."
+
+  # Disable proxy
+  echo "Disabling proxy for $tport..."
+  docker exec toxiproxy-sidecar-agglayer curl -s -X PUT http://localhost:$TOXIPROXY_ADMIN/proxies/port_${tport}_proxy -d '{"enabled": false}'
+
+  echo "Testing with proxy disabled (should fail)..."
+  if [[ $(nc_test $TARGET_IP $tport) == "OK" ]]; then
+    echo "UNEXPECTED: Connection succeeded on $tport"
+  else
+    echo "Connection failed as expected on $tport"
+  fi
+
+  # Re-enable proxy
+  echo "Re-enabling proxy for $tport..."
+  docker exec toxiproxy-sidecar-agglayer curl -s -X PUT http://localhost:$TOXIPROXY_ADMIN/proxies/port_${tport}_proxy -d '{"enabled": true}'
+
+  echo "Testing with proxy enabled (should succeed)..."
+  if [[ $(nc_test $TARGET_IP $tport) == "OK" ]]; then
+    echo "Connection succeeded as expected on $tport"
+  else
+    echo "UNEXPECTED: Connection failed on $tport"
+  fi
+
+  # Sidecar test
+  echo "Testing from sidecar with proxy enabled on $tport..."
+  docker exec toxiproxy-sidecar-agglayer bash -c "nc -zv -w 5 $TARGET_IP $tport && echo 'Connection succeeded as expected' || echo 'UNEXPECTED: Connection failed'"
+done
+
+echo "NAT rules after interception:"
+docker exec toxiproxy-sidecar-agglayer nft list ruleset
+
+# ------------------------------------------------------------------
+# Latency toxic
+# ------------------------------------------------------------------
+echo "=== Adding latency toxic ==="
+for p in "${PORTS[@]}"; do
+  IFS=: read -r tport sname _ <<<"$p"
+  echo "Adding latency for port $tport..."
+  docker exec toxiproxy-sidecar-agglayer curl -s -X POST http://localhost:$TOXIPROXY_ADMIN/proxies/port_${tport}_proxy/toxics -d '{"name":"latency_'"$tport"'","type":"latency","toxicity":1.0,"attributes":{"latency":5000}}'
+done
+
+echo "=== Testing latency toxic ==="
+for p in "${PORTS[@]}"; do
+  IFS=: read -r tport sname _ <<<"$p"
+  echo "Testing for port $tport..."
+  output=$(nc_test_latency $TARGET_IP $tport)
+  duration=$(echo "$output" | cut -d' ' -f1)
+  result=$(echo "$output" | cut -d' ' -f2)
+  echo "Connection took $duration seconds, result: $result"
+  if [[ $result -eq 0 && $duration -ge 4 && $duration -le 6 ]]; then
+    echo "SUCCESS: Delayed by ~5s on $tport"
+  else
+    echo "UNEXPECTED: Expected ~5s delay on $tport"
+  fi
+done
+
+# ------------------------------------------------------------------
+# Cleanup
+# ------------------------------------------------------------------
 docker exec toxiproxy-sidecar-agglayer bash -c "pkill tcpdump || true"
 echo "tcpdump output:"
-docker exec toxiproxy-sidecar-agglayer cat /tmp/tcpdump_4446.log
+docker exec toxiproxy-sidecar-agglayer cat /tmp/tcpdump_agglayer.log || echo "No tcpdump log"
 
-# Dynamic management commands
 echo -e "\n=== Dynamic Management ==="
-echo "List proxies: docker exec toxiproxy-sidecar-agglayer curl -s http://localhost:$TOXIPROXY_ADMIN_PORT/proxies | jq"
-echo "Remove toxic: docker exec toxiproxy-sidecar-agglayer curl -X DELETE http://localhost:$TOXIPROXY_ADMIN_PORT/proxies/port_4446_proxy/toxics/latency_4446"
+echo "List proxies: docker exec toxiproxy-sidecar-agglayer curl -s http://localhost:$TOXIPROXY_ADMIN/proxies | jq"
+for p in "${PORTS[@]}"; do
+  IFS=: read -r tport _ _ <<<"$p"
+  echo "Remove toxic for $tport: docker exec toxiproxy-sidecar-agglayer curl -X DELETE http://localhost:$TOXIPROXY_ADMIN/proxies/port_${tport}_proxy/toxics/latency_${tport}"
+done
 echo "Stop sidecar: docker stop toxiproxy-sidecar-agglayer"

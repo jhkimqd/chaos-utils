@@ -1,0 +1,261 @@
+Target: agglayer--003b2332750d464eae387f76db5f2fee (594d8aa94a4793764cb8585b8af56852566c9dd166516d4b1deee1e91793b2fe), IP: 172.16.0.49
+Interface: eth0
+envoy-sidecar-agglayer
+[2025-10-28 12:54:54.301][1][info][main] [source/server/server.cc:879] runtime: {}
+[2025-10-28 12:54:54.301][1][info][config] [source/server/configuration_impl.cc:168] loading tracing configuration
+[2025-10-28 12:54:54.301][1][info][config] [source/server/configuration_impl.cc:124] loading 0 static secret(s)
+[2025-10-28 12:54:54.301][1][info][config] [source/server/configuration_impl.cc:130] loading 3 cluster(s)
+[2025-10-28 12:54:54.302][1][info][config] [source/server/configuration_impl.cc:138] loading 3 listener(s)
+[2025-10-28 12:54:54.302][1][warning][misc] [source/extensions/filters/network/http_connection_manager/config.cc:88] internal_address_config is not configured. The existing default behaviour will trust RFC1918 IP addresses, but this will be changed in next release. Please explictily config internal address config as the migration step or config the envoy.reloadable_features.explicit_internal_address_config to true to untrust all ips by default
+[2025-10-28 12:54:54.304][1][info][config] [source/server/configuration_impl.cc:154] loading stats configuration
+configuration '' OK
+f722520a7878e4d8a81a4a80ed5f40456e147af44186c5262bd6f284bce3a197
+Envoy listeners ready
+NFTables rules:
+table inet envoy {
+	chain raw_preroute {
+		type filter hook prerouting priority raw; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 notrack
+		ip daddr 172.16.0.49 tcp dport 4444 notrack
+		ip daddr 172.16.0.49 tcp dport 4446 notrack
+	}
+
+	chain nat_preroute {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 dnat ip to 172.16.0.49:54443
+		ip daddr 172.16.0.49 tcp dport 4444 dnat ip to 172.16.0.49:54444
+		ip daddr 172.16.0.49 tcp dport 4446 dnat ip to 172.16.0.49:54446
+	}
+
+	chain nat_output {
+		type nat hook output priority 100; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 dnat ip to 127.0.0.1:54443
+		ip daddr 172.16.0.49 tcp dport 4444 dnat ip to 127.0.0.1:54444
+		ip daddr 172.16.0.49 tcp dport 4446 dnat ip to 127.0.0.1:54446
+	}
+
+	chain filter_input {
+		type filter hook input priority filter; policy accept;
+		iifname "eth0" tcp dport 4443 drop
+		iifname "eth0" tcp dport 4444 drop
+		iifname "eth0" tcp dport 4446 drop
+	}
+}
+Listeners:
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54443      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54444      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcp   LISTEN 0      4096         0.0.0.0:54446      0.0.0.0:*          
+tcpdump filter: (tcp port 4443 or tcp port 54443) or (tcp port 4444 or tcp port 54444) or (tcp port 4446 or tcp port 54446)
+=== Proxy Interception Test ===
+Initial NFT rules:
+table inet envoy {
+	chain raw_preroute {
+		type filter hook prerouting priority raw; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 notrack
+		ip daddr 172.16.0.49 tcp dport 4444 notrack
+		ip daddr 172.16.0.49 tcp dport 4446 notrack
+	}
+
+	chain nat_preroute {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 dnat ip to 172.16.0.49:54443
+		ip daddr 172.16.0.49 tcp dport 4444 dnat ip to 172.16.0.49:54444
+		ip daddr 172.16.0.49 tcp dport 4446 dnat ip to 172.16.0.49:54446
+	}
+
+	chain nat_output {
+		type nat hook output priority 100; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 dnat ip to 127.0.0.1:54443
+		ip daddr 172.16.0.49 tcp dport 4444 dnat ip to 127.0.0.1:54444
+		ip daddr 172.16.0.49 tcp dport 4446 dnat ip to 127.0.0.1:54446
+	}
+
+	chain filter_input {
+		type filter hook input priority filter; policy accept;
+		iifname "eth0" tcp dport 4443 drop
+		iifname "eth0" tcp dport 4444 drop
+		iifname "eth0" tcp dport 4446 drop
+	}
+}
+Testing interception for port 4443 (aglr-grpc)...
+Testing with Envoy proxy (faults enabled)...
+nc: 172.16.0.49 (172.16.0.49:4443): Connection timed out
+Connection failed (possibly due to faults)
+Testing from sidecar with Envoy proxy...
+Connection to 172.16.0.49 4443 port [tcp/*] succeeded!
+Connection succeeded
+Testing interception for port 4444 (aglr-readrpc)...
+Testing with Envoy proxy (faults enabled)...
+nc: 172.16.0.49 (172.16.0.49:4444): Connection timed out
+Connection failed (possibly due to faults)
+Testing from sidecar with Envoy proxy...
+Connection to 172.16.0.49 4444 port [tcp/*] succeeded!
+Connection succeeded
+Testing interception for port 4446 (aglr-admin)...
+Testing with Envoy proxy (faults enabled)...
+nc: 172.16.0.49 (172.16.0.49:4446): Connection timed out
+Connection failed (possibly due to faults)
+Testing from sidecar with Envoy proxy...
+Connection to 172.16.0.49 4446 port [tcp/*] succeeded!
+Connection succeeded
+NAT rules after interception:
+table inet envoy {
+	chain raw_preroute {
+		type filter hook prerouting priority raw; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 notrack
+		ip daddr 172.16.0.49 tcp dport 4444 notrack
+		ip daddr 172.16.0.49 tcp dport 4446 notrack
+	}
+
+	chain nat_preroute {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 dnat ip to 172.16.0.49:54443
+		ip daddr 172.16.0.49 tcp dport 4444 dnat ip to 172.16.0.49:54444
+		ip daddr 172.16.0.49 tcp dport 4446 dnat ip to 172.16.0.49:54446
+	}
+
+	chain nat_output {
+		type nat hook output priority 100; policy accept;
+		ip daddr 172.16.0.49 tcp dport 4443 dnat ip to 127.0.0.1:54443
+		ip daddr 172.16.0.49 tcp dport 4444 dnat ip to 127.0.0.1:54444
+		ip daddr 172.16.0.49 tcp dport 4446 dnat ip to 127.0.0.1:54446
+	}
+
+	chain filter_input {
+		type filter hook input priority filter; policy accept;
+		iifname "eth0" tcp dport 4443 drop
+		iifname "eth0" tcp dport 4444 drop
+		iifname "eth0" tcp dport 4446 drop
+	}
+}
+=== Testing Envoy faults ===
+Faults configured: 5s delay on 100% of requests, 503 abort on 50% of requests (layer 7 simulation)
+For layer 6 (data corruption), Envoy doesn't have built-in support; consider custom Lua filters for advanced use.
+Additional test commands:
+1. Check Envoy admin interface: docker exec envoy-sidecar-agglayer curl -s http://localhost:9901/server_info
+2. View Envoy stats: docker exec envoy-sidecar-agglayer curl -s http://localhost:9901/stats | grep -E '(rq_total|rq_timeout|upstream_rq_)' | head -20
+3. Check nft rules: docker exec envoy-sidecar-agglayer nft list ruleset
+4. Test HTTP request (if applicable): curl --http2-prior-knowledge --connect-timeout 5 --max-time 20 http://172.16.0.49:4443/ (expect 5s delay or 503)
+5. Monitor tcpdump: docker exec envoy-sidecar-agglayer tail -f /tmp/tcpdump_agglayer.log
+6. Check Envoy logs: docker logs envoy-sidecar-agglayer -f
+Testing faults for port 4443 (aglr-grpc)...
+nc: 172.16.0.49 (172.16.0.49:4443): Connection timed out
+Connection took 10 seconds, result: 1
+SUCCESS: Abort applied (connection failed)
+Testing faults for port 4444 (aglr-readrpc)...
+nc: 172.16.0.49 (172.16.0.49:4444): Connection timed out
+Connection took 10 seconds, result: 1
+SUCCESS: Abort applied (connection failed)
+Testing faults for port 4446 (aglr-admin)...
+nc: 172.16.0.49 (172.16.0.49:4446): Connection timed out
+Connection took 10 seconds, result: 1
+SUCCESS: Abort applied (connection failed)
+tcpdump output:
+tcpdump: data link type LINUX_SLL2
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 262144 bytes
+12:54:56.907145 eth0  In  IP 172.16.0.5.42635 > 172.16.0.49.4443: Flags [S], seq 1225229913, win 64400, options [mss 1400,sackOK,TS val 604065511 ecr 0,nop,wscale 7], length 0
+12:54:57.934717 eth0  In  IP 172.16.0.5.42635 > 172.16.0.49.4443: Flags [S], seq 1225229913, win 64400, options [mss 1400,sackOK,TS val 604066539 ecr 0,nop,wscale 7], length 0
+12:54:58.959710 eth0  In  IP 172.16.0.5.42635 > 172.16.0.49.4443: Flags [S], seq 1225229913, win 64400, options [mss 1400,sackOK,TS val 604067564 ecr 0,nop,wscale 7], length 0
+12:54:59.983702 eth0  In  IP 172.16.0.5.42635 > 172.16.0.49.4443: Flags [S], seq 1225229913, win 64400, options [mss 1400,sackOK,TS val 604068588 ecr 0,nop,wscale 7], length 0
+12:55:01.006710 eth0  In  IP 172.16.0.5.42635 > 172.16.0.49.4443: Flags [S], seq 1225229913, win 64400, options [mss 1400,sackOK,TS val 604069611 ecr 0,nop,wscale 7], length 0
+12:55:02.057268 lo    In  IP 172.16.0.49.46398 > 127.0.0.1.54443: Flags [S], seq 1665115127, win 65495, options [mss 65495,sackOK,TS val 2377225920 ecr 0,nop,wscale 7], length 0
+12:55:02.057280 lo    In  IP 172.16.0.49.4443 > 172.16.0.49.46398: Flags [S.], seq 3529765652, ack 1665115128, win 65483, options [mss 65495,sackOK,TS val 949459070 ecr 2377225920,nop,wscale 7], length 0
+12:55:02.057289 lo    In  IP 172.16.0.49.46398 > 127.0.0.1.54443: Flags [.], ack 3529765653, win 512, options [nop,nop,TS val 2377225920 ecr 949459070], length 0
+12:55:02.057367 lo    In  IP 172.16.0.49.46398 > 127.0.0.1.54443: Flags [F.], seq 0, ack 1, win 512, options [nop,nop,TS val 2377225920 ecr 949459070], length 0
+12:55:02.057459 lo    In  IP 172.16.0.49.4443 > 172.16.0.49.46398: Flags [F.], seq 1, ack 2, win 512, options [nop,nop,TS val 949459070 ecr 2377225920], length 0
+12:55:02.057474 lo    In  IP 172.16.0.49.46398 > 127.0.0.1.54443: Flags [.], ack 2, win 512, options [nop,nop,TS val 2377225920 ecr 949459070], length 0
+12:55:02.198131 eth0  In  IP 172.16.0.5.36089 > 172.16.0.49.4444: Flags [S], seq 830714259, win 64400, options [mss 1400,sackOK,TS val 604070802 ecr 0,nop,wscale 7], length 0
+12:55:03.246703 eth0  In  IP 172.16.0.5.36089 > 172.16.0.49.4444: Flags [S], seq 830714259, win 64400, options [mss 1400,sackOK,TS val 604071851 ecr 0,nop,wscale 7], length 0
+12:55:04.270715 eth0  In  IP 172.16.0.5.36089 > 172.16.0.49.4444: Flags [S], seq 830714259, win 64400, options [mss 1400,sackOK,TS val 604072875 ecr 0,nop,wscale 7], length 0
+12:55:05.294709 eth0  In  IP 172.16.0.5.36089 > 172.16.0.49.4444: Flags [S], seq 830714259, win 64400, options [mss 1400,sackOK,TS val 604073899 ecr 0,nop,wscale 7], length 0
+12:55:06.318707 eth0  In  IP 172.16.0.5.36089 > 172.16.0.49.4444: Flags [S], seq 830714259, win 64400, options [mss 1400,sackOK,TS val 604074923 ecr 0,nop,wscale 7], length 0
+12:55:07.357223 lo    In  IP 172.16.0.49.48454 > 127.0.0.1.54444: Flags [S], seq 3920448972, win 65495, options [mss 65495,sackOK,TS val 2377231220 ecr 0,nop,wscale 7], length 0
+12:55:07.357234 lo    In  IP 172.16.0.49.4444 > 172.16.0.49.48454: Flags [S.], seq 3833932528, ack 3920448973, win 65483, options [mss 65495,sackOK,TS val 949464370 ecr 2377231220,nop,wscale 7], length 0
+12:55:07.357243 lo    In  IP 172.16.0.49.48454 > 127.0.0.1.54444: Flags [.], ack 3833932529, win 512, options [nop,nop,TS val 2377231220 ecr 949464370], length 0
+12:55:07.357302 lo    In  IP 172.16.0.49.48454 > 127.0.0.1.54444: Flags [F.], seq 0, ack 1, win 512, options [nop,nop,TS val 2377231220 ecr 949464370], length 0
+12:55:07.357406 lo    In  IP 172.16.0.49.4444 > 172.16.0.49.48454: Flags [F.], seq 1, ack 2, win 512, options [nop,nop,TS val 949464370 ecr 2377231220], length 0
+12:55:07.357423 lo    In  IP 172.16.0.49.48454 > 127.0.0.1.54444: Flags [.], ack 2, win 512, options [nop,nop,TS val 2377231220 ecr 949464370], length 0
+12:55:07.495943 eth0  In  IP 172.16.0.5.43393 > 172.16.0.49.4446: Flags [S], seq 3350526369, win 64400, options [mss 1400,sackOK,TS val 604076100 ecr 0,nop,wscale 7], length 0
+12:55:08.558735 eth0  In  IP 172.16.0.5.43393 > 172.16.0.49.4446: Flags [S], seq 3350526369, win 64400, options [mss 1400,sackOK,TS val 604077163 ecr 0,nop,wscale 7], length 0
+12:55:09.582719 eth0  In  IP 172.16.0.5.43393 > 172.16.0.49.4446: Flags [S], seq 3350526369, win 64400, options [mss 1400,sackOK,TS val 604078187 ecr 0,nop,wscale 7], length 0
+12:55:10.606838 eth0  In  IP 172.16.0.5.43393 > 172.16.0.49.4446: Flags [S], seq 3350526369, win 64400, options [mss 1400,sackOK,TS val 604079211 ecr 0,nop,wscale 7], length 0
+12:55:11.630703 eth0  In  IP 172.16.0.5.43393 > 172.16.0.49.4446: Flags [S], seq 3350526369, win 64400, options [mss 1400,sackOK,TS val 604080235 ecr 0,nop,wscale 7], length 0
+12:55:12.636982 lo    In  IP 172.16.0.49.54090 > 127.0.0.1.54446: Flags [S], seq 1330085617, win 65495, options [mss 65495,sackOK,TS val 2377236500 ecr 0,nop,wscale 7], length 0
+12:55:12.636994 lo    In  IP 172.16.0.49.4446 > 172.16.0.49.54090: Flags [S.], seq 3064959940, ack 1330085618, win 65483, options [mss 65495,sackOK,TS val 949469650 ecr 2377236500,nop,wscale 7], length 0
+12:55:12.637003 lo    In  IP 172.16.0.49.54090 > 127.0.0.1.54446: Flags [.], ack 3064959941, win 512, options [nop,nop,TS val 2377236500 ecr 949469650], length 0
+12:55:12.637065 lo    In  IP 172.16.0.49.54090 > 127.0.0.1.54446: Flags [F.], seq 0, ack 1, win 512, options [nop,nop,TS val 2377236500 ecr 949469650], length 0
+12:55:12.637154 lo    In  IP 172.16.0.49.4446 > 172.16.0.49.54090: Flags [F.], seq 1, ack 2, win 512, options [nop,nop,TS val 949469650 ecr 2377236500], length 0
+12:55:12.637170 lo    In  IP 172.16.0.49.54090 > 127.0.0.1.54446: Flags [.], ack 2, win 512, options [nop,nop,TS val 2377236500 ecr 949469650], length 0
+12:55:12.829954 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604081434 ecr 0,nop,wscale 7], length 0
+12:55:13.870715 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604082475 ecr 0,nop,wscale 7], length 0
+12:55:14.894710 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604083499 ecr 0,nop,wscale 7], length 0
+12:55:15.918715 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604084523 ecr 0,nop,wscale 7], length 0
+12:55:16.942725 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604085547 ecr 0,nop,wscale 7], length 0
+12:55:17.967705 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604086572 ecr 0,nop,wscale 7], length 0
+12:55:20.014708 eth0  In  IP 172.16.0.5.39009 > 172.16.0.49.4443: Flags [S], seq 3000786224, win 64400, options [mss 1400,sackOK,TS val 604088619 ecr 0,nop,wscale 7], length 0
+12:55:23.067282 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604091671 ecr 0,nop,wscale 7], length 0
+12:55:24.033260 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244218102 ecr 0,nop,wscale 7], length 0
+12:55:24.110717 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604092715 ecr 0,nop,wscale 7], length 0
+12:55:25.070711 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244219140 ecr 0,nop,wscale 7], length 0
+12:55:25.135716 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604093740 ecr 0,nop,wscale 7], length 0
+12:55:26.094726 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244220164 ecr 0,nop,wscale 7], length 0
+12:55:26.158712 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604094763 ecr 0,nop,wscale 7], length 0
+12:55:27.118709 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244221188 ecr 0,nop,wscale 7], length 0
+12:55:27.182701 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604095787 ecr 0,nop,wscale 7], length 0
+12:55:28.142728 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244222212 ecr 0,nop,wscale 7], length 0
+12:55:28.206710 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604096811 ecr 0,nop,wscale 7], length 0
+12:55:29.166886 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244223236 ecr 0,nop,wscale 7], length 0
+12:55:30.255007 eth0  In  IP 172.16.0.5.40189 > 172.16.0.49.4444: Flags [S], seq 3418741120, win 64400, options [mss 1400,sackOK,TS val 604098859 ecr 0,nop,wscale 7], length 0
+12:55:31.214718 eth0  In  IP 172.16.0.65.48580 > 172.16.0.49.4444: Flags [S], seq 259965641, win 64400, options [mss 1400,sackOK,TS val 2244225284 ecr 0,nop,wscale 7], length 0
+12:55:33.299537 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604101903 ecr 0,nop,wscale 7], length 0
+12:55:34.350721 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604102955 ecr 0,nop,wscale 7], length 0
+12:55:35.374706 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604103979 ecr 0,nop,wscale 7], length 0
+12:55:36.398715 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604105003 ecr 0,nop,wscale 7], length 0
+12:55:37.422710 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604106027 ecr 0,nop,wscale 7], length 0
+12:55:38.446910 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604107051 ecr 0,nop,wscale 7], length 0
+12:55:40.494731 eth0  In  IP 172.16.0.5.38513 > 172.16.0.49.4446: Flags [S], seq 2864452195, win 64400, options [mss 1400,sackOK,TS val 604109099 ecr 0,nop,wscale 7], length 0
+12:55:41.070736 eth0  In  IP 172.16.0.53.57268 > 172.16.0.49.4444: Flags [P.], seq 389084053:389084317, ack 2345396388, win 9937, options [nop,nop,TS val 2210948323 ecr 2759820114], length 264
+
+62 packets captured
+80 packets received by filter
+0 packets dropped by kernel
+
+=== Dynamic Management ===
+Envoy admin: docker exec envoy-sidecar-agglayer curl -s http://localhost:9901/
+To modify faults, update the config and reload Envoy (e.g., via SIGUSR1 or restart with new config)
+Stop sidecar: docker stop envoy-sidecar-agglayer
+envoy-sidecar-agglayer
