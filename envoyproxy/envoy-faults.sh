@@ -317,17 +317,20 @@ for p in "${PORTS[@]}"; do
 done
 
 # ------------------------------------------------------------------
-# Cleanup
+# Keep sidecar running for observation
 # ------------------------------------------------------------------
-docker exec envoy-sidecar-agglayer bash -c "pkill tcpdump || true"
-echo "tcpdump output:"
-docker exec envoy-sidecar-agglayer cat /tmp/tcpdump_agglayer.log || echo "No tcpdump log"
+echo -e "\n=== Sidecar is now running with persistent faults ==="
+echo "Other containers attempting to communicate with $TARGET_NAME will experience HTTP faults."
+echo "Monitor their logs for connection timeouts, 503 errors, or 5s delays."
+echo "Check non-empty nft ruleset: docker exec envoy-sidecar-agglayer nft list ruleset"
+echo "Flush nft ruleset: docker exec envoy-sidecar-agglayer nft flush ruleset"
+echo "Check empty nft ruleset: docker exec envoy-sidecar-agglayer nft list ruleset"
+echo "To stop the sidecar: docker stop envoy-sidecar-agglayer"
+echo "To remove: docker rm envoy-sidecar-agglayer"
 
-echo -e "\n=== Dynamic Management ==="
-echo "Envoy admin: docker exec envoy-sidecar-agglayer curl -s http://localhost:$ENVOY_ADMIN/"
-echo "To modify faults, update the config and reload Envoy (e.g., via SIGUSR1 or restart with new config)"
-echo "Stop sidecar: docker stop envoy-sidecar-agglayer"
-
-# Cleanup
-docker rm -f envoy-sidecar-agglayer
-rm "$CONFIG_FILE"
+# Do not clean up - keep faults active for observation
+# docker exec envoy-sidecar-agglayer bash -c "pkill tcpdump || true"
+# echo "tcpdump output:"
+# docker exec envoy-sidecar-agglayer cat /tmp/tcpdump_agglayer.log || echo "No tcpdump log"
+# docker rm -f envoy-sidecar-agglayer
+# rm "$CONFIG_FILE"
