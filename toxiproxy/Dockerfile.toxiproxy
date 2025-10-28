@@ -1,0 +1,7 @@
+# docker build . --tag jhkimqd/toxiproxy:latest --file ./Dockerfile.toxiproxy
+
+FROM debian:bullseye-slim
+RUN apt-get update && apt-get install -y bash curl netcat net-tools tcpdump iptables iproute2 jq && apt-get clean
+RUN curl -L -o /usr/local/bin/toxiproxy-server https://github.com/Shopify/toxiproxy/releases/download/v2.9.0/toxiproxy-server-linux-amd64 && \
+    chmod +x /usr/local/bin/toxiproxy-server
+CMD ["/usr/local/bin/toxiproxy-server"]
