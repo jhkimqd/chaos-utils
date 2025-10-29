@@ -26,6 +26,12 @@ func main() {
 		targetport  = flag.String("target-port", "", "Target port(s) (e.g. 80 or 1:65535 or 22,80,443,1000:1010)")
 		targetproto = flag.String("target-proto", "tcp,udp,icmp", "Target protocol TCP/UDP (e.g. tcp or tcp,udp or icmp)")
 		dryrun      = flag.Bool("dry-run", false, "Specifies whether or not to actually commit the rule changes")
+		// New L7 flags
+		l7delay    = flag.String("l7-delay", "", "L7 fixed delay (e.g. 2s) for HTTP requests")
+		l7abort    = flag.Int("l7-abort-percent", 0, "L7 abort percentage (e.g. 75) for HTTP requests")
+		l7ports    = flag.String("l7-ports", "", "Target ports for L7 interception (e.g. 4443,4444)")
+		targetcont = flag.String("target-container", "", "Target Docker container name/ID for sidecar attachment")
+		targetip   = flag.String("target-ip", "", "Target container IP for L7 faults")
 		//icmptype  = flag.String("icmp-type", "", "icmp message type (e.g. reply or reply,request)") //TODO: Maybe later :3
 		vers = flag.Bool("version", false, "Print Comcast's version")
 	)
@@ -50,6 +56,12 @@ func main() {
 		TargetPorts:      parsePorts(*targetport),
 		TargetProtos:     parseProtos(*targetproto),
 		DryRun:           *dryrun,
+		// New L7 fields
+		L7Delay:         *l7delay,
+		L7AbortPercent:  *l7abort,
+		L7Ports:         parsePorts(*l7ports),
+		TargetContainer: *targetcont,
+		TargetIP:        *targetip,
 	})
 }
 

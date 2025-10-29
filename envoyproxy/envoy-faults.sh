@@ -326,7 +326,7 @@ echo "Check non-empty nft ruleset: docker exec envoy-sidecar-agglayer nft list r
 echo "Flush nft ruleset: docker exec envoy-sidecar-agglayer nft flush ruleset"
 echo "Check empty nft ruleset: docker exec envoy-sidecar-agglayer nft list ruleset"
 echo "To stop the sidecar: docker stop envoy-sidecar-agglayer"
-echo "To remove: docker rm envoy-sidecar-agglayer"
+echo "To remove: docker rm -f envoy-sidecar-agglayer"
 
 # Do not clean up - keep faults active for observation
 # docker exec envoy-sidecar-agglayer bash -c "pkill tcpdump || true"
