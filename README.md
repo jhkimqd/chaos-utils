@@ -1,5 +1,7 @@
 # Chaos-Utils
 
+Based on https://github.com/tylertreat/comcast#
+
 Chaos-Utils is a tool for injecting network faults into Docker containers, supporting both Layer 1-4 (L1-L4) faults via Comcast and Layer 7 (L7) faults via Envoy proxy. It uses a sidecar container approach to simulate network issues like latency, packet loss, delays, and aborts without modifying the target application.
 
 ## How It Works
