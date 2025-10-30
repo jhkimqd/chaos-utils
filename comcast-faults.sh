@@ -131,6 +131,7 @@ docker rm -f chaos-utils-sidecar-agglayer
 echo ""
 echo "Cleanup complete! Target container should be functional now."
 echo "To reapply faults, restart the target container for a truly clean slate:"
-echo "  docker restart $TARGET_NAME"
+echo " kurtosis service stop op agglayer $TARGET_NAME"
+echo " kurtosis service start op agglayer $TARGET_NAME"
 # kurtosis service stop op agglayer
 # kurtosis service start op agglayer

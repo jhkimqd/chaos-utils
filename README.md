@@ -42,6 +42,21 @@ Run the `comcast-faults.sh` script to start a sidecar container, apply faults, a
 - Switches to L7 faults (e.g., 600s delay, 100% abort).
 - Verifies with ping, curl, and Envoy stats.
 
+### Clean up
+Docker creates a brand new network namespace for the container, which:
+
+- Has no tc rules
+- Has no iptables/nftables rules
+- Has no conntrack entries
+- Has a fresh network stack
+
+But it seems like Kurtosis itself has another layer of networking abstraction - so we'll need to rely on restarting the Kurtosis services using:
+
+```
+kurtosis service stop <enclave_name> <service_name>
+kurtosis service start <enclave_name> <service_name>
+```
+
 ## Requirements
 - Docker
 - jq
