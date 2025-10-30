@@ -38,7 +38,9 @@ type Config struct {
 	L7Delay         string
 	L7AbortPercent  int
 	L7AbortStatus   int
-	L7Ports         []string
+	L7GrpcStatus    int
+	L7HttpPorts     []string
+	L7GrpcPorts     []string
 	TargetContainer string
 	TargetIP        string
 }
@@ -143,12 +145,12 @@ func Run(cfg *Config) {
 
 	if !cfg.Stop {
 		setup(t, cfg)
-		if len(cfg.L7Ports) > 0 {
+		if len(cfg.L7HttpPorts) > 0 || len(cfg.L7GrpcPorts) > 0 {
 			setupL7(cfg)
 		}
 	} else {
 		teardown(t, cfg)
-		if len(cfg.L7Ports) > 0 {
+		if len(cfg.L7HttpPorts) > 0 || len(cfg.L7GrpcPorts) > 0 {
 			teardownL7(cfg)
 		}
 	}
@@ -220,6 +222,11 @@ func setupL7(cfg *Config) {
 		fmt.Printf("Error: Invalid L7 abort status %d. Must be >= 200 and < 600\n", cfg.L7AbortStatus)
 		os.Exit(1)
 	}
+	// Add sanity check for L7GrpcStatus
+	if cfg.L7GrpcStatus != 0 && (cfg.L7GrpcStatus < 0 || cfg.L7GrpcStatus > 16) {
+		fmt.Printf("Error: Invalid L7 gRPC abort status %d. Must be 0-16 or 0 to disable\n", cfg.L7GrpcStatus)
+		os.Exit(1)
+	}
 
 	targetIP := cfg.TargetIP
 	interfaceName := getContainerInterface("")
@@ -237,7 +244,7 @@ func setupL7(cfg *Config) {
 		os.Exit(1)
 	}
 	runEnvoySidecar(cfg, configFile, targetIP, interfaceName)
-	setupNftables(cfg, targetIP, interfaceName)
+	setupL7Interception(cfg, targetIP, interfaceName)
 	startTcpdump(cfg)
 
 	fmt.Println("L7 faults setup via Envoy sidecar")
@@ -245,11 +252,51 @@ func setupL7(cfg *Config) {
 
 // teardownL7 stops Envoy and cleans up
 func teardownL7(cfg *Config) {
-	// Kill Envoy directly - sidecar shares the network namespace
-	exec.Command("pkill", "envoy").Run()
-	// Flush nftables rules directly
-	exec.Command("nft", "flush", "ruleset").Run()
-	fmt.Println("L7 faults torn down from shared network namespace")
+	fmt.Println("Tearing down L7 faults...")
+
+	// Step 1: Kill Envoy aggressively
+	fmt.Println("Stopping Envoy process...")
+	for i := 0; i < 3; i++ {
+		exec.Command("pkill", "-9", "envoy").Run()
+		time.Sleep(500 * time.Millisecond)
+
+		// Check if envoy is still running
+		checkCmd := exec.Command("sh", "-c", "ps aux | grep '[e]nvoy'")
+		if output, _ := checkCmd.Output(); len(output) == 0 {
+			fmt.Println("Envoy stopped successfully")
+			break
+		}
+		if i == 2 {
+			fmt.Println("Warning: Envoy may still be running")
+		}
+	}
+
+	// Step 2: Flush iptables (both PREROUTING and OUTPUT)
+	fmt.Println("Flushing iptables rules...")
+	for _, table := range []string{"nat", "mangle", "filter"} {
+		cmd := exec.Command("iptables", "-t", table, "-F")
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Warning: iptables -t %s -F failed: %v\n", table, err)
+		}
+	}
+
+	// Step 3: Flush nftables (if any were created)
+	fmt.Println("Flushing nftables rules...")
+	if err := exec.Command("nft", "flush", "ruleset").Run(); err != nil {
+		fmt.Println("Warning: nft flush failed:", err)
+	}
+
+	// Step 4: Clear connection tracking
+	fmt.Println("Clearing connection tracking state...")
+	if err := exec.Command("conntrack", "-F").Run(); err != nil {
+		fmt.Println("Warning: conntrack flush failed (may not be critical):", err)
+	}
+
+	// Step 5: Clean up temp files
+	fmt.Println("Removing Envoy config files...")
+	exec.Command("sh", "-c", "rm -f /tmp/envoy-config-*.yaml /tmp/envoy.log").Run()
+
+	fmt.Println("L7 faults torn down")
 }
 
 // Helper: Get interface
@@ -297,7 +344,11 @@ admin:
 // generateListeners with configurable faults
 func generateListeners(cfg *Config, targetIP string) string {
 	var listeners strings.Builder
-	for _, port := range cfg.L7Ports {
+
+	// Generate listeners for HTTP ports
+	for _, port := range cfg.L7HttpPorts {
+		abortConfig := fmt.Sprintf(`
+                http_status: %d`, cfg.L7AbortStatus)
 		listeners.WriteString(fmt.Sprintf(`
   - name: listener_%s
     address:
@@ -329,22 +380,69 @@ func generateListeners(cfg *Config, targetIP string) string {
                 percentage:
                   numerator: 100
                   denominator: HUNDRED
-              abort:
-                http_status: %d
+              abort:%s
                 percentage:
                   numerator: %d
                   denominator: HUNDRED
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-`, port, port, port, port, cfg.L7Delay, cfg.L7AbortStatus, cfg.L7AbortPercent))
+`, port, port, port, port, cfg.L7Delay, abortConfig, cfg.L7AbortPercent))
 	}
+
+	// Generate listeners for gRPC ports
+	for _, port := range cfg.L7GrpcPorts {
+		abortConfig := fmt.Sprintf(`
+                grpc_status: %d`, cfg.L7GrpcStatus)
+		listeners.WriteString(fmt.Sprintf(`
+  - name: listener_%s
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 5%s
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: proxy_%s
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: backend
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: cluster_%s
+          http_filters:
+          - name: envoy.filters.http.fault
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault
+              delay:
+                fixed_delay: %s
+                percentage:
+                  numerator: 100
+                  denominator: HUNDRED
+              abort:%s
+                percentage:
+                  numerator: %d
+                  denominator: HUNDRED
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+`, port, port, port, port, cfg.L7Delay, abortConfig, cfg.L7AbortPercent))
+	}
+
 	return listeners.String()
 }
 
 func generateClusters(cfg *Config, targetIP string) string {
 	var clusters strings.Builder
-	for _, port := range cfg.L7Ports {
+	// Combine HTTP and gRPC ports for clusters
+	allPorts := append(cfg.L7HttpPorts, cfg.L7GrpcPorts...)
+	for _, port := range allPorts {
 		// Connect to 127.0.0.1 to avoid nftables DNAT loop
 		// The real service is listening on the same namespace
 		clusters.WriteString(fmt.Sprintf(`
@@ -413,7 +511,8 @@ func runEnvoySidecar(cfg *Config, configFile, targetIP, interfaceName string) {
 		if err == nil && len(output) > 0 {
 			outputStr := string(output)
 			allReady := true
-			for _, port := range cfg.L7Ports {
+			allPorts := append(cfg.L7HttpPorts, cfg.L7GrpcPorts...)
+			for _, port := range allPorts {
 				proxyPort := "5" + port
 				if !strings.Contains(outputStr, ":"+proxyPort) {
 					allReady = false
@@ -447,75 +546,56 @@ func validateEnvoyConfig(config string) bool {
 	return err == nil
 }
 
-// setupNftables adds rules for interception
-func setupNftables(cfg *Config, targetIP, interfaceName string) {
-	fmt.Println("Setting up nftables rules for L7 interception...")
+// setupL7Interception adds rules for interception
+func setupL7Interception(cfg *Config, targetIP, interfaceName string) {
+	fmt.Println("Setting up iptables rules for L7 interception...")
 
-	// Flush any existing rules first
+	// Flush any existing rules
+	exec.Command("iptables", "-t", "nat", "-F").Run()
 	exec.Command("nft", "flush", "ruleset").Run()
 
-	// Create nftables table directly - sidecar already shares the network namespace
-	if err := exec.Command("nft", "add", "table", "inet", "envoy").Run(); err != nil {
-		fmt.Println("Error creating nftables table:", err)
-		os.Exit(1)
-	}
-
-	if err := exec.Command("nft", "add", "chain", "inet", "envoy", "raw_preroute", "{ type filter hook prerouting priority raw ; policy accept ; }").Run(); err != nil {
-		fmt.Println("Error creating raw_preroute chain:", err)
-		os.Exit(1)
-	}
-
-	if err := exec.Command("nft", "add", "chain", "inet", "envoy", "nat_preroute", "{ type nat hook prerouting priority dstnat ; policy accept ; }").Run(); err != nil {
-		fmt.Println("Error creating nat_preroute chain:", err)
-		os.Exit(1)
-	}
-
-	if err := exec.Command("nft", "add", "chain", "inet", "envoy", "nat_output", "{ type nat hook output priority 100 ; policy accept ; }").Run(); err != nil {
-		fmt.Println("Error creating nat_output chain:", err)
-		os.Exit(1)
-	}
-
-	if err := exec.Command("nft", "add", "chain", "inet", "envoy", "filter_input", "{ type filter hook input priority filter ; policy accept ; }").Run(); err != nil {
-		fmt.Println("Error creating filter_input chain:", err)
-		os.Exit(1)
-	}
-
-	// Add rules for each port
-	for _, port := range cfg.L7Ports {
+	// Use iptables for BOTH prerouting and output
+	for _, port := range append(cfg.L7HttpPorts, cfg.L7GrpcPorts...) {
 		proxyPort := "5" + port
 
-		fmt.Printf("Setting up interception for port %s -> Envoy proxy port %s\n", port, proxyPort)
-
-		// DNAT in nat prerouting: redirect incoming traffic to Envoy listening on targetIP:proxyPort
-		// This catches traffic from other containers on the Docker network
-		if err := exec.Command("nft", "add", "rule", "inet", "envoy", "nat_preroute",
-			"ip", "daddr", targetIP, "tcp", "dport", port, "dnat", "to", targetIP+":"+proxyPort).Run(); err != nil {
-			fmt.Printf("Error adding DNAT prerouting rule for port %s: %v\n", port, err)
+		// PREROUTING: Intercept incoming traffic from other containers
+		fmt.Printf("Setting up iptables PREROUTING for port %s -> %s\n", port, proxyPort)
+		if err := exec.Command("iptables", "-t", "nat", "-A", "PREROUTING",
+			"-d", targetIP, "-p", "tcp", "--dport", port,
+			"-j", "DNAT", "--to-destination", targetIP+":"+proxyPort).Run(); err != nil {
+			fmt.Printf("Error adding iptables PREROUTING rule for port %s: %v\n", port, err)
 			os.Exit(1)
 		}
 
-		// DNAT in nat output: redirect locally-generated traffic to Envoy on 127.0.0.1
-		// This catches traffic originating from within the container
-		if err := exec.Command("nft", "add", "rule", "inet", "envoy", "nat_output",
-			"ip", "daddr", targetIP, "tcp", "dport", port, "dnat", "to", "127.0.0.1:"+proxyPort).Run(); err != nil {
-			fmt.Printf("Error adding DNAT output rule for port %s: %v\n", port, err)
+		// OUTPUT: Intercept local traffic from within container
+		fmt.Printf("Setting up iptables OUTPUT for port %s -> 127.0.0.1:%s\n", port, proxyPort)
+		if err := exec.Command("iptables", "-t", "nat", "-A", "OUTPUT",
+			"-d", targetIP, "-p", "tcp", "--dport", port,
+			"-j", "DNAT", "--to-destination", "127.0.0.1:"+proxyPort).Run(); err != nil {
+			fmt.Printf("Error adding iptables OUTPUT rule for port %s: %v\n", port, err)
 			os.Exit(1)
 		}
 	}
 
-	// List the rules for verification
-	fmt.Println("\nVerifying nftables rules:")
-	cmd := exec.Command("nft", "list", "ruleset")
+	// Verify with verbose output showing counters
+	fmt.Println("\nVerifying iptables PREROUTING rules:")
+	cmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v")
 	output, _ := cmd.CombinedOutput()
 	fmt.Println(string(output))
 
-	fmt.Printf("nftables rules applied successfully in shared network namespace\n")
+	fmt.Println("\nVerifying iptables OUTPUT rules:")
+	cmd2 := exec.Command("iptables", "-t", "nat", "-L", "OUTPUT", "-n", "-v")
+	output2, _ := cmd2.CombinedOutput()
+	fmt.Println(string(output2))
 }
 
 // startTcpdump starts monitoring
 func startTcpdump(cfg *Config) {
 	filter := ""
-	for _, port := range cfg.L7Ports {
+	for _, port := range cfg.L7HttpPorts {
+		filter += "(tcp port " + port + " or tcp port 5" + port + ") or "
+	}
+	for _, port := range cfg.L7GrpcPorts {
 		filter += "(tcp port " + port + " or tcp port 5" + port + ") or "
 	}
 	filter = strings.TrimSuffix(filter, " or ")

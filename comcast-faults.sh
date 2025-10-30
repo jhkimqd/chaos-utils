@@ -60,7 +60,6 @@ docker run --rm -d \
 
 # Apply initial Comcast faults (no --target-port to affect ICMP)
 docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --latency=100 --target-bw=10000 --default-bw=1000000 --packet-loss=75% --target-proto=tcp,udp,icmp --target-port=4443,4444,4446
-# comcast --device=eth0 --latency=250 --target-bw=1000 --default-bw=1000000 --packet-loss=75% --target-proto=tcp,udp,icmp --target-port=4443,4444,4446
 
 # Verify rules
 echo "Checking Comcast tc rules..."
@@ -75,10 +74,10 @@ docker run --rm --network $NETWORK busybox ping -c 10 $TARGET_IP
 docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-ports=4443,4444,4446 --l7-delay=6s --l7-abort-percent=50
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --l7-delay=6s --l7-abort-percent=100
 
 # Check envoy filters
-docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[] | select(.address.socket_address.port_value == 54443) | .filter_chains[0].filters[0].typed_config.http_filters[] | select(.name == "envoy.filters.http.fault")'
+docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[]'
 
 # Verify Envoy is running and nftables rules
 echo "Checking Envoy process..."
@@ -88,28 +87,50 @@ docker exec chaos-utils-sidecar-agglayer ss -tuln | grep -E ':(4443|4444|4446|54
 echo "Checking nftables rules..."
 docker exec chaos-utils-sidecar-agglayer nft list ruleset
 
-# Debug: Test if traffic is being intercepted
-echo "=== Testing traffic interception ==="
-echo "Testing direct connection to Envoy proxy port 54443..."
-docker run --rm --network $NETWORK busybox timeout 5 nc -zv $TARGET_IP 54443 && echo "Envoy reachable" || echo "Envoy NOT reachable"
-echo "Testing connection to original port 4443 (should be intercepted)..."
-# Only scans for listening daemons without sending any data, so I think this should also work even under faults.
-docker run --rm --network $NETWORK busybox timeout 5 nc -zv $TARGET_IP 4443 && echo "Port 4443 reachable" || echo "Port 4443 NOT reachable"
-
+# Test network delays
 echo ""
 echo "=== Testing HTTP-level faults ==="
-echo "Before request - checking conntrack..."
-docker exec chaos-utils-sidecar-agglayer conntrack -L 2>/dev/null | grep -E "4443|54443" || echo "No existing connections"
 echo ""
 echo "Making HTTP request to port 4443..."
 time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4443/ 2>&1 | grep -E "(HTTP|503|Connection|delay)"
-echo ""
-echo "After request - checking conntrack to see if DNAT happened..."
-docker exec chaos-utils-sidecar-agglayer conntrack -L 2>/dev/null | grep -E "4443|54443" || echo "No connections found"
 echo ""
 echo "Checking Envoy stats to verify traffic is being proxied..."
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/stats | grep -E "(downstream_rq_total|upstream_rq_total|fault)" | head -20
 
 # Stop L7 faults
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-ports=4443,4444,4446 --stop
-# docker exec chaos-utils-sidecar-agglayer nft flush ruleset
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --stop
+
+# Kill all Envoy processes
+docker exec chaos-utils-sidecar-agglayer pkill -9 envoy 2>/dev/null || true
+sleep 2
+
+# Flush ALL network rules in order
+echo "Flushing all network rules..."
+docker exec chaos-utils-sidecar-agglayer nft flush ruleset 2>/dev/null || true
+docker exec chaos-utils-sidecar-agglayer iptables -t nat -F 2>/dev/null || true
+docker exec chaos-utils-sidecar-agglayer iptables -t mangle -F 2>/dev/null || true
+docker exec chaos-utils-sidecar-agglayer iptables -t filter -F 2>/dev/null || true
+
+# Remove tc rules
+docker exec chaos-utils-sidecar-agglayer tc qdisc del dev $INTERFACE root 2>/dev/null || true
+
+# Verify cleanup
+echo ""
+echo "Verifying cleanup in sidecar namespace..."
+echo "TC rules:"
+docker exec chaos-utils-sidecar-agglayer tc qdisc show dev $INTERFACE
+echo "Envoy processes:"
+docker exec chaos-utils-sidecar-agglayer ps aux | grep envoy || echo "No Envoy running"
+echo "nftables:"
+docker exec chaos-utils-sidecar-agglayer nft list ruleset || echo "No nft rules"
+
+# Remove sidecar to ensure clean state
+echo "Removing sidecar container..."
+docker rm -f chaos-utils-sidecar-agglayer
+
+echo ""
+echo "Cleanup complete! Target container should be functional now."
+echo "To reapply faults, restart the target container for a truly clean slate:"
+echo "  docker restart $TARGET_NAME"
+# kurtosis service stop op agglayer
+# kurtosis service start op agglayer
