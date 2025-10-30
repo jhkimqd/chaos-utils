@@ -74,7 +74,9 @@ docker run --rm --network $NETWORK busybox ping -c 10 $TARGET_IP
 docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --l7-delay=6s --l7-abort-percent=100
+# NOTE: For gRPC, only delay works reliably. Abort has limitations due to how gRPC handles errors over HTTP/2.
+# For gRPC error injection, use L1-L4 faults (packet loss, connection drops) instead.
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=503 --l7-abort-percent=100 --l7-grpc-ports=4443 --l7-delay=6s
 
 # Check envoy filters
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[]'
@@ -91,14 +93,34 @@ docker exec chaos-utils-sidecar-agglayer nft list ruleset
 echo ""
 echo "=== Testing HTTP-level faults ==="
 echo ""
-echo "Making HTTP request to port 4443..."
-time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4443/ 2>&1 | grep -E "(HTTP|503|Connection|delay)"
+echo "Making HTTP request to port 4444 (should show 6s delay + 503 error)..."
+time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4444/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
 echo ""
+echo "Making HTTP request to port 4446 (should show 6s delay + 503 error)..."
+time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4446/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
+echo ""
+echo "=== Testing gRPC faults ==="
+echo ""
+echo "Making gRPC request to port 4443 (should show 6s delay)..."
+echo "NOTE: gRPC abort doesn't work reliably via Envoy HTTP fault filter - delays work fine"
+echo "For gRPC error injection, use connection-level faults instead (packet loss, etc.)"
+time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext -max-time 15 $TARGET_IP:4443 list 2>&1 | tee /tmp/grpc_output.txt
+
 echo "Checking Envoy stats to verify traffic is being proxied..."
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/stats | grep -E "(downstream_rq_total|upstream_rq_total|fault)" | head -20
 
 # Stop L7 faults
 docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --stop
+
+# Optional: Demonstrate gRPC error injection using L1-L4 faults
+echo ""
+echo "=== Alternative: Testing gRPC with connection-level faults ==="
+echo "This approach works better for gRPC error injection than L7 abort"
+docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --packet-loss=80% --target-port=4443 --target-proto=tcp
+sleep 2
+echo "Testing gRPC with 80% packet loss (should fail or be very slow)..."
+docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext -max-time 5 $TARGET_IP:4443 list 2>&1 || echo "Failed as expected due to packet loss"
+docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 
 # Kill all Envoy processes
 docker exec chaos-utils-sidecar-agglayer pkill -9 envoy 2>/dev/null || true
@@ -133,5 +155,5 @@ echo "Cleanup complete! Target container should be functional now."
 echo "To reapply faults, restart the target container for a truly clean slate:"
 echo " kurtosis service stop op agglayer $TARGET_NAME"
 echo " kurtosis service start op agglayer $TARGET_NAME"
-# kurtosis service stop op agglayer
-# kurtosis service start op agglayer
+kurtosis service stop op agglayer
+kurtosis service start op agglayer

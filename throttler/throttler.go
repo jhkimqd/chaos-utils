@@ -37,7 +37,7 @@ type Config struct {
 	// New L7 fields
 	L7Delay         string
 	L7AbortPercent  int
-	L7AbortStatus   int
+	L7HttpStatus    int
 	L7GrpcStatus    int
 	L7HttpPorts     []string
 	L7GrpcPorts     []string
@@ -217,9 +217,9 @@ func setupL7(cfg *Config) {
 		fmt.Println("Error: --target-ip required for L7 faults")
 		os.Exit(1)
 	}
-	// Add sanity check for L7AbortStatus
-	if cfg.L7AbortStatus < 200 || cfg.L7AbortStatus >= 600 {
-		fmt.Printf("Error: Invalid L7 abort status %d. Must be >= 200 and < 600\n", cfg.L7AbortStatus)
+	// Add sanity check for L7HttpStatus
+	if cfg.L7HttpStatus < 200 || cfg.L7HttpStatus >= 600 {
+		fmt.Printf("Error: Invalid L7 abort status %d. Must be >= 200 and < 600\n", cfg.L7HttpStatus)
 		os.Exit(1)
 	}
 	// Add sanity check for L7GrpcStatus
@@ -260,8 +260,8 @@ func teardownL7(cfg *Config) {
 		exec.Command("pkill", "-9", "envoy").Run()
 		time.Sleep(500 * time.Millisecond)
 
-		// Check if envoy is still running
-		checkCmd := exec.Command("sh", "-c", "ps aux | grep '[e]nvoy'")
+		// Check if envoy is still running (excluding defunct/zombie processes)
+		checkCmd := exec.Command("sh", "-c", "ps aux | grep '[e]nvoy' | grep -v defunct")
 		if output, _ := checkCmd.Output(); len(output) == 0 {
 			fmt.Println("Envoy stopped successfully")
 			break
@@ -271,28 +271,19 @@ func teardownL7(cfg *Config) {
 		}
 	}
 
-	// Step 2: Flush iptables (both PREROUTING and OUTPUT)
-	fmt.Println("Flushing iptables rules...")
-	for _, table := range []string{"nat", "mangle", "filter"} {
-		cmd := exec.Command("iptables", "-t", table, "-F")
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("Warning: iptables -t %s -F failed: %v\n", table, err)
-		}
+	// Step 2: Remove only our nftables table (safe, won't affect other rules)
+	fmt.Println("Removing chaos_utils nftables table...")
+	if err := exec.Command("nft", "delete", "table", "ip", "chaos_utils").Run(); err != nil {
+		fmt.Println("Warning: Failed to delete chaos_utils table (may not exist):", err)
 	}
 
-	// Step 3: Flush nftables (if any were created)
-	fmt.Println("Flushing nftables rules...")
-	if err := exec.Command("nft", "flush", "ruleset").Run(); err != nil {
-		fmt.Println("Warning: nft flush failed:", err)
-	}
-
-	// Step 4: Clear connection tracking
+	// Step 3: Clear connection tracking to ensure clean state
 	fmt.Println("Clearing connection tracking state...")
 	if err := exec.Command("conntrack", "-F").Run(); err != nil {
 		fmt.Println("Warning: conntrack flush failed (may not be critical):", err)
 	}
 
-	// Step 5: Clean up temp files
+	// Step 4: Clean up temp files
 	fmt.Println("Removing Envoy config files...")
 	exec.Command("sh", "-c", "rm -f /tmp/envoy-config-*.yaml /tmp/envoy.log").Run()
 
@@ -348,7 +339,7 @@ func generateListeners(cfg *Config, targetIP string) string {
 	// Generate listeners for HTTP ports
 	for _, port := range cfg.L7HttpPorts {
 		abortConfig := fmt.Sprintf(`
-                http_status: %d`, cfg.L7AbortStatus)
+                http_status: %d`, cfg.L7HttpStatus)
 		listeners.WriteString(fmt.Sprintf(`
   - name: listener_%s
     address:
@@ -390,10 +381,19 @@ func generateListeners(cfg *Config, targetIP string) string {
 `, port, port, port, port, cfg.L7Delay, abortConfig, cfg.L7AbortPercent))
 	}
 
-	// Generate listeners for gRPC ports
+	// Generate listeners for gRPC ports with HTTP/2 support
 	for _, port := range cfg.L7GrpcPorts {
-		abortConfig := fmt.Sprintf(`
-                grpc_status: %d`, cfg.L7GrpcStatus)
+		// Build abort config only if gRPC status is valid (> 0)
+		abortConfig := ""
+		if cfg.L7GrpcStatus > 0 && cfg.L7AbortPercent > 0 {
+			abortConfig = fmt.Sprintf(`
+              abort:
+                grpc_status: %d
+                percentage:
+                  numerator: %d
+                  denominator: HUNDRED`, cfg.L7GrpcStatus, cfg.L7AbortPercent)
+		}
+
 		listeners.WriteString(fmt.Sprintf(`
   - name: listener_%s
     address:
@@ -406,6 +406,8 @@ func generateListeners(cfg *Config, targetIP string) string {
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: proxy_%s
+          codec_type: AUTO
+          http2_protocol_options: {}
           route_config:
             name: local_route
             virtual_hosts:
@@ -424,15 +426,11 @@ func generateListeners(cfg *Config, targetIP string) string {
                 fixed_delay: %s
                 percentage:
                   numerator: 100
-                  denominator: HUNDRED
-              abort:%s
-                percentage:
-                  numerator: %d
-                  denominator: HUNDRED
+                  denominator: HUNDRED%s
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-`, port, port, port, port, cfg.L7Delay, abortConfig, cfg.L7AbortPercent))
+`, port, port, port, port, cfg.L7Delay, abortConfig))
 	}
 
 	return listeners.String()
@@ -440,11 +438,9 @@ func generateListeners(cfg *Config, targetIP string) string {
 
 func generateClusters(cfg *Config, targetIP string) string {
 	var clusters strings.Builder
-	// Combine HTTP and gRPC ports for clusters
-	allPorts := append(cfg.L7HttpPorts, cfg.L7GrpcPorts...)
-	for _, port := range allPorts {
-		// Connect to 127.0.0.1 to avoid nftables DNAT loop
-		// The real service is listening on the same namespace
+
+	// Generate clusters for HTTP ports (no HTTP/2)
+	for _, port := range cfg.L7HttpPorts {
 		clusters.WriteString(fmt.Sprintf(`
   - name: cluster_%s
     type: STATIC
@@ -456,10 +452,30 @@ func generateClusters(cfg *Config, targetIP string) string {
         - endpoint:
             address:
               socket_address:
-                address: 127.0.0.1
+                address: %s
                 port_value: %s
-`, port, port, port))
+`, port, port, targetIP, port))
 	}
+
+	// Generate clusters for gRPC ports with HTTP/2 support
+	for _, port := range cfg.L7GrpcPorts {
+		clusters.WriteString(fmt.Sprintf(`
+  - name: cluster_%s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    http2_protocol_options: {}
+    load_assignment:
+      cluster_name: cluster_%s
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: %s
+                port_value: %s
+`, port, port, targetIP, port))
+	}
+
 	return clusters.String()
 }
 
@@ -546,47 +562,56 @@ func validateEnvoyConfig(config string) bool {
 	return err == nil
 }
 
-// setupL7Interception adds rules for interception
+// setupL7Interception adds rules for interception using nftables
 func setupL7Interception(cfg *Config, targetIP, interfaceName string) {
-	fmt.Println("Setting up iptables rules for L7 interception...")
+	fmt.Println("Setting up nftables rules for L7 interception...")
 
-	// Flush any existing rules
-	exec.Command("iptables", "-t", "nat", "-F").Run()
-	exec.Command("nft", "flush", "ruleset").Run()
+	// Create nftables table and chains
+	commands := []string{
+		"nft add table ip chaos_utils",
+		"nft add chain ip chaos_utils prerouting { type nat hook prerouting priority -100 \\; }",
+		"nft add chain ip chaos_utils output { type nat hook output priority -100 \\; }",
+	}
 
-	// Use iptables for BOTH prerouting and output
-	for _, port := range append(cfg.L7HttpPorts, cfg.L7GrpcPorts...) {
+	for _, cmd := range commands {
+		if err := exec.Command("sh", "-c", cmd).Run(); err != nil {
+			fmt.Printf("Error creating nftables structure: %v\n", err)
+		}
+	}
+
+	// Add rules for each port
+	allPorts := append(cfg.L7HttpPorts, cfg.L7GrpcPorts...)
+	for _, port := range allPorts {
 		proxyPort := "5" + port
 
 		// PREROUTING: Intercept incoming traffic from other containers
-		fmt.Printf("Setting up iptables PREROUTING for port %s -> %s\n", port, proxyPort)
-		if err := exec.Command("iptables", "-t", "nat", "-A", "PREROUTING",
-			"-d", targetIP, "-p", "tcp", "--dport", port,
-			"-j", "DNAT", "--to-destination", targetIP+":"+proxyPort).Run(); err != nil {
-			fmt.Printf("Error adding iptables PREROUTING rule for port %s: %v\n", port, err)
+		// Skip traffic from Envoy's source port to avoid loops
+		preroutingRule := fmt.Sprintf(
+			"nft add rule ip chaos_utils prerouting ip daddr %s tcp dport %s tcp sport != %s dnat to %s:%s",
+			targetIP, port, proxyPort, targetIP, proxyPort)
+		fmt.Printf("Adding PREROUTING rule for port %s -> %s\n", port, proxyPort)
+		if err := exec.Command("sh", "-c", preroutingRule).Run(); err != nil {
+			fmt.Printf("Error adding nftables PREROUTING rule: %v\n", err)
 			os.Exit(1)
 		}
 
 		// OUTPUT: Intercept local traffic from within container
-		fmt.Printf("Setting up iptables OUTPUT for port %s -> 127.0.0.1:%s\n", port, proxyPort)
-		if err := exec.Command("iptables", "-t", "nat", "-A", "OUTPUT",
-			"-d", targetIP, "-p", "tcp", "--dport", port,
-			"-j", "DNAT", "--to-destination", "127.0.0.1:"+proxyPort).Run(); err != nil {
-			fmt.Printf("Error adding iptables OUTPUT rule for port %s: %v\n", port, err)
+		// Skip traffic from Envoy's source port to avoid loops
+		outputRule := fmt.Sprintf(
+			"nft add rule ip chaos_utils output ip daddr %s tcp dport %s tcp sport != %s dnat to %s:%s",
+			targetIP, port, proxyPort, targetIP, proxyPort)
+		fmt.Printf("Adding OUTPUT rule for port %s -> %s\n", port, proxyPort)
+		if err := exec.Command("sh", "-c", outputRule).Run(); err != nil {
+			fmt.Printf("Error adding nftables OUTPUT rule: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	// Verify with verbose output showing counters
-	fmt.Println("\nVerifying iptables PREROUTING rules:")
-	cmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v")
+	// Verify rules
+	fmt.Println("\nVerifying nftables rules:")
+	cmd := exec.Command("nft", "list", "table", "ip", "chaos_utils")
 	output, _ := cmd.CombinedOutput()
 	fmt.Println(string(output))
-
-	fmt.Println("\nVerifying iptables OUTPUT rules:")
-	cmd2 := exec.Command("iptables", "-t", "nat", "-L", "OUTPUT", "-n", "-v")
-	output2, _ := cmd2.CombinedOutput()
-	fmt.Println(string(output2))
 }
 
 // startTcpdump starts monitoring

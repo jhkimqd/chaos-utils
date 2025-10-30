@@ -27,14 +27,14 @@ func main() {
 		targetproto = flag.String("target-proto", "tcp,udp,icmp", "Target protocol TCP/UDP (e.g. tcp or tcp,udp or icmp)")
 		dryrun      = flag.Bool("dry-run", false, "Specifies whether or not to actually commit the rule changes")
 		// New L7 flags
-		l7delay    = flag.String("l7-delay", "", "L7 fixed delay (e.g. 2s) for HTTP/gRPC requests")
-		l7abort    = flag.Int("l7-abort-percent", 0, "L7 abort percentage (e.g. 75) for HTTP/gRPC requests")
-		l7status   = flag.Int("l7-abort-status", 503, "L7 abort HTTP status code (e.g. 429, default 503)")
-		l7grpc     = flag.Int("l7-grpc-status", 0, "L7 abort gRPC status code (e.g. 14 for UNAVAILABLE, 0 to disable)")
-		l7http     = flag.String("l7-http-ports", "", "Target HTTP ports for L7 interception (e.g. 4444,4446)") // New flag
-		l7grpcp    = flag.String("l7-grpc-ports", "", "Target gRPC ports for L7 interception (e.g. 4443)")      // New flag
-		targetcont = flag.String("target-container", "", "Target Docker container name/ID for sidecar attachment")
-		targetip   = flag.String("target-ip", "", "Target container IP for L7 faults")
+		l7delay      = flag.String("l7-delay", "", "L7 fixed delay (e.g. 2s) for HTTP/gRPC requests")
+		l7abort      = flag.Int("l7-abort-percent", 0, "L7 abort percentage (e.g. 75) for HTTP/gRPC requests")
+		l7httpstatus = flag.Int("l7-http-status", 503, "L7 abort HTTP status code (e.g. 429, default 503)")
+		l7grpc       = flag.Int("l7-grpc-status", 0, "L7 abort gRPC status code (e.g. 14 for UNAVAILABLE, 0 to disable)")
+		l7http       = flag.String("l7-http-ports", "", "Target HTTP ports for L7 interception (e.g. 4444,4446)") // New flag
+		l7grpcp      = flag.String("l7-grpc-ports", "", "Target gRPC ports for L7 interception (e.g. 4443)")      // New flag
+		targetcont   = flag.String("target-container", "", "Target Docker container name/ID for sidecar attachment")
+		targetip     = flag.String("target-ip", "", "Target container IP for L7 faults")
 		//icmptype  = flag.String("icmp-type", "", "icmp message type (e.g. reply or reply,request)") //TODO: Maybe later :3
 		vers = flag.Bool("version", false, "Print Comcast's version")
 	)
@@ -62,7 +62,7 @@ func main() {
 		// New L7 fields
 		L7Delay:         *l7delay,
 		L7AbortPercent:  *l7abort,
-		L7AbortStatus:   *l7status,
+		L7HttpStatus:    *l7httpstatus,
 		L7GrpcStatus:    *l7grpc,
 		L7HttpPorts:     parsePorts(*l7http),  // New field
 		L7GrpcPorts:     parsePorts(*l7grpcp), // New field
