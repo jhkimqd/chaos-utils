@@ -75,7 +75,10 @@ docker run --rm --network $NETWORK busybox ping -c 10 $TARGET_IP
 docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-ports=4443,4444,4446 --l7-delay=2s --l7-abort-percent=100
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-ports=4443,4444,4446 --l7-delay=6s --l7-abort-percent=50
+
+# Check envoy filters
+docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[] | select(.address.socket_address.port_value == 54443) | .filter_chains[0].filters[0].typed_config.http_filters[] | select(.name == "envoy.filters.http.fault")'
 
 # Verify Envoy is running and nftables rules
 echo "Checking Envoy process..."
@@ -90,14 +93,15 @@ echo "=== Testing traffic interception ==="
 echo "Testing direct connection to Envoy proxy port 54443..."
 docker run --rm --network $NETWORK busybox timeout 5 nc -zv $TARGET_IP 54443 && echo "Envoy reachable" || echo "Envoy NOT reachable"
 echo "Testing connection to original port 4443 (should be intercepted)..."
+# Only scans for listening daemons without sending any data, so I think this should also work even under faults.
 docker run --rm --network $NETWORK busybox timeout 5 nc -zv $TARGET_IP 4443 && echo "Port 4443 reachable" || echo "Port 4443 NOT reachable"
 
 echo ""
-echo "=== Testing HTTP-level faults (delay + 100% abort) ==="
+echo "=== Testing HTTP-level faults ==="
 echo "Before request - checking conntrack..."
 docker exec chaos-utils-sidecar-agglayer conntrack -L 2>/dev/null | grep -E "4443|54443" || echo "No existing connections"
 echo ""
-echo "Making HTTP request to port 4443 (should experience 2s delay then 503 abort)..."
+echo "Making HTTP request to port 4443..."
 time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4443/ 2>&1 | grep -E "(HTTP|503|Connection|delay)"
 echo ""
 echo "After request - checking conntrack to see if DNAT happened..."
@@ -108,3 +112,4 @@ docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/stats | g
 
 # Stop L7 faults
 docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-ports=4443,4444,4446 --stop
+# docker exec chaos-utils-sidecar-agglayer nft flush ruleset

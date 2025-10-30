@@ -37,6 +37,7 @@ type Config struct {
 	// New L7 fields
 	L7Delay         string
 	L7AbortPercent  int
+	L7AbortStatus   int
 	L7Ports         []string
 	TargetContainer string
 	TargetIP        string
@@ -214,6 +215,11 @@ func setupL7(cfg *Config) {
 		fmt.Println("Error: --target-ip required for L7 faults")
 		os.Exit(1)
 	}
+	// Add sanity check for L7AbortStatus
+	if cfg.L7AbortStatus < 200 || cfg.L7AbortStatus >= 600 {
+		fmt.Printf("Error: Invalid L7 abort status %d. Must be >= 200 and < 600\n", cfg.L7AbortStatus)
+		os.Exit(1)
+	}
 
 	targetIP := cfg.TargetIP
 	interfaceName := getContainerInterface("")
@@ -324,14 +330,14 @@ func generateListeners(cfg *Config, targetIP string) string {
                   numerator: 100
                   denominator: HUNDRED
               abort:
-                http_status: 503
+                http_status: %d
                 percentage:
                   numerator: %d
                   denominator: HUNDRED
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-`, port, port, port, port, cfg.L7Delay, cfg.L7AbortPercent))
+`, port, port, port, port, cfg.L7Delay, cfg.L7AbortStatus, cfg.L7AbortPercent))
 	}
 	return listeners.String()
 }

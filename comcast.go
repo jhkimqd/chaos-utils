@@ -29,6 +29,7 @@ func main() {
 		// New L7 flags
 		l7delay    = flag.String("l7-delay", "", "L7 fixed delay (e.g. 2s) for HTTP requests")
 		l7abort    = flag.Int("l7-abort-percent", 0, "L7 abort percentage (e.g. 75) for HTTP requests")
+		l7status   = flag.Int("l7-abort-status", 503, "L7 abort HTTP status code (e.g. 429, default 503)") // New flag
 		l7ports    = flag.String("l7-ports", "", "Target ports for L7 interception (e.g. 4443,4444)")
 		targetcont = flag.String("target-container", "", "Target Docker container name/ID for sidecar attachment")
 		targetip   = flag.String("target-ip", "", "Target container IP for L7 faults")
@@ -59,6 +60,7 @@ func main() {
 		// New L7 fields
 		L7Delay:         *l7delay,
 		L7AbortPercent:  *l7abort,
+		L7AbortStatus:   *l7status,
 		L7Ports:         parsePorts(*l7ports),
 		TargetContainer: *targetcont,
 		TargetIP:        *targetip,
