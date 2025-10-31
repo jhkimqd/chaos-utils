@@ -76,7 +76,7 @@ docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
 # NOTE: For gRPC, only delay works reliably. Abort has limitations due to how gRPC handles errors over HTTP/2.
 # For gRPC error injection, use L1-L4 faults (packet loss, connection drops) instead.
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=503 --l7-abort-percent=100 --l7-grpc-ports=4443 --l7-delay=6s
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=404 --l7-abort-percent=100 --l7-grpc-status=15 --l7-grpc-ports=4443 --l7-delay=2s
 
 # Check envoy filters
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[]'
@@ -94,17 +94,17 @@ echo ""
 echo "=== Testing HTTP-level faults ==="
 echo ""
 echo "Making HTTP request to port 4444 (should show 6s delay + 503 error)..."
-time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4444/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
+time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 5 http://$TARGET_IP:4444/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
 echo ""
 echo "Making HTTP request to port 4446 (should show 6s delay + 503 error)..."
-time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 10 http://$TARGET_IP:4446/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
+time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 5 http://$TARGET_IP:4446/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
 echo ""
 echo "=== Testing gRPC faults ==="
 echo ""
 echo "Making gRPC request to port 4443 (should show 6s delay)..."
 echo "NOTE: gRPC abort doesn't work reliably via Envoy HTTP fault filter - delays work fine"
 echo "For gRPC error injection, use connection-level faults instead (packet loss, etc.)"
-time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext -max-time 15 $TARGET_IP:4443 list 2>&1 | tee /tmp/grpc_output.txt
+time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext $TARGET_IP:4443 list 2>&1
 
 echo "Checking Envoy stats to verify traffic is being proxied..."
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/stats | grep -E "(downstream_rq_total|upstream_rq_total|fault)" | head -20

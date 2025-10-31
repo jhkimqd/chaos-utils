@@ -338,8 +338,16 @@ func generateListeners(cfg *Config, targetIP string) string {
 
 	// Generate listeners for HTTP ports
 	for _, port := range cfg.L7HttpPorts {
-		abortConfig := fmt.Sprintf(`
-                http_status: %d`, cfg.L7HttpStatus)
+		abortConfig := ""
+		if cfg.L7AbortPercent > 0 {
+			abortConfig = fmt.Sprintf(`
+              abort:
+                http_status: %d
+                percentage:
+                  numerator: %d
+                  denominator: HUNDRED`, cfg.L7HttpStatus, cfg.L7AbortPercent)
+		}
+
 		listeners.WriteString(fmt.Sprintf(`
   - name: listener_%s
     address:
@@ -370,22 +378,18 @@ func generateListeners(cfg *Config, targetIP string) string {
                 fixed_delay: %s
                 percentage:
                   numerator: 100
-                  denominator: HUNDRED
-              abort:%s
-                percentage:
-                  numerator: %d
-                  denominator: HUNDRED
+                  denominator: HUNDRED%s
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-`, port, port, port, port, cfg.L7Delay, abortConfig, cfg.L7AbortPercent))
+`, port, port, port, port, cfg.L7Delay, abortConfig))
 	}
 
 	// Generate listeners for gRPC ports with HTTP/2 support
 	for _, port := range cfg.L7GrpcPorts {
-		// Build abort config only if gRPC status is valid (> 0)
+		// Build abort config for gRPC - note the different field name
 		abortConfig := ""
-		if cfg.L7GrpcStatus > 0 && cfg.L7AbortPercent > 0 {
+		if cfg.L7AbortPercent > 0 {
 			abortConfig = fmt.Sprintf(`
               abort:
                 grpc_status: %d
