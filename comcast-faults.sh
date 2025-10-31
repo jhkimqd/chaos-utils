@@ -107,7 +107,7 @@ time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 5 h
 echo "Making HTTP request to port 4446 (should show 6s delay + 503 error)..."
 time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 5 http://$TARGET_IP:4446/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
 echo "For gRPC error injection, use connection-level faults instead (packet loss, etc.)"
-time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext $TARGET_IP:4443 list 2>&1
+time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext -max-time 10 $TARGET_IP:4443 list 2>&1
 
 # Stop L7 faults
 docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --stop

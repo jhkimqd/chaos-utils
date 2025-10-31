@@ -422,6 +422,9 @@ func generateListeners(cfg *Config, targetIP string) string {
                   prefix: "/"
                 route:
                   cluster: cluster_%s
+                  retry_policy:
+                    retry_on: ""
+                    num_retries: 0
           http_filters:
           - name: envoy.filters.http.fault
             typed_config:
