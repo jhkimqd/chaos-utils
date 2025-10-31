@@ -88,7 +88,7 @@ docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
 # NOTE: For gRPC, only delay works reliably. Abort has limitations due to how gRPC handles errors over HTTP/2.
 # For gRPC error injection, use L1-L4 faults (packet loss, connection drops) instead.
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=404 --l7-abort-percent=100 --l7-grpc-status=15 --l7-grpc-ports=4443 --l7-delay=2s
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=404 --l7-abort-percent=50 --l7-grpc-status=15 --l7-grpc-ports=4443 --l7-delay=2s
 
 # Check envoy filters
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[]'

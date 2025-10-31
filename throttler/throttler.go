@@ -217,13 +217,28 @@ func setupL7(cfg *Config) {
 		fmt.Println("Error: --target-ip required for L7 faults")
 		os.Exit(1)
 	}
+
+	// Check if any L7 faults are actually configured
+	hasL7Faults := false
+	if cfg.L7Delay != "" && cfg.L7Delay != "0" && cfg.L7Delay != "0s" {
+		hasL7Faults = true
+	}
+	if cfg.L7AbortPercent > 0 {
+		hasL7Faults = true
+	}
+
+	if !hasL7Faults {
+		fmt.Println("No L7 faults configured (delay is 0 or empty, abort percent is 0). Skipping L7 setup.")
+		return
+	}
+
 	// Add sanity check for L7HttpStatus
-	if cfg.L7HttpStatus < 200 || cfg.L7HttpStatus >= 600 {
+	if cfg.L7AbortPercent > 0 && (cfg.L7HttpStatus < 200 || cfg.L7HttpStatus >= 600) {
 		fmt.Printf("Error: Invalid L7 abort status %d. Must be >= 200 and < 600\n", cfg.L7HttpStatus)
 		os.Exit(1)
 	}
 	// Add sanity check for L7GrpcStatus
-	if cfg.L7GrpcStatus != 0 && (cfg.L7GrpcStatus < 0 || cfg.L7GrpcStatus > 16) {
+	if cfg.L7AbortPercent > 0 && cfg.L7GrpcStatus != 0 && (cfg.L7GrpcStatus < 0 || cfg.L7GrpcStatus > 16) {
 		fmt.Printf("Error: Invalid L7 gRPC abort status %d. Must be 0-16 or 0 to disable\n", cfg.L7GrpcStatus)
 		os.Exit(1)
 	}
@@ -249,6 +264,8 @@ func setupL7(cfg *Config) {
 
 	fmt.Println("L7 faults setup via Envoy sidecar")
 }
+
+// teardownL7 stops Envoy and cleans up
 
 // teardownL7 stops Envoy and cleans up
 func teardownL7(cfg *Config) {
@@ -277,13 +294,7 @@ func teardownL7(cfg *Config) {
 		fmt.Println("Warning: Failed to delete chaos_utils table (may not exist):", err)
 	}
 
-	// Step 3: Clear connection tracking to ensure clean state
-	fmt.Println("Clearing connection tracking state...")
-	if err := exec.Command("conntrack", "-F").Run(); err != nil {
-		fmt.Println("Warning: conntrack flush failed (may not be critical):", err)
-	}
-
-	// Step 4: Clean up temp files
+	// Step 3: Clean up temp files
 	fmt.Println("Removing Envoy config files...")
 	exec.Command("sh", "-c", "rm -f /tmp/envoy-config-*.yaml /tmp/envoy.log").Run()
 
@@ -336,16 +347,39 @@ admin:
 func generateListeners(cfg *Config, targetIP string) string {
 	var listeners strings.Builder
 
+	// Determine if we have any faults to apply
+	hasDelay := cfg.L7Delay != "" && cfg.L7Delay != "0" && cfg.L7Delay != "0s"
+	hasAbort := cfg.L7AbortPercent > 0
+
 	// Generate listeners for HTTP ports
 	for _, port := range cfg.L7HttpPorts {
 		abortConfig := ""
-		if cfg.L7AbortPercent > 0 {
+		if hasAbort {
 			abortConfig = fmt.Sprintf(`
               abort:
                 http_status: %d
                 percentage:
                   numerator: %d
                   denominator: HUNDRED`, cfg.L7HttpStatus, cfg.L7AbortPercent)
+		}
+
+		delayConfig := ""
+		if hasDelay {
+			delayConfig = fmt.Sprintf(`
+              delay:
+                fixed_delay: %s
+                percentage:
+                  numerator: 100
+                  denominator: HUNDRED`, cfg.L7Delay)
+		}
+
+		// Only add fault filter if we have actual faults
+		faultFilterConfig := ""
+		if hasDelay || hasAbort {
+			faultFilterConfig = fmt.Sprintf(`
+          - name: envoy.filters.http.fault
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault%s%s`, delayConfig, abortConfig)
 		}
 
 		listeners.WriteString(fmt.Sprintf(`
@@ -370,32 +404,43 @@ func generateListeners(cfg *Config, targetIP string) string {
                   prefix: "/"
                 route:
                   cluster: cluster_%s
-          http_filters:
-          - name: envoy.filters.http.fault
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault
-              delay:
-                fixed_delay: %s
-                percentage:
-                  numerator: 100
-                  denominator: HUNDRED%s
+          http_filters:%s
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-`, port, port, port, port, cfg.L7Delay, abortConfig))
+`, port, port, port, port, faultFilterConfig))
 	}
 
 	// Generate listeners for gRPC ports with HTTP/2 support
 	for _, port := range cfg.L7GrpcPorts {
 		// Build abort config for gRPC - note the different field name
 		abortConfig := ""
-		if cfg.L7AbortPercent > 0 {
+		if hasAbort {
 			abortConfig = fmt.Sprintf(`
               abort:
                 grpc_status: %d
                 percentage:
                   numerator: %d
                   denominator: HUNDRED`, cfg.L7GrpcStatus, cfg.L7AbortPercent)
+		}
+
+		delayConfig := ""
+		if hasDelay {
+			delayConfig = fmt.Sprintf(`
+              delay:
+                fixed_delay: %s
+                percentage:
+                  numerator: 100
+                  denominator: HUNDRED`, cfg.L7Delay)
+		}
+
+		// Only add fault filter if we have actual faults
+		faultFilterConfig := ""
+		if hasDelay || hasAbort {
+			faultFilterConfig = fmt.Sprintf(`
+          - name: envoy.filters.http.fault
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault%s%s`, delayConfig, abortConfig)
 		}
 
 		listeners.WriteString(fmt.Sprintf(`
@@ -425,19 +470,11 @@ func generateListeners(cfg *Config, targetIP string) string {
                   retry_policy:
                     retry_on: ""
                     num_retries: 0
-          http_filters:
-          - name: envoy.filters.http.fault
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.filters.http.fault.v3.HTTPFault
-              delay:
-                fixed_delay: %s
-                percentage:
-                  numerator: 100
-                  denominator: HUNDRED%s
+          http_filters:%s
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-`, port, port, port, port, cfg.L7Delay, abortConfig))
+`, port, port, port, port, faultFilterConfig))
 	}
 
 	return listeners.String()
@@ -445,6 +482,11 @@ func generateListeners(cfg *Config, targetIP string) string {
 
 func generateClusters(cfg *Config, targetIP string) string {
 	var clusters strings.Builder
+
+	// Since we're in the same network namespace as the target container,
+	// connect to localhost to reach the upstream service
+	// This avoids nftables redirect loops
+	upstreamIP := "127.0.0.1"
 
 	// Generate clusters for HTTP ports (no HTTP/2)
 	for _, port := range cfg.L7HttpPorts {
@@ -461,7 +503,7 @@ func generateClusters(cfg *Config, targetIP string) string {
               socket_address:
                 address: %s
                 port_value: %s
-`, port, port, targetIP, port))
+`, port, port, upstreamIP, port))
 	}
 
 	// Generate clusters for gRPC ports with HTTP/2 support
@@ -480,7 +522,7 @@ func generateClusters(cfg *Config, targetIP string) string {
               socket_address:
                 address: %s
                 port_value: %s
-`, port, port, targetIP, port))
+`, port, port, upstreamIP, port))
 	}
 
 	return clusters.String()
