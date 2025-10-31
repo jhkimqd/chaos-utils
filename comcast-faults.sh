@@ -1,10 +1,13 @@
 #!/bin/bash
 # Script to start chaos utility sidecars (jhkimqd/chaos-utils:latest) for agglayer-- container on kt-op network,
-# testing both L1-L4 faults via Comcast and L7 faults via Envoy.
+# testing both L3,L4 faults via Comcast and L7 faults via Envoy.
 set -e
 
 docker rm -f chaos-utils-sidecar-agglayer
 
+##############################################################
+# Set up container detection
+##############################################################
 # Variables
 NETWORK="kt-op"
 NAME_PATTERN="agglayer--"
@@ -49,6 +52,9 @@ if [[ -z "$INTERFACE" ]]; then
 fi
 echo "Using interface: $INTERFACE"
 
+##############################################################
+# Start up chaos-utils container
+##############################################################
 # Start chaos-utils sidecar (L1-L4 and L7 faults) and keep it running
 docker run --rm -d \
   --name chaos-utils-sidecar-agglayer \
@@ -58,6 +64,9 @@ docker run --rm -d \
   jhkimqd/chaos-utils:latest \
   tail -f /dev/null
 
+##############################################################
+# Comcast L3,L4 faults injection + testing
+##############################################################
 # Apply initial Comcast faults (no --target-port to affect ICMP)
 docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --latency=100 --target-bw=10000 --default-bw=1000000 --packet-loss=75% --target-proto=tcp,udp,icmp --target-port=4443,4444,4446
 
@@ -73,6 +82,9 @@ docker run --rm --network $NETWORK busybox ping -c 10 $TARGET_IP
 # Stop Comcast fault injection
 docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 
+##############################################################
+# Envoy L7 faults injection + testing
+##############################################################
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
 # NOTE: For gRPC, only delay works reliably. Abort has limitations due to how gRPC handles errors over HTTP/2.
 # For gRPC error injection, use L1-L4 faults (packet loss, connection drops) instead.
@@ -90,51 +102,15 @@ echo "Checking nftables rules..."
 docker exec chaos-utils-sidecar-agglayer nft list ruleset
 
 # Test network delays
-echo ""
-echo "=== Testing HTTP-level faults ==="
-echo ""
 echo "Making HTTP request to port 4444 (should show 6s delay + 503 error)..."
 time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 5 http://$TARGET_IP:4444/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
-echo ""
 echo "Making HTTP request to port 4446 (should show 6s delay + 503 error)..."
 time docker run --rm --network $NETWORK curlimages/curl:latest -v --max-time 5 http://$TARGET_IP:4446/ 2>&1 | grep -E "(HTTP|503|Connection|delay|timeout)"
-echo ""
-echo "=== Testing gRPC faults ==="
-echo ""
-echo "Making gRPC request to port 4443 (should show 6s delay)..."
-echo "NOTE: gRPC abort doesn't work reliably via Envoy HTTP fault filter - delays work fine"
 echo "For gRPC error injection, use connection-level faults instead (packet loss, etc.)"
 time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext $TARGET_IP:4443 list 2>&1
 
-echo "Checking Envoy stats to verify traffic is being proxied..."
-docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/stats | grep -E "(downstream_rq_total|upstream_rq_total|fault)" | head -20
-
 # Stop L7 faults
 docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --stop
-
-# Optional: Demonstrate gRPC error injection using L1-L4 faults
-echo ""
-echo "=== Alternative: Testing gRPC with connection-level faults ==="
-echo "This approach works better for gRPC error injection than L7 abort"
-docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --packet-loss=80% --target-port=4443 --target-proto=tcp
-sleep 2
-echo "Testing gRPC with 80% packet loss (should fail or be very slow)..."
-docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext -max-time 5 $TARGET_IP:4443 list 2>&1 || echo "Failed as expected due to packet loss"
-docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
-
-# Kill all Envoy processes
-docker exec chaos-utils-sidecar-agglayer pkill -9 envoy 2>/dev/null || true
-sleep 2
-
-# Flush ALL network rules in order
-echo "Flushing all network rules..."
-docker exec chaos-utils-sidecar-agglayer nft flush ruleset 2>/dev/null || true
-docker exec chaos-utils-sidecar-agglayer iptables -t nat -F 2>/dev/null || true
-docker exec chaos-utils-sidecar-agglayer iptables -t mangle -F 2>/dev/null || true
-docker exec chaos-utils-sidecar-agglayer iptables -t filter -F 2>/dev/null || true
-
-# Remove tc rules
-docker exec chaos-utils-sidecar-agglayer tc qdisc del dev $INTERFACE root 2>/dev/null || true
 
 # Verify cleanup
 echo ""
@@ -147,13 +123,8 @@ echo "nftables:"
 docker exec chaos-utils-sidecar-agglayer nft list ruleset || echo "No nft rules"
 
 # Remove sidecar to ensure clean state
-echo "Removing sidecar container..."
 docker rm -f chaos-utils-sidecar-agglayer
 
-echo ""
-echo "Cleanup complete! Target container should be functional now."
-echo "To reapply faults, restart the target container for a truly clean slate:"
-echo " kurtosis service stop op agglayer $TARGET_NAME"
-echo " kurtosis service start op agglayer $TARGET_NAME"
+# Restart agglayer service
 kurtosis service stop op agglayer
 kurtosis service start op agglayer
