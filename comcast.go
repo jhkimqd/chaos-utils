@@ -33,7 +33,6 @@ func main() {
 		l7grpcstatus = flag.Int("l7-grpc-status", 0, "L7 abort gRPC status code (e.g. 14 for UNAVAILABLE, 0 to disable)")
 		l7http       = flag.String("l7-http-ports", "", "Target HTTP ports for L7 interception (e.g. 4444,4446)") // New flag
 		l7grpcp      = flag.String("l7-grpc-ports", "", "Target gRPC ports for L7 interception (e.g. 4443)")      // New flag
-		targetcont   = flag.String("target-container", "", "Target Docker container name/ID for sidecar attachment")
 		targetip     = flag.String("target-ip", "", "Target container IP for L7 faults")
 		//icmptype  = flag.String("icmp-type", "", "icmp message type (e.g. reply or reply,request)") //TODO: Maybe later :3
 		vers = flag.Bool("version", false, "Print Comcast's version")
@@ -60,14 +59,13 @@ func main() {
 		TargetProtos:     parseProtos(*targetproto),
 		DryRun:           *dryrun,
 		// New L7 fields
-		L7Delay:         *l7delay,
-		L7AbortPercent:  *l7abort,
-		L7HttpStatus:    *l7httpstatus,
-		L7GrpcStatus:    *l7grpcstatus,
-		L7HttpPorts:     parsePorts(*l7http),
-		L7GrpcPorts:     parsePorts(*l7grpcp),
-		TargetContainer: *targetcont,
-		TargetIP:        *targetip,
+		L7Delay:        *l7delay,
+		L7AbortPercent: *l7abort,
+		L7HttpStatus:   *l7httpstatus,
+		L7GrpcStatus:   *l7grpcstatus,
+		L7HttpPorts:    parsePorts(*l7http),
+		L7GrpcPorts:    parsePorts(*l7grpcp),
+		TargetIP:       *targetip,
 	})
 }
 

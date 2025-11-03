@@ -35,14 +35,13 @@ type Config struct {
 	TargetProtos     []string
 	DryRun           bool
 	// New L7 fields
-	L7Delay         string
-	L7AbortPercent  int
-	L7HttpStatus    int
-	L7GrpcStatus    int
-	L7HttpPorts     []string
-	L7GrpcPorts     []string
-	TargetContainer string
-	TargetIP        string
+	L7Delay        string
+	L7AbortPercent int
+	L7HttpStatus   int
+	L7GrpcStatus   int
+	L7HttpPorts    []string
+	L7GrpcPorts    []string
+	TargetIP       string
 }
 
 type throttler interface {
