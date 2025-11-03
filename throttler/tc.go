@@ -21,19 +21,25 @@ const (
 	tcDelClass     = `sudo tc class del`
 	tcAddQDisc     = `sudo tc qdisc add`
 	tcDelQDisc     = `sudo tc qdisc del`
-	iptAddTarget   = `sudo %s -A POSTROUTING -t mangle -j CLASSIFY --set-class 10:10`
-	iptDelTarget   = `sudo %s -D POSTROUTING -t mangle -j CLASSIFY --set-class 10:10`
-	iptDestIP      = `-d %s`
-	iptProto       = `-p %s`
-	iptDestPorts   = `--match multiport --dports %s`
-	iptDestPort    = `--dport %s`
-	iptDelSearch   = `class 0010:0010`
-	iptList        = `sudo %s -S -t mangle`
-	ip4Tables      = `iptables`
-	ip6Tables      = `ip6tables`
-	iptDel         = `sudo %s -t mangle -D`
-	tcExists       = `sudo tc qdisc show | grep "netem"`
-	tcCheck        = `sudo tc -s qdisc`
+	// Add rules to both POSTROUTING (outgoing) and OUTPUT (responses to incoming)
+	iptAddTargetPost   = `sudo %s -A POSTROUTING -t mangle -j CLASSIFY --set-class 10:10`
+	iptAddTargetOutput = `sudo %s -A OUTPUT -t mangle -j CLASSIFY --set-class 10:10`
+	iptDelTargetPost   = `sudo %s -D POSTROUTING -t mangle -j CLASSIFY --set-class 10:10`
+	iptDelTargetOutput = `sudo %s -D OUTPUT -t mangle -j CLASSIFY --set-class 10:10`
+	iptDestIP          = `-d %s`
+	iptSrcIP           = `-s %s`
+	iptProto           = `-p %s`
+	iptDestPorts       = `--match multiport --dports %s`
+	iptDestPort        = `--dport %s`
+	iptSrcPorts        = `--match multiport --sports %s`
+	iptSrcPort         = `--sport %s`
+	iptDelSearch       = `class 0010:0010`
+	iptList            = `sudo %s -S -t mangle`
+	ip4Tables          = `iptables`
+	ip6Tables          = `ip6tables`
+	iptDel             = `sudo %s -t mangle -D`
+	tcExists           = `sudo tc qdisc show | grep "netem"`
+	tcCheck            = `sudo tc -s qdisc`
 )
 
 type tcThrottler struct {
@@ -150,58 +156,90 @@ func addIptablesRules(cfg *Config, c commander) error {
 }
 
 func addIptablesRulesForAddrs(cfg *Config, c commander, command string, addrs []string) error {
-	rules := []string{}
-	ports := ""
+	// Add rules for both POSTROUTING (outgoing) and OUTPUT (response to incoming)
+	// This ensures both directions of traffic are affected
 
-	if len(cfg.TargetPorts) > 0 {
-		if len(cfg.TargetPorts) > 1 {
-			prts := strings.Join(cfg.TargetPorts, ",")
-			ports = fmt.Sprintf(iptDestPorts, prts)
-		} else {
-			ports = fmt.Sprintf(iptDestPort, cfg.TargetPorts[0])
-		}
-	}
+	for _, chain := range []string{"POSTROUTING", "OUTPUT"} {
+		rules := []string{}
+		destPorts := ""
+		srcPorts := ""
 
-	addTargetCmd := fmt.Sprintf(iptAddTarget, command)
-
-	if len(cfg.TargetProtos) > 0 {
-		for _, ptc := range cfg.TargetProtos {
-			proto := fmt.Sprintf(iptProto, ptc)
-			rule := addTargetCmd + " " + proto
-
-			if ptc != "icmp" {
-				if ports != "" {
-					rule += " " + ports
-				}
-			}
-
-			rules = append(rules, rule)
-		}
-	} else {
-		rules = []string{addTargetCmd}
-	}
-
-	if len(addrs) > 0 {
-		iprules := []string{}
-		for _, ip := range addrs {
-			dest := fmt.Sprintf(iptDestIP, ip)
-			if len(rules) > 0 {
-				for _, rule := range rules {
-					r := rule + " " + dest
-					iprules = append(iprules, r)
-				}
+		if len(cfg.TargetPorts) > 0 {
+			if len(cfg.TargetPorts) > 1 {
+				prts := strings.Join(cfg.TargetPorts, ",")
+				destPorts = fmt.Sprintf(iptDestPorts, prts)
+				srcPorts = fmt.Sprintf(iptSrcPorts, prts)
 			} else {
-				iprules = append(iprules, dest)
+				destPorts = fmt.Sprintf(iptDestPort, cfg.TargetPorts[0])
+				srcPorts = fmt.Sprintf(iptSrcPort, cfg.TargetPorts[0])
 			}
 		}
-		if len(iprules) > 0 {
-			rules = iprules
-		}
-	}
 
-	for _, rule := range rules {
-		if err := c.execute(rule); err != nil {
-			return err
+		var addTargetCmd string
+		if chain == "POSTROUTING" {
+			addTargetCmd = fmt.Sprintf(iptAddTargetPost, command)
+		} else {
+			addTargetCmd = fmt.Sprintf(iptAddTargetOutput, command)
+		}
+
+		if len(cfg.TargetProtos) > 0 {
+			for _, ptc := range cfg.TargetProtos {
+				proto := fmt.Sprintf(iptProto, ptc)
+
+				if ptc != "icmp" {
+					// For POSTROUTING: match destination ports (outgoing connections)
+					// For OUTPUT: match source ports (responses to incoming connections)
+					if chain == "POSTROUTING" && destPorts != "" {
+						rule := addTargetCmd + " " + proto + " " + destPorts
+						rules = append(rules, rule)
+					} else if chain == "OUTPUT" && srcPorts != "" {
+						rule := addTargetCmd + " " + proto + " " + srcPorts
+						rules = append(rules, rule)
+					} else if destPorts == "" && srcPorts == "" {
+						rule := addTargetCmd + " " + proto
+						rules = append(rules, rule)
+					}
+				} else {
+					// ICMP doesn't have ports
+					rule := addTargetCmd + " " + proto
+					rules = append(rules, rule)
+				}
+			}
+		} else {
+			rules = []string{addTargetCmd}
+		}
+
+		// Add IP address filters
+		if len(addrs) > 0 {
+			iprules := []string{}
+			for _, ip := range addrs {
+				// For POSTROUTING: match destination IP (outgoing to target)
+				// For OUTPUT: match source IP (responses from target)
+				var ipFilter string
+				if chain == "POSTROUTING" {
+					ipFilter = fmt.Sprintf(iptDestIP, ip)
+				} else {
+					ipFilter = fmt.Sprintf(iptSrcIP, ip)
+				}
+
+				if len(rules) > 0 {
+					for _, rule := range rules {
+						r := rule + " " + ipFilter
+						iprules = append(iprules, r)
+					}
+				} else {
+					iprules = append(iprules, ipFilter)
+				}
+			}
+			if len(iprules) > 0 {
+				rules = iprules
+			}
+		}
+
+		for _, rule := range rules {
+			if err := c.execute(rule); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -249,7 +287,17 @@ func delIptablesRules(cfg *Config, c commander) error {
 
 		for _, line := range lines {
 			if strings.Contains(line, iptDelSearch) {
-				cmd := strings.Replace(line, "-A", delCmdPrefix, 1)
+				// Handle POSTROUTING, OUTPUT, and PREROUTING rules
+				var cmd string
+				if strings.Contains(line, "POSTROUTING") {
+					cmd = strings.Replace(line, "-A POSTROUTING", delCmdPrefix+" POSTROUTING", 1)
+				} else if strings.Contains(line, "OUTPUT") {
+					cmd = strings.Replace(line, "-A OUTPUT", delCmdPrefix+" OUTPUT", 1)
+				} else if strings.Contains(line, "PREROUTING") {
+					cmd = strings.Replace(line, "-A PREROUTING", delCmdPrefix+" PREROUTING", 1)
+				} else {
+					continue
+				}
 				err = c.execute(cmd)
 				if err != nil {
 					return err
