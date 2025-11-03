@@ -22,7 +22,7 @@ func main() {
 		targetbw    = flag.Int("target-bw", -1, "Target bandwidth limit in kbit/s (slow-lane)")
 		defaultbw   = flag.Int("default-bw", -1, "Default bandwidth limit in kbit/s (fast-lane)")
 		packetLoss  = flag.String("packet-loss", "0", "Packet loss percentage (e.g. 0.1%)")
-		targetaddr  = flag.String("target-addr", "", "Target addresses, (e.g. 10.0.0.1 or 10.0.0.0/24 or 10.0.0.1,192.168.0.0/24 or 2001:db8:a::123)")
+		targetaddr  = flag.String("target-addr", "", "Target addresses (optional, auto-detected if using --net=container). Format: IP or CIDR (e.g. 10.0.0.1 or 10.0.0.0/24)")
 		targetport  = flag.String("target-port", "", "Target port(s) (e.g. 80 or 1:65535 or 22,80,443,1000:1010)")
 		targetproto = flag.String("target-proto", "tcp,udp,icmp", "Target protocol TCP/UDP (e.g. tcp or tcp,udp or icmp)")
 		dryrun      = flag.Bool("dry-run", false, "Specifies whether or not to actually commit the rule changes")
@@ -33,7 +33,6 @@ func main() {
 		l7grpcstatus = flag.Int("l7-grpc-status", 0, "L7 abort gRPC status code (e.g. 14 for UNAVAILABLE, 0 to disable)")
 		l7http       = flag.String("l7-http-ports", "", "Target HTTP ports for L7 interception (e.g. 4444,4446)") // New flag
 		l7grpcp      = flag.String("l7-grpc-ports", "", "Target gRPC ports for L7 interception (e.g. 4443)")      // New flag
-		targetip     = flag.String("target-ip", "", "Target container IP for L7 faults")
 		//icmptype  = flag.String("icmp-type", "", "icmp message type (e.g. reply or reply,request)") //TODO: Maybe later :3
 		vers = flag.Bool("version", false, "Print Comcast's version")
 	)
@@ -45,6 +44,19 @@ func main() {
 	}
 
 	targetIPv4, targetIPv6 := parseAddrs(*targetaddr)
+
+	// Auto-detect container IP if not specified
+	autoDetectedIP := ""
+	if *targetaddr == "" {
+		autoDetectedIP = getContainerIP(*device)
+		if autoDetectedIP != "" {
+			fmt.Printf("Auto-detected container IP: %s\n", autoDetectedIP)
+			// Parse the auto-detected IP
+			ipv4, ipv6 := parseAddrs(autoDetectedIP)
+			targetIPv4 = ipv4
+			targetIPv6 = ipv6
+		}
+	}
 
 	throttler.Run(&throttler.Config{
 		Device:           *device,
@@ -65,8 +77,49 @@ func main() {
 		L7GrpcStatus:   *l7grpcstatus,
 		L7HttpPorts:    parsePorts(*l7http),
 		L7GrpcPorts:    parsePorts(*l7grpcp),
-		TargetIP:       *targetip,
+		TargetIP:       autoDetectedIP, // Use auto-detected IP for both L3/L4 and L7
 	})
+}
+
+// getContainerIP auto-detects the container's IP address from the network interface
+func getContainerIP(device string) string {
+	if device == "" {
+		device = "eth0"
+	}
+
+	// Try using standard approach with net package
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		fmt.Printf("Error listing network interfaces: %v\n", err)
+		return ""
+	}
+
+	for _, iface := range ifaces {
+		if iface.Name == device {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				fmt.Printf("Error getting addresses for interface %s: %v\n", device, err)
+				continue
+			}
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok {
+					if ipv4 := ipnet.IP.To4(); ipv4 != nil && !ipv4.IsLoopback() {
+						fmt.Printf("Detected IP %s from interface %s\n", ipv4.String(), device)
+						return ipv4.String()
+					}
+				}
+			}
+		}
+	}
+
+	fmt.Printf("No valid IP found on interface %s\n", device)
+	// Print available interfaces for debugging
+	fmt.Println("Available interfaces:")
+	for _, iface := range ifaces {
+		addrs, _ := iface.Addrs()
+		fmt.Printf("  %s: %v\n", iface.Name, addrs)
+	}
+	return ""
 }
 
 func parseLoss(loss string) float64 {

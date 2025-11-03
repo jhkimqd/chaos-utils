@@ -212,9 +212,32 @@ func (c *shellCommander) commandExists(cmd string) bool {
 
 // setupL7 generates Envoy config, runs the sidecar, and sets up nftables
 func setupL7(cfg *Config) {
+	// Auto-detect IP if not provided
 	if cfg.TargetIP == "" {
-		fmt.Println("Error: --target-ip required for L7 faults")
-		os.Exit(1)
+		// Try to get from TargetIps if available
+		if len(cfg.TargetIps) > 0 {
+			cfg.TargetIP = cfg.TargetIps[0]
+			fmt.Printf("Using IP from target addresses: %s\n", cfg.TargetIP)
+		} else {
+			// Auto-detect from interface
+			interfaceName := cfg.Device
+			if interfaceName == "" {
+				interfaceName = "eth0"
+			}
+			cfg.TargetIP = getContainerIPFromInterface(interfaceName)
+			if cfg.TargetIP == "" || cfg.TargetIP == "0.0.0.0" {
+				fmt.Printf("Error: Could not auto-detect container IP from interface %s\n", interfaceName)
+				fmt.Println("Make sure the interface exists and has a valid IP address")
+				// Try to list available interfaces for debugging
+				cmd := exec.Command("ip", "addr", "show")
+				if output, err := cmd.Output(); err == nil {
+					fmt.Println("Available interfaces:")
+					fmt.Println(string(output))
+				}
+				os.Exit(1)
+			}
+			fmt.Printf("Auto-detected container IP: %s\n", cfg.TargetIP)
+		}
 	}
 
 	// Check if any L7 faults are actually configured
@@ -323,6 +346,37 @@ func getContainerInterface(container string) string {
 		}
 	}
 	fmt.Println("No eth interface found")
+	return ""
+}
+
+// getContainerIPFromInterface auto-detects the container's IP address from the network interface
+func getContainerIPFromInterface(interfaceName string) string {
+	cmd := exec.Command("ip", "-4", "addr", "show", interfaceName)
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Printf("Error getting IP from interface %s: %v\n", interfaceName, err)
+		return ""
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "inet ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				// Parse IP/CIDR notation (e.g., "172.16.0.2/16")
+				ipCIDR := fields[1]
+				ip := strings.Split(ipCIDR, "/")[0]
+				// Skip loopback addresses
+				if ip != "127.0.0.1" && !strings.HasPrefix(ip, "127.") {
+					fmt.Printf("Detected IP %s from interface %s\n", ip, interfaceName)
+					return ip
+				}
+			}
+		}
+	}
+
+	fmt.Printf("No valid IP found on interface %s\n", interfaceName)
 	return ""
 }
 
