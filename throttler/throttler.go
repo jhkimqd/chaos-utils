@@ -149,9 +149,9 @@ func Run(cfg *Config) {
 		}
 	} else {
 		teardown(t, cfg)
-		if len(cfg.L7HttpPorts) > 0 || len(cfg.L7GrpcPorts) > 0 {
-			teardownL7(cfg)
-		}
+		// Always attempt to teardown L7 faults on stop, regardless of flags
+		// This ensures cleanup works even if user doesn't specify the same ports
+		teardownL7(cfg)
 	}
 }
 
@@ -287,15 +287,20 @@ func teardownL7(cfg *Config) {
 		}
 	}
 
-	// Step 2: Remove only our nftables table (safe, won't affect other rules)
-	fmt.Println("Removing chaos_utils nftables table...")
+	// Step 2: Remove all nftables tables related to chaos injection
+	fmt.Println("Removing chaos-related nftables tables...")
+	// Remove chaos_utils table (new name)
 	if err := exec.Command("nft", "delete", "table", "ip", "chaos_utils").Run(); err != nil {
-		fmt.Println("Warning: Failed to delete chaos_utils table (may not exist):", err)
+		fmt.Println("Note: chaos_utils table not found (may not exist)")
+	}
+	// Remove envoy table (legacy name, for backward compatibility)
+	if err := exec.Command("nft", "delete", "table", "inet", "envoy").Run(); err != nil {
+		fmt.Println("Note: envoy table not found (may not exist)")
 	}
 
 	// Step 3: Clean up temp files
 	fmt.Println("Removing Envoy config files...")
-	exec.Command("sh", "-c", "rm -f /tmp/envoy-config-*.yaml /tmp/envoy.log").Run()
+	exec.Command("sh", "-c", "rm -f /tmp/envoy-config-*.yaml /tmp/envoy.log /tmp/tcpdump.log").Run()
 
 	fmt.Println("L7 faults torn down")
 }
@@ -601,13 +606,6 @@ func runEnvoySidecar(cfg *Config, configFile, targetIP, interfaceName string) {
 	fmt.Println(string(logOutput))
 
 	fmt.Println("Warning: Could not verify all Envoy listeners are ready, continuing anyway...")
-}
-
-// validateEnvoyConfig validates the Envoy config
-func validateEnvoyConfig(config string) bool {
-	cmd := exec.Command("envoy", "--config-yaml", config, "--mode", "validate")
-	err := cmd.Run()
-	return err == nil
 }
 
 // setupL7Interception adds rules for interception using nftables

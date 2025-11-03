@@ -68,7 +68,7 @@ docker run --rm -d \
 # Comcast L3,L4 faults injection + testing
 ##############################################################
 # Apply initial Comcast faults (no --target-port to affect ICMP)
-docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --latency=100 --target-bw=10000 --default-bw=1000000 --packet-loss=75% --target-proto=tcp,udp,icmp --target-port=4443,4444,4446
+docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --latency=100 --target-bw=10000 --default-bw=1000000 --packet-loss=50% --target-proto=tcp,udp,icmp --target-port=4443,4444,4446
 
 # Verify rules
 echo "Checking Comcast tc rules..."
@@ -88,7 +88,7 @@ docker exec chaos-utils-sidecar-agglayer comcast --device=$INTERFACE --stop
 # Apply L7 faults via Envoy (no --target-container needed, sidecar shares namespace)
 # NOTE: For gRPC, only delay works reliably. Abort has limitations due to how gRPC handles errors over HTTP/2.
 # For gRPC error injection, use L1-L4 faults (packet loss, connection drops) instead.
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=404 --l7-abort-percent=50 --l7-grpc-status=15 --l7-grpc-ports=4443 --l7-delay=2s
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-http-status=404 --l7-abort-percent=100 --l7-grpc-status=15 --l7-grpc-ports=4443 --l7-delay=2s
 
 # Check envoy filters
 docker exec chaos-utils-sidecar-agglayer curl -s http://localhost:9901/config_dump | jq '.configs[0].bootstrap.static_resources.listeners[]'
@@ -110,7 +110,7 @@ echo "For gRPC error injection, use connection-level faults instead (packet loss
 time docker run --rm --network $NETWORK fullstorydev/grpcurl:latest -plaintext -max-time 10 $TARGET_IP:4443 list 2>&1
 
 # Stop L7 faults
-docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --l7-http-ports=4444,4446 --l7-grpc-ports=4443 --stop
+docker exec chaos-utils-sidecar-agglayer comcast --target-ip=$TARGET_IP --stop
 
 # Verify cleanup
 echo ""
