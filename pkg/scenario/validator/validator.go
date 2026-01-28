@@ -310,11 +310,6 @@ func (v *Validator) validateNetworkFaultParams(params map[string]interface{}, in
 		v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params.latency cannot be negative", index))
 	}
 
-	// Validate jitter
-	if nfp.Jitter < 0 {
-		v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params.jitter cannot be negative", index))
-	}
-
 	// Validate bandwidth
 	if nfp.Bandwidth < 0 {
 		v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params.bandwidth cannot be negative", index))

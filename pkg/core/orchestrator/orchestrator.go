@@ -562,9 +562,6 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 			if latency, ok := fault.Params["latency"].(int); ok {
 				params.Latency = latency
 			}
-			if jitter, ok := fault.Params["jitter"].(int); ok {
-				params.Jitter = jitter
-			}
 			if packetLoss, ok := fault.Params["packet_loss"].(float64); ok {
 				params.PacketLoss = packetLoss
 			} else if packetLoss, ok := fault.Params["packet_loss"].(int); ok {

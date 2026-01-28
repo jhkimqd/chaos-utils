@@ -29,7 +29,6 @@ spec:
       params:
         device: eth0
         latency: 200
-        jitter: 50
         target_ports: "26656,26657,1317"
         target_proto: tcp,udp
       duration: 3m
@@ -42,7 +41,6 @@ spec:
       params:
         device: eth0
         latency: 500
-        jitter: 100
         target_ports: "26656,26657,1317"
         target_proto: tcp,udp
       duration: 3m

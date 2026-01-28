@@ -174,7 +174,6 @@ spec:
 
 **Network Faults** (via comcast):
 - `latency`: Delay in milliseconds (e.g., 500)
-- `jitter`: Latency variation in ms (e.g., 100)
 - `packet_loss`: Percentage 0-100 (e.g., 50.0)
 - `bandwidth`: Limit in kbit/s (e.g., 1000)
 - `target_ports`: Comma-separated ports (e.g., "26656,26657")

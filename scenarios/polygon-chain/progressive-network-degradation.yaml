@@ -28,7 +28,6 @@ spec:
       params:
         device: eth0
         latency: 100
-        jitter: 20
         target_proto: tcp,udp
       duration: 3m
 
@@ -40,7 +39,6 @@ spec:
       params:
         device: eth0
         latency: 300
-        jitter: 50
         packet_loss: 5
         target_proto: tcp,udp
       duration: 3m
@@ -54,7 +52,6 @@ spec:
       params:
         device: eth0
         latency: 500
-        jitter: 100
         packet_loss: 10
         target_proto: tcp,udp
       duration: 3m

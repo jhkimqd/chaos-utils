@@ -94,7 +94,6 @@ Ensure that L2 operations continue normally when Ethereum L1 connectivity is deg
 
 **What happens**:
 - 500ms latency added to L1 RPC endpoint
-- Additional ±100ms jitter makes timing unpredictable
 - L1 calls timeout more frequently
 
 **Expected metrics during fault**:
@@ -207,7 +206,6 @@ Test system behavior under progressive network degradation affecting all validat
 
 **What happens**:
 - 200ms latency added to all validators
-- ±50ms jitter creates timing variability
 
 **Expected metrics**:
 
@@ -221,7 +219,6 @@ Test system behavior under progressive network degradation affecting all validat
 
 **What happens**:
 - Latency increased to 500ms
-- ±100ms jitter creates significant timing issues
 - All validators affected simultaneously
 
 **Expected metrics**:
@@ -309,7 +306,7 @@ Test network resilience against gradually increasing failures on a single valida
 ### Phase 1: Light Latency (0-3 minutes)
 
 **What happens**:
-- 100ms latency, 20ms jitter
+- 100ms latency
 - Minimal impact expected
 
 **Expected metrics**:
@@ -322,7 +319,7 @@ Test network resilience against gradually increasing failures on a single valida
 ### Phase 2: Moderate Degradation (3-6 minutes)
 
 **What happens**:
-- 300ms latency, 50ms jitter, 5% packet loss
+- 300ms latency, 5% packet loss
 - Noticeable impact on degraded validator
 
 **Expected metrics**:
@@ -336,7 +333,7 @@ Test network resilience against gradually increasing failures on a single valida
 ### Phase 3: Heavy Degradation (6-9 minutes)
 
 **What happens**:
-- 500ms latency, 100ms jitter, 10% packet loss
+- 500ms latency, 10% packet loss
 - Degraded validator effectively offline
 
 **Expected metrics**:

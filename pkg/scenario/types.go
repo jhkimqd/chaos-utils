@@ -140,7 +140,6 @@ type SuccessCriterion struct {
 type NetworkFaultParams struct {
 	Device      string  `yaml:"device,omitempty"`
 	Latency     int     `yaml:"latency,omitempty"`
-	Jitter      int     `yaml:"jitter,omitempty"`
 	PacketLoss  float64 `yaml:"packet_loss,omitempty"`
 	Bandwidth   int     `yaml:"bandwidth,omitempty"`
 	TargetPorts string  `yaml:"target_ports,omitempty"`
@@ -158,9 +157,6 @@ func ParseNetworkParams(params map[string]interface{}) NetworkFaultParams {
 	}
 	if v, ok := params["latency"].(int); ok {
 		nfp.Latency = v
-	}
-	if v, ok := params["jitter"].(int); ok {
-		nfp.Jitter = v
 	}
 	if v, ok := params["packet_loss"].(float64); ok {
 		nfp.PacketLoss = v

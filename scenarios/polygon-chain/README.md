@@ -46,7 +46,7 @@ Each scenario is defined in YAML format and tests a specific failure mode or deg
 **Duration**: 10 minutes
 **Type**: Network latency
 
-**Description**: Introduces 500ms latency (with 100ms jitter) to L1 RPC communication. Tests checkpoint submission resilience when Ethereum mainnet connectivity is degraded.
+**Description**: Introduces 500ms latency to L1 RPC communication. Tests checkpoint submission resilience when Ethereum mainnet connectivity is degraded.
 
 **Expected Behavior**:
 - ✅ L2 block production continues unaffected
@@ -148,9 +148,9 @@ Each scenario is defined in YAML format and tests a specific failure mode or deg
 **Type**: Progressive failure
 
 **Description**: Gradually increases network issues in three phases:
-- Phase 1 (0-3m): 100ms latency, 20ms jitter
-- Phase 2 (3-6m): 300ms latency, 50ms jitter, 5% packet loss
-- Phase 3 (6-9m): 500ms latency, 100ms jitter, 10% packet loss
+- Phase 1 (0-3m): 100ms latency
+- Phase 2 (3-6m): 300ms latency, 5% packet loss
+- Phase 3 (6-9m): 500ms latency, 10% packet loss
 
 **Expected Behavior**:
 - ✅ Network continues operating with majority of healthy validators
@@ -435,8 +435,7 @@ spec:
 ### Available Fault Parameters
 
 **Latency**:
-- `latency: <ms>` - Added latency in milliseconds
-- `jitter: <ms>` - Random jitter in milliseconds
+- `latency: <ms>` - Added latency in milliseconds (fixed delay)
 
 **Packet Loss**:
 - `packet_loss: <percent>` - Packet loss percentage (0-100)

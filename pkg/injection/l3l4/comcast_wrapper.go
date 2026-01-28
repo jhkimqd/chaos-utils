@@ -16,9 +16,6 @@ type FaultParams struct {
 	// Latency in milliseconds
 	Latency int
 
-	// Jitter in milliseconds (variation in latency)
-	Jitter int
-
 	// PacketLoss as percentage (0-100)
 	PacketLoss float64
 
@@ -66,7 +63,10 @@ func (cw *ComcastWrapper) InjectFault(ctx context.Context, targetContainerID str
 	_, _ = cw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, stopCmd) // Ignore errors - may not have rules
 
 	// Build comcast command
-	cmd := cw.buildComcastCommand(params)
+	cmd, err := cw.buildComcastCommand(params)
+	if err != nil {
+		return fmt.Errorf("failed to build comcast command: %w", err)
+	}
 
 	fmt.Printf("Injecting fault on target %s: %s\n", targetContainerID[:12], strings.Join(cmd, " "))
 
@@ -104,7 +104,7 @@ func (cw *ComcastWrapper) RemoveFault(ctx context.Context, targetContainerID str
 }
 
 // buildComcastCommand builds a comcast CLI command from fault parameters
-func (cw *ComcastWrapper) buildComcastCommand(params FaultParams) []string {
+func (cw *ComcastWrapper) buildComcastCommand(params FaultParams) ([]string, error) {
 	cmd := []string{"comcast"}
 
 	// Device
@@ -115,11 +115,6 @@ func (cw *ComcastWrapper) buildComcastCommand(params FaultParams) []string {
 	// Latency
 	if params.Latency > 0 {
 		cmd = append(cmd, "--latency", fmt.Sprintf("%d", params.Latency))
-	}
-
-	// Jitter
-	if params.Jitter > 0 {
-		cmd = append(cmd, "--jitter", fmt.Sprintf("%d", params.Jitter))
 	}
 
 	// Packet loss
@@ -152,17 +147,13 @@ func (cw *ComcastWrapper) buildComcastCommand(params FaultParams) []string {
 		cmd = append(cmd, "--target-addr", params.TargetCIDR)
 	}
 
-	return cmd
+	return cmd, nil
 }
 
 // ValidateFaultParams validates fault parameters
 func ValidateFaultParams(params FaultParams) error {
 	if params.Latency < 0 {
 		return fmt.Errorf("latency cannot be negative")
-	}
-
-	if params.Jitter < 0 {
-		return fmt.Errorf("jitter cannot be negative")
 	}
 
 	if params.PacketLoss < 0 || params.PacketLoss > 100 {
