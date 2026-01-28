@@ -1,6 +1,6 @@
-# Polygon Chain Chaos Engineering Scenarios
+# Chaos Engineering Scenarios
 
-This directory contains chaos engineering test scenarios specifically designed for Polygon Chain (Proof of Stake) networks running on Kurtosis. These scenarios follow O'Reilly Chaos Engineering principles to validate system resilience under various failure conditions.
+This directory contains chaos engineering test scenarios specifically designed for networks running on Kurtosis. These scenarios follow O'Reilly Chaos Engineering principles to validate system resilience under various failure conditions.
 
 ## Overview
 
