@@ -60,6 +60,11 @@ func (cw *ComcastWrapper) InjectFault(ctx context.Context, targetContainerID str
 		}
 	}
 
+	// Always run comcast --stop first to clear any existing rules
+	// This prevents "rules already setup" errors from previous failed/interrupted tests
+	stopCmd := []string{"comcast", "--stop"}
+	_, _ = cw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, stopCmd) // Ignore errors - may not have rules
+
 	// Build comcast command
 	cmd := cw.buildComcastCommand(params)
 

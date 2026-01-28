@@ -30,7 +30,6 @@ type FrameworkConfig struct {
 // KurtosisConfig contains Kurtosis connection settings
 type KurtosisConfig struct {
 	DefaultEnclave string `yaml:"default_enclave"`
-	APIURL         string `yaml:"api_url"`
 }
 
 // DockerConfig contains Docker settings for sidecar management
@@ -83,7 +82,6 @@ func DefaultConfig() *Config {
 		},
 		Kurtosis: KurtosisConfig{
 			DefaultEnclave: "polygon-chain",
-			APIURL:         "http://localhost:9710",
 		},
 		Docker: DockerConfig{
 			SidecarImage: "jhkimqd/chaos-utils:latest",

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -247,6 +248,12 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 		o.cleanupCoord.PrintAuditLog()
 	}()
 
+	// PRE-FLIGHT CLEANUP: Remove remnants from previous failed/interrupted tests
+	if err := o.preFlightCleanup(ctx); err != nil {
+		fmt.Printf("⚠ Pre-flight cleanup warning: %v\n", err)
+		// Don't fail the test, just warn
+	}
+
 	// State machine execution
 	var err error
 
@@ -446,6 +453,46 @@ func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 
 // executePrepare creates sidecars for all targets
 func (o *Orchestrator) executePrepare(ctx context.Context) error {
+	// Check and clean target namespaces before creating sidecars
+	fmt.Println("Checking target namespaces for remnant artifacts...")
+	for _, target := range o.targets {
+		// First check if there are tc rules
+		result, err := o.verifier.VerifyNamespaceClean(ctx, target.ContainerID)
+		if err != nil {
+			fmt.Printf("  ⚠ Failed to verify %s: %v\n", target.Name, err)
+			continue
+		}
+
+		if !result.Clean && result.TCRulesFound {
+			fmt.Printf("  Found remnant tc rules on %s, running comcast --stop...\n", target.Name)
+
+			// Create temporary sidecar to run comcast --stop
+			tempSidecarID, err := o.sidecarMgr.CreateSidecar(ctx, target.ContainerID)
+			if err != nil {
+				fmt.Printf("  ⚠ Failed to create temp sidecar for %s: %v\n", target.Name, err)
+				continue
+			}
+
+			// Execute comcast --stop in the sidecar
+			stopCmd := []string{"comcast", "--stop"}
+			_, execErr := o.dockerClient.ExecCommand(ctx, tempSidecarID, stopCmd)
+
+			// Destroy temp sidecar
+			removeOptions := types.ContainerRemoveOptions{
+				Force:         true,
+				RemoveVolumes: true,
+			}
+			o.dockerClient.ContainerRemove(ctx, tempSidecarID, removeOptions)
+
+			if execErr != nil {
+				fmt.Printf("  ⚠ Failed to run comcast --stop: %v\n", execErr)
+			} else {
+				fmt.Printf("  ✓ Cleaned tc rules on %s\n", target.Name)
+			}
+		}
+	}
+	fmt.Println("✓ Target namespace check complete")
+
 	fmt.Println("Preparing sidecars...")
 
 	for _, target := range o.targets {
@@ -713,6 +760,63 @@ func (o *Orchestrator) executeReport(ctx context.Context, result *TestResult) er
 func (o *Orchestrator) RequestStop() {
 	fmt.Println("Stop requested!")
 	o.stopRequested = true
+}
+
+// preFlightCleanup removes remnants from previous failed/interrupted tests
+func (o *Orchestrator) preFlightCleanup(ctx context.Context) error {
+	fmt.Println("🔍 Pre-flight check: Looking for remnants from previous tests...")
+
+	// Check for and remove any existing chaos-sidecar containers
+	listOptions := types.ContainerListOptions{
+		All: true, // Include stopped containers
+	}
+
+	allContainers, err := o.dockerClient.ContainerList(ctx, listOptions)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// Filter for chaos-sidecar containers
+	var sidecars []types.Container
+	for _, container := range allContainers {
+		for _, name := range container.Names {
+			// Docker names start with "/" prefix
+			if len(name) > 0 && len(name) > 14 && name[1:14] == "chaos-sidecar" {
+				sidecars = append(sidecars, container)
+				break
+			}
+		}
+	}
+
+	if len(sidecars) > 0 {
+		fmt.Printf("   Found %d remnant sidecar container(s) from previous tests\n", len(sidecars))
+		for _, container := range sidecars {
+			fmt.Printf("   Removing sidecar: %s...\n", container.ID[:12])
+			removeOptions := types.ContainerRemoveOptions{
+				Force:         true,
+				RemoveVolumes: true,
+			}
+			if err := o.dockerClient.ContainerRemove(ctx, container.ID, removeOptions); err != nil {
+				fmt.Printf("   ⚠ Failed to remove %s: %v\n", container.ID[:12], err)
+			} else {
+				fmt.Printf("   ✓ Removed %s\n", container.ID[:12])
+			}
+		}
+	}
+
+	// Check for and remove emergency stop file
+	emergencyFile := o.cfg.Emergency.StopFile
+	if _, err := os.Stat(emergencyFile); err == nil {
+		fmt.Printf("   Found emergency stop file: %s\n", emergencyFile)
+		if err := os.Remove(emergencyFile); err != nil {
+			fmt.Printf("   ⚠ Failed to remove emergency stop file: %v\n", err)
+		} else {
+			fmt.Println("   ✓ Removed emergency stop file")
+		}
+	}
+
+	fmt.Println("✓ Pre-flight check complete")
+	return nil
 }
 
 // GetCleanupSummary returns the cleanup summary from the coordinator

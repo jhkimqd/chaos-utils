@@ -5,7 +5,6 @@ framework:
 
 kurtosis:
   default_enclave: "polygon-chain"
-  api_url: "http://localhost:9710"
 
 docker:
   sidecar_image: "jhkimqd/chaos-utils:latest"
