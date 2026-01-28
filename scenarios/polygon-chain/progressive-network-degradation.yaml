@@ -4,7 +4,7 @@ metadata:
   name: progressive-network-degradation
   description: Gradually increase network issues to test system resilience under progressive stress
   tags: [network, latency, packet-loss, progressive, high-severity]
-  author: chaos-runner
+  author: DevTools
   version: "0.0.1"
 
 spec:

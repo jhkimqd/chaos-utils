@@ -4,7 +4,7 @@ metadata:
   name: split-brain-partition
   description: Create a network partition splitting validators into two groups
   tags: [network, partition, split-brain, critical-severity]
-  author: chaos-runner
+  author: DevTools
   version: "0.0.1"
 
 spec:

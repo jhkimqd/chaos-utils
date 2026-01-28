@@ -4,7 +4,7 @@ metadata:
   name: checkpoint-delay-cascade
   description: Simulate progressive delays in checkpoint submission from multiple validators
   tags: [latency, cascade, checkpoint, medium-severity]
-  author: chaos-runner
+  author: DevTools
   version: "0.0.1"
 
 spec:

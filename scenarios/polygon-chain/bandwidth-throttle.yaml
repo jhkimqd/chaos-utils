@@ -4,7 +4,7 @@ metadata:
   name: bandwidth-throttle-validator
   description: Throttle network bandwidth for a validator to simulate congested network
   tags: [network, bandwidth, performance, medium-severity]
-  author: chaos-runner
+  author: DevTools
   version: "0.0.1"
 
 spec:
