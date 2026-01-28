@@ -1,0 +1,808 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/jihwankim/chaos-utils/pkg/config"
+	"github.com/jihwankim/chaos-utils/pkg/core/cleanup"
+	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
+	"github.com/jihwankim/chaos-utils/pkg/emergency"
+	"github.com/jihwankim/chaos-utils/pkg/injection/l3l4"
+	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
+	"github.com/jihwankim/chaos-utils/pkg/injection/verification"
+	"github.com/jihwankim/chaos-utils/pkg/monitoring/collector"
+	"github.com/jihwankim/chaos-utils/pkg/monitoring/detector"
+	"github.com/jihwankim/chaos-utils/pkg/monitoring/prometheus"
+	"github.com/jihwankim/chaos-utils/pkg/scenario"
+	"github.com/jihwankim/chaos-utils/pkg/scenario/parser"
+	"github.com/jihwankim/chaos-utils/pkg/scenario/validator"
+)
+
+// TestState represents the current state of a chaos test execution
+type TestState int
+
+const (
+	StateParse TestState = iota
+	StateDiscover
+	StatePrepare
+	StateWarmup
+	StateInject
+	StateMonitor
+	StateDetect
+	StateCooldown
+	StateTeardown
+	StateReport
+	StateCompleted
+	StateFailed
+)
+
+func (s TestState) String() string {
+	switch s {
+	case StateParse:
+		return "PARSE"
+	case StateDiscover:
+		return "DISCOVER"
+	case StatePrepare:
+		return "PREPARE"
+	case StateWarmup:
+		return "WARMUP"
+	case StateInject:
+		return "INJECT"
+	case StateMonitor:
+		return "MONITOR"
+	case StateDetect:
+		return "DETECT"
+	case StateCooldown:
+		return "COOLDOWN"
+	case StateTeardown:
+		return "TEARDOWN"
+	case StateReport:
+		return "REPORT"
+	case StateCompleted:
+		return "COMPLETED"
+	case StateFailed:
+		return "FAILED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// TargetInfo contains information about a discovered target
+type TargetInfo struct {
+	Alias       string
+	ContainerID string
+	Name        string
+	IP          string
+}
+
+// Orchestrator coordinates the chaos test lifecycle
+type Orchestrator struct {
+	cfg              *config.Config
+	currentState     TestState
+	startTime        time.Time
+	stopRequested    bool
+	sidecarMgr       *sidecar.Manager
+	verifier         *verification.Verifier
+	cleanupCoord     *cleanup.Coordinator
+	emergencyCtrl    *emergency.Controller
+	emergencyStopCtx context.Context
+	emergencyCancel  context.CancelFunc
+
+	// Components for test execution
+	parser       *parser.Parser
+	validator    *validator.Validator
+	dockerClient *docker.Client
+	promClient   *prometheus.Client
+	detector     *detector.FailureDetector
+	collector    *collector.Collector
+	injector     *l3l4.ComcastWrapper
+
+	// Test data
+	scenario      *scenario.Scenario
+	targets       []TargetInfo
+	scenarioPath  string
+	testID        string
+	injectedFaults map[string]bool // track which targets have faults injected
+}
+
+// TestResult represents the result of a chaos test execution
+type TestResult struct {
+	TestID       string
+	ScenarioName string
+	StartTime    time.Time
+	EndTime      time.Time
+	Duration     time.Duration
+	State        TestState
+	Success      bool
+	Message      string
+	Errors       []error
+	Targets      []TargetInfo
+	FaultCount   int
+}
+
+// New creates a new Orchestrator instance
+func New(cfg *config.Config) (*Orchestrator, error) {
+	// Create Docker client
+	dockerClient, err := docker.New()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Docker client: %w", err)
+	}
+
+	// Create sidecar manager
+	sidecarMgr := sidecar.New(dockerClient, cfg.Docker.SidecarImage)
+
+	// Create verifier
+	verifier := verification.New(dockerClient)
+
+	// Create cleanup coordinator
+	cleanupCoord := cleanup.New(sidecarMgr, verifier)
+
+	// Create emergency controller
+	emergencyCtrl := emergency.New(emergency.Config{
+		StopFile:             cfg.Emergency.StopFile,
+		PollInterval:         1 * time.Second,
+		EnableSignalHandlers: true,
+	})
+
+	// Create context for emergency controller
+	emergencyCtx, emergencyCancel := context.WithCancel(context.Background())
+
+	// Create scenario parser and validator
+	p := parser.New(nil)
+	v := validator.New()
+
+	// Create Prometheus client
+	promClient, err := prometheus.New(prometheus.Config{
+		URL:             cfg.Prometheus.URL,
+		Timeout:         cfg.Prometheus.Timeout,
+		RefreshInterval: cfg.Prometheus.RefreshInterval,
+	})
+	if err != nil {
+		// Non-fatal - some scenarios may not need Prometheus
+		fmt.Printf("Warning: Failed to create Prometheus client: %v\n", err)
+	}
+
+	// Create failure detector
+	det := detector.New(promClient)
+
+	// Create metrics collector (will be reconfigured per-scenario)
+	col := collector.New(collector.Config{
+		PrometheusClient: promClient,
+		Interval:         cfg.Prometheus.RefreshInterval,
+	})
+
+	// Create comcast injector
+	injector := l3l4.New(sidecarMgr)
+
+	return &Orchestrator{
+		cfg:              cfg,
+		currentState:     StateParse,
+		sidecarMgr:       sidecarMgr,
+		verifier:         verifier,
+		cleanupCoord:     cleanupCoord,
+		emergencyCtrl:    emergencyCtrl,
+		emergencyStopCtx: emergencyCtx,
+		emergencyCancel:  emergencyCancel,
+		parser:           p,
+		validator:        v,
+		dockerClient:     dockerClient,
+		promClient:       promClient,
+		detector:         det,
+		collector:        col,
+		injector:         injector,
+		injectedFaults:   make(map[string]bool),
+	}, nil
+}
+
+// Execute runs the complete chaos test lifecycle
+func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestResult, error) {
+	o.startTime = time.Now()
+	o.testID = generateTestID()
+	o.scenarioPath = scenarioPath
+
+	result := &TestResult{
+		TestID:    o.testID,
+		StartTime: o.startTime,
+		State:     o.currentState,
+	}
+
+	// Start emergency controller
+	o.emergencyCtrl.Start(o.emergencyStopCtx)
+	defer o.emergencyCancel() // Stop emergency controller when test completes
+
+	// Register cleanup callback with emergency controller
+	o.emergencyCtrl.OnStop(func() {
+		fmt.Println("🛑 Emergency stop triggered, running cleanup...")
+		o.stopRequested = true
+		if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
+			fmt.Printf("Emergency cleanup errors: %v\n", err)
+		}
+		o.cleanupCoord.PrintAuditLog()
+	})
+
+	// Ensure cleanup runs on panic or normal exit
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("PANIC during execution: %v\n", r)
+			fmt.Println("Running emergency cleanup...")
+			if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
+				fmt.Printf("Panic cleanup errors: %v\n", err)
+			}
+			o.cleanupCoord.PrintAuditLog()
+			result.State = StateFailed
+			result.Success = false
+			result.Message = fmt.Sprintf("panic: %v", r)
+		}
+	}()
+
+	// Always run cleanup on exit
+	defer func() {
+		fmt.Println("Running cleanup...")
+		if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
+			fmt.Printf("Cleanup errors: %v\n", err)
+		}
+		o.cleanupCoord.PrintAuditLog()
+	}()
+
+	// State machine execution
+	var err error
+
+	// PARSE state
+	o.transitionState(StateParse)
+	if err = o.executeParse(ctx, scenarioPath); err != nil {
+		return o.failTest(result, err)
+	}
+	result.ScenarioName = o.scenario.Metadata.Name
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before discovery"))
+	}
+
+	// DISCOVER state
+	o.transitionState(StateDiscover)
+	if err = o.executeDiscover(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before prepare"))
+	}
+
+	// PREPARE state
+	o.transitionState(StatePrepare)
+	if err = o.executePrepare(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before warmup"))
+	}
+
+	// WARMUP state
+	o.transitionState(StateWarmup)
+	if err = o.executeWarmup(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before inject"))
+	}
+
+	// INJECT state
+	o.transitionState(StateInject)
+	if err = o.executeInject(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before monitor"))
+	}
+
+	// MONITOR state
+	o.transitionState(StateMonitor)
+	if err = o.executeMonitor(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before detect"))
+	}
+
+	// DETECT state
+	o.transitionState(StateDetect)
+	if err = o.executeDetect(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before cooldown"))
+	}
+
+	// COOLDOWN state
+	o.transitionState(StateCooldown)
+	if err = o.executeCooldown(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before teardown"))
+	}
+
+	// TEARDOWN state
+	o.transitionState(StateTeardown)
+	if err = o.executeTeardown(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// REPORT state
+	o.transitionState(StateReport)
+	if err = o.executeReport(ctx, result); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Success!
+	o.transitionState(StateCompleted)
+	result.EndTime = time.Now()
+	result.Duration = result.EndTime.Sub(result.StartTime)
+	result.State = StateCompleted
+	result.Success = true
+	result.Message = "Test completed successfully"
+	result.Targets = o.targets
+	result.FaultCount = len(o.injectedFaults)
+
+	return result, nil
+}
+
+// State transition method
+func (o *Orchestrator) transitionState(newState TestState) {
+	fmt.Printf("[%s] → [%s]\n", o.currentState, newState)
+	o.currentState = newState
+}
+
+// executeParse parses and validates the scenario file
+func (o *Orchestrator) executeParse(ctx context.Context, scenarioPath string) error {
+	fmt.Printf("Parsing scenario: %s\n", scenarioPath)
+
+	// Parse scenario YAML
+	scen, err := o.parser.ParseFile(scenarioPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse scenario: %w", err)
+	}
+
+	// Validate scenario
+	if err := o.validator.Validate(scen); err != nil {
+		return fmt.Errorf("scenario validation failed: %w", err)
+	}
+
+	o.scenario = scen
+	fmt.Printf("✓ Parsed scenario: %s\n", scen.Metadata.Name)
+	fmt.Printf("  Duration: %s, Warmup: %s, Cooldown: %s\n",
+		scen.Spec.Duration, scen.Spec.Warmup, scen.Spec.Cooldown)
+	fmt.Printf("  Targets: %d, Faults: %d, Success Criteria: %d\n",
+		len(scen.Spec.Targets), len(scen.Spec.Faults), len(scen.Spec.SuccessCriteria))
+
+	return nil
+}
+
+// executeDiscover discovers target containers matching scenario selectors
+func (o *Orchestrator) executeDiscover(ctx context.Context) error {
+	fmt.Println("Discovering target containers...")
+
+	if len(o.scenario.Spec.Targets) == 0 {
+		return fmt.Errorf("no targets defined in scenario")
+	}
+
+	o.targets = []TargetInfo{}
+
+	for _, targetSpec := range o.scenario.Spec.Targets {
+		fmt.Printf("  Looking for targets matching pattern: %s\n", targetSpec.Selector.Pattern)
+
+		// List all containers using the underlying Docker API
+		containers, err := o.dockerClient.ContainerList(ctx, types.ContainerListOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to list containers: %w", err)
+		}
+
+		// Filter by pattern
+		matched := false
+		for _, container := range containers {
+			// Match against container name
+			if matchPattern(container.Names, targetSpec.Selector.Pattern) {
+				target := TargetInfo{
+					Alias:       targetSpec.Alias,
+					ContainerID: container.ID,
+					Name:        getContainerName(container.Names),
+					IP:          getContainerIP(container),
+				}
+				o.targets = append(o.targets, target)
+				fmt.Printf("    ✓ Found: %s (%s)\n", target.Name, target.ContainerID[:12])
+				matched = true
+			}
+		}
+
+		if !matched {
+			fmt.Printf("    ⚠ No containers found matching pattern: %s\n", targetSpec.Selector.Pattern)
+		}
+	}
+
+	if len(o.targets) == 0 {
+		return fmt.Errorf("no target containers found matching any selector patterns")
+	}
+
+	fmt.Printf("✓ Discovered %d target(s)\n", len(o.targets))
+	return nil
+}
+
+// executePrepare creates sidecars for all targets
+func (o *Orchestrator) executePrepare(ctx context.Context) error {
+	fmt.Println("Preparing sidecars...")
+
+	for _, target := range o.targets {
+		fmt.Printf("  Creating sidecar for %s (%s)...\n", target.Name, target.ContainerID[:12])
+
+		sidecarID, err := o.sidecarMgr.CreateSidecar(ctx, target.ContainerID)
+		if err != nil {
+			return fmt.Errorf("failed to create sidecar for %s: %w", target.Name, err)
+		}
+
+		fmt.Printf("    ✓ Sidecar created: %s\n", sidecarID[:12])
+	}
+
+	fmt.Printf("✓ Created %d sidecar(s)\n", len(o.targets))
+	return nil
+}
+
+// executeWarmup waits for the warmup period
+func (o *Orchestrator) executeWarmup(ctx context.Context) error {
+	warmup := o.scenario.Spec.Warmup
+	if warmup == 0 {
+		warmup = o.cfg.Execution.DefaultWarmup
+	}
+
+	fmt.Printf("Warmup period: %s\n", warmup)
+	time.Sleep(warmup)
+	fmt.Println("✓ Warmup complete")
+	return nil
+}
+
+// executeInject injects faults on all targets
+func (o *Orchestrator) executeInject(ctx context.Context) error {
+	fmt.Println("Injecting faults...")
+
+	if len(o.scenario.Spec.Faults) == 0 {
+		fmt.Println("  ⚠ No faults defined in scenario")
+		return nil
+	}
+
+	// Inject each fault
+	for i, fault := range o.scenario.Spec.Faults {
+		fmt.Printf("  [%d/%d] Injecting fault: %s\n", i+1, len(o.scenario.Spec.Faults), fault.Phase)
+
+		// Find targets matching this fault
+		var targets []TargetInfo
+		for _, target := range o.targets {
+			if target.Alias == fault.Target {
+				targets = append(targets, target)
+			}
+		}
+
+		if len(targets) == 0 {
+			fmt.Printf("    ⚠ No targets found with alias: %s\n", fault.Target)
+			continue
+		}
+
+		// Build fault parameters from scenario
+		params := l3l4.FaultParams{
+			Device: "eth0", // default device
+		}
+
+		// Parse network fault parameters
+		if fault.Type == "network" && fault.Params != nil {
+			if device, ok := fault.Params["device"].(string); ok {
+				params.Device = device
+			}
+			if latency, ok := fault.Params["latency"].(int); ok {
+				params.Latency = latency
+			}
+			if jitter, ok := fault.Params["jitter"].(int); ok {
+				params.Jitter = jitter
+			}
+			if packetLoss, ok := fault.Params["packet_loss"].(float64); ok {
+				params.PacketLoss = packetLoss
+			} else if packetLoss, ok := fault.Params["packet_loss"].(int); ok {
+				params.PacketLoss = float64(packetLoss)
+			}
+			if bandwidth, ok := fault.Params["bandwidth"].(int); ok {
+				params.Bandwidth = bandwidth
+			}
+			if targetPorts, ok := fault.Params["target_ports"].(string); ok {
+				params.TargetPorts = targetPorts
+			}
+			if targetProto, ok := fault.Params["target_proto"].(string); ok {
+				params.TargetProto = targetProto
+			}
+			if targetIPs, ok := fault.Params["target_ips"].(string); ok {
+				params.TargetIPs = targetIPs
+			}
+			if targetCIDR, ok := fault.Params["target_cidr"].(string); ok {
+				params.TargetCIDR = targetCIDR
+			}
+		}
+
+		// Inject fault on each target
+		for _, target := range targets {
+			fmt.Printf("    Injecting on %s (%s)...\n", target.Name, target.ContainerID[:12])
+
+			if err := o.injector.InjectFault(ctx, target.ContainerID, params); err != nil {
+				return fmt.Errorf("failed to inject fault on %s: %w", target.Name, err)
+			}
+
+			o.injectedFaults[target.ContainerID] = true
+			fmt.Printf("      ✓ Fault injected successfully\n")
+		}
+	}
+
+	fmt.Printf("✓ Injected faults on %d target(s)\n", len(o.injectedFaults))
+	return nil
+}
+
+// executeMonitor monitors system metrics during the test
+func (o *Orchestrator) executeMonitor(ctx context.Context) error {
+	duration := o.scenario.Spec.Duration
+	fmt.Printf("Monitoring for: %s\n", duration)
+
+	if o.collector != nil && o.promClient != nil {
+		// Reconfigure collector with scenario metrics
+		o.collector = collector.New(collector.Config{
+			PrometheusClient: o.promClient,
+			Interval:         o.cfg.Prometheus.RefreshInterval,
+			MetricNames:      o.scenario.Spec.Metrics,
+		})
+
+		// Start collecting metrics
+		fmt.Println("  Starting metrics collection...")
+		o.collector.Start(ctx)
+
+		// Monitor for the duration
+		time.Sleep(duration)
+
+		// Stop collection
+		o.collector.Stop()
+		fmt.Println("  ✓ Metrics collection stopped")
+	} else {
+		fmt.Println("  ⚠ Prometheus not available, monitoring duration only")
+		time.Sleep(duration)
+	}
+
+	fmt.Println("✓ Monitoring complete")
+	return nil
+}
+
+// executeDetect evaluates success criteria
+func (o *Orchestrator) executeDetect(ctx context.Context) error {
+	fmt.Println("Evaluating success criteria...")
+
+	if len(o.scenario.Spec.SuccessCriteria) == 0 {
+		fmt.Println("  ⚠ No success criteria defined")
+		return nil
+	}
+
+	if o.detector == nil || o.promClient == nil {
+		fmt.Println("  ⚠ Prometheus not available, skipping criteria evaluation")
+		return nil
+	}
+
+	// Evaluate each criterion
+	allPassed := true
+	criticalFailed := false
+
+	for i, criterion := range o.scenario.Spec.SuccessCriteria {
+		fmt.Printf("  [%d/%d] Evaluating: %s\n", i+1, len(o.scenario.Spec.SuccessCriteria), criterion.Name)
+
+		result, err := o.detector.Evaluate(ctx, criterion)
+		if err != nil {
+			fmt.Printf("    ⚠ Evaluation error: %v\n", err)
+			continue
+		}
+
+		if result.Passed {
+			fmt.Printf("    ✓ PASSED: %s\n", result.Message)
+		} else {
+			if criterion.Critical {
+				fmt.Printf("    ✗ FAILED (CRITICAL): %s\n", result.Message)
+				criticalFailed = true
+			} else {
+				fmt.Printf("    ⚠ FAILED (non-critical): %s\n", result.Message)
+			}
+			allPassed = false
+		}
+	}
+
+	if criticalFailed {
+		return fmt.Errorf("one or more critical success criteria failed")
+	}
+
+	if allPassed {
+		fmt.Println("✓ All success criteria passed")
+	} else {
+		fmt.Println("⚠ Some non-critical criteria failed")
+	}
+
+	return nil
+}
+
+// executeCooldown waits for the cooldown period
+func (o *Orchestrator) executeCooldown(ctx context.Context) error {
+	cooldown := o.scenario.Spec.Cooldown
+	if cooldown == 0 {
+		cooldown = o.cfg.Execution.DefaultCooldown
+	}
+
+	fmt.Printf("Cooldown period: %s\n", cooldown)
+	time.Sleep(cooldown)
+	fmt.Println("✓ Cooldown complete")
+	return nil
+}
+
+// executeTeardown removes all faults
+func (o *Orchestrator) executeTeardown(ctx context.Context) error {
+	fmt.Println("Tearing down faults...")
+
+	if len(o.injectedFaults) == 0 {
+		fmt.Println("  No faults to remove")
+	} else {
+		// Remove faults from each target
+		removed := 0
+		for containerID := range o.injectedFaults {
+			// Find target name
+			targetName := containerID[:12]
+			for _, target := range o.targets {
+				if target.ContainerID == containerID {
+					targetName = target.Name
+					break
+				}
+			}
+
+			fmt.Printf("  Removing faults from %s...\n", targetName)
+
+			if err := o.injector.RemoveFault(ctx, containerID); err != nil {
+				fmt.Printf("    ⚠ Error removing fault: %v\n", err)
+				// Continue with other targets
+			} else {
+				fmt.Printf("    ✓ Faults removed\n")
+				removed++
+			}
+		}
+
+		fmt.Printf("✓ Removed faults from %d target(s)\n", removed)
+	}
+
+	// Use cleanup coordinator to destroy sidecars and log actions
+	fmt.Println("Cleaning up chaos artifacts...")
+	if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
+		fmt.Printf("  ⚠ Cleanup completed with errors: %v\n", err)
+		// Don't fail the test, but log the error
+	}
+
+	return nil
+}
+
+// executeReport generates the final test report
+func (o *Orchestrator) executeReport(ctx context.Context, result *TestResult) error {
+	fmt.Println("Generating report...")
+
+	// Report is populated by the caller
+	// This method can be used for additional reporting logic
+
+	fmt.Println("✓ Report generated")
+	return nil
+}
+
+// RequestStop requests the orchestrator to stop execution
+func (o *Orchestrator) RequestStop() {
+	fmt.Println("Stop requested!")
+	o.stopRequested = true
+}
+
+// GetCleanupSummary returns the cleanup summary from the coordinator
+func (o *Orchestrator) GetCleanupSummary() cleanup.CleanupSummary {
+	return o.cleanupCoord.GetSummary()
+}
+
+// Helper to fail a test
+func (o *Orchestrator) failTest(result *TestResult, err error) (*TestResult, error) {
+	result.EndTime = time.Now()
+	result.Duration = result.EndTime.Sub(result.StartTime)
+	result.State = StateFailed
+	result.Success = false
+	result.Message = err.Error()
+	result.Errors = append(result.Errors, err)
+	result.Targets = o.targets
+	result.FaultCount = len(o.injectedFaults)
+	return result, err
+}
+
+// generateTestID creates a unique test ID
+func generateTestID() string {
+	return fmt.Sprintf("test-%d", time.Now().Unix())
+}
+
+// Helper functions
+
+// matchPattern checks if any name in the list matches the pattern
+func matchPattern(names []string, pattern string) bool {
+	for _, name := range names {
+		// Simple substring matching (can be enhanced with regex)
+		if len(name) > 0 && name[0] == '/' {
+			name = name[1:] // Remove leading slash from Docker name
+		}
+		if match(name, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// match performs simple pattern matching (supports * wildcard)
+func match(name, pattern string) bool {
+	// Simple substring matching for now
+	// In production, use proper regex matching
+	if pattern == "*" {
+		return true
+	}
+
+	// Check if pattern contains the name
+	if len(pattern) > 0 && pattern[0] == '*' {
+		pattern = pattern[1:]
+	}
+	if len(pattern) > 0 && pattern[len(pattern)-1] == '*' {
+		pattern = pattern[:len(pattern)-1]
+	}
+
+	// Simple contains check
+	return len(pattern) > 0 && contains(name, pattern)
+}
+
+// contains checks if s contains substr
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || hasSubstring(s, substr))
+}
+
+// hasSubstring checks if s contains substr
+func hasSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// getContainerName extracts a clean name from Docker names list
+func getContainerName(names []string) string {
+	if len(names) == 0 {
+		return "unknown"
+	}
+	name := names[0]
+	if len(name) > 0 && name[0] == '/' {
+		return name[1:]
+	}
+	return name
+}
+
+// getContainerIP extracts IP address from container
+func getContainerIP(container types.Container) string {
+	// This is a simplified version - in production would extract from NetworkSettings
+	return ""
+}

@@ -1,0 +1,65 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: latency-spike-l1-rpc
+  description: Simulate latency spike on L1 RPC communication
+  tags: [network, latency, dependency, l1]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target the L1 Geth RPC node
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "el-1-geth"
+      alias: l1_rpc_node
+
+  duration: 10m
+  warmup: 1m
+  cooldown: 1m
+
+  # Add 500ms latency with 100ms jitter to all RPC traffic
+  faults:
+    - phase: slow_l1_rpc
+      description: Add significant latency to L1 RPC responses
+      target: l1_rpc_node
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        jitter: 100
+        target_ports: "8545,8546"
+        target_proto: tcp
+
+  success_criteria:
+    - name: bor_continues_producing
+      description: Bor (L2 execution) continues producing blocks
+      type: prometheus
+      query: increase(chain_head_block[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: heimdall_continues
+      description: Heimdall (L2 consensus) continues operating
+      type: prometheus
+      query: increase(cometbft_consensus_height[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 10m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - rpc_duration_eth_blockNumber_success

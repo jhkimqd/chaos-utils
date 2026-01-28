@@ -1,0 +1,99 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: split-brain-partition
+  description: Create a network partition splitting validators into two groups
+  tags: [network, partition, split-brain, critical-severity]
+  author: chaos-runner
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: partition_group_a
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: partition_group_b
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Partition group A from group B
+    - phase: partition_a_from_b
+      description: Block traffic from validator 1 to validator 2
+      target: partition_group_a
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "26656,26657"
+        target_proto: tcp,udp
+        # Note: In production, you'd specify target IPs/CIDR
+
+    # Partition group B from group A (bidirectional)
+    - phase: partition_b_from_a
+      description: Block traffic from validator 2 to validator 1
+      target: partition_group_b
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "26656,26657"
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: Network must continue with majority
+    - name: network_survives_partition
+      description: Network with majority continues block production
+      type: prometheus
+      query: rate(bor_blockchain_head_block[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Critical: Consensus continues
+    - name: consensus_continues
+      description: Heimdall consensus progresses with majority
+      type: prometheus
+      query: rate(heimdall_consensus_height[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Expected: Partitioned validators lose consensus
+    - name: partitioned_validators_isolated
+      description: Partitioned validators lose peer connections
+      type: prometheus
+      query: min(heimdall_p2p_peers{service=~"l2-cl-[12]-heimdall-v2-validator"})
+      threshold: "< 3"
+      critical: false
+
+    # Critical: Checkpoints continue from majority
+    - name: checkpoints_from_majority
+      description: Checkpoint submission continues from majority partition
+      type: prometheus
+      query: rate(heimdall_checkpoint_submitted_total[5m])
+      threshold: "> 0"
+      critical: true
+
+    # Expected: RPC remains functional
+    - name: rpc_functional
+      description: RPC endpoints remain responsive
+      type: prometheus
+      query: histogram_quantile(0.95, rate(bor_rpc_duration_seconds_bucket[5m]))
+      threshold: "< 5.0"
+      critical: false
+
+  metrics:
+    - bor_blockchain_head_block
+    - heimdall_consensus_height
+    - heimdall_checkpoint_submitted_total
+    - heimdall_p2p_peers
+    - bor_p2p_peers
+    - heimdall_validator_voting_power

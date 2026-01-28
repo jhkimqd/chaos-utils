@@ -1,0 +1,70 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bandwidth-throttle-validator
+  description: Throttle network bandwidth for a validator to simulate congested network
+  tags: [network, bandwidth, performance, medium-severity]
+  author: chaos-runner
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: throttled_validator
+
+  duration: 6m
+  warmup: 30s
+  cooldown: 30s
+
+  faults:
+    - phase: bandwidth_limit
+      description: Limit bandwidth to 1 Mbps to simulate congested network
+      target: throttled_validator
+      type: network
+      params:
+        device: eth0
+        bandwidth: 1000  # 1 Mbps in kbps
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: Block production must continue
+    - name: block_production_continues
+      description: Network continues producing blocks
+      type: prometheus
+      query: rate(bor_blockchain_head_block[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Critical: Validator stays connected
+    - name: validator_maintains_peers
+      description: Validator maintains P2P connections
+      type: prometheus
+      query: heimdall_p2p_peers{service="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "> 0"
+      critical: true
+
+    # Non-critical: Checkpoint submission may be slower
+    - name: checkpoints_submitted
+      description: Checkpoints continue to be submitted
+      type: prometheus
+      query: rate(heimdall_checkpoint_submitted_total[5m])
+      threshold: "> 0"
+      critical: false
+
+    # Non-critical: Peer count may decrease slightly
+    - name: peer_count_stable
+      description: Peer count remains relatively stable
+      type: prometheus
+      query: bor_p2p_peers
+      threshold: "> 0"
+      critical: false
+
+  metrics:
+    - bor_blockchain_head_block
+    - heimdall_consensus_height
+    - heimdall_checkpoint_submitted_total
+    - heimdall_p2p_peers
+    - bor_p2p_peers

@@ -1,13 +1,12 @@
 # docker build . --tag jhkimqd/chaos-utils:latest --file ./Dockerfile.chaos-utils
-FROM golang:1.23 AS builder
+FROM golang:1.24 AS builder
 
-WORKDIR /opt
-COPY go.mod ./
-RUN go mod download
-
-COPY . .
-RUN make clean \
-    && make default
+# Build comcast from the official tylertreat/Comcast repository
+WORKDIR /tmp/comcast
+RUN apt-get update && apt-get install -y git && \
+    git clone https://github.com/tylertreat/Comcast.git . && \
+    go mod download && \
+    go build -o /usr/local/bin/comcast
 
 FROM ubuntu:22.04
 
@@ -36,7 +35,8 @@ RUN wget -O- https://apt.envoyproxy.io/signing.key | gpg --dearmor -o /etc/apt/k
 
 WORKDIR /opt
 
-COPY --from=builder /opt/bin/comcast /usr/local/bin/comcast
+# Copy comcast binary from builder
+COPY --from=builder /usr/local/bin/comcast /usr/local/bin/comcast
 
 # Note: This container needs to run with --privileged or --cap-add=NET_ADMIN
 # to modify network settings

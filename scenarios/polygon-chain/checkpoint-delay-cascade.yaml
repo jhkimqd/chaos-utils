@@ -1,0 +1,89 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: checkpoint-delay-cascade
+  description: Simulate progressive delays in checkpoint submission from multiple validators
+  tags: [latency, cascade, checkpoint, medium-severity]
+  author: chaos-runner
+  version: "0.0.1"
+
+spec:
+  # Target multiple validators to simulate cascading delays
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-.*-heimdall.*validator"
+      alias: all_validators
+
+  duration: 8m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Phase 1: Add moderate latency to first validator
+    - phase: initial_delay
+      description: Add 200ms latency to first validator's checkpoint communication
+      target: all_validators
+      type: network
+      params:
+        device: eth0
+        latency: 200
+        jitter: 50
+        target_ports: "26656,26657,1317"
+        target_proto: tcp,udp
+      duration: 3m
+
+    # Phase 2: Increase latency progressively
+    - phase: progressive_delay
+      description: Increase latency to 500ms to simulate cascade effect
+      target: all_validators
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        jitter: 100
+        target_ports: "26656,26657,1317"
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 3m
+
+  success_criteria:
+    # Critical: Network must continue producing blocks
+    - name: block_production_continues
+      description: Bor continues producing blocks despite checkpoint delays
+      type: prometheus
+      query: rate(bor_blockchain_head_block[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Critical: Consensus must progress
+    - name: heimdall_consensus_progresses
+      description: Heimdall consensus height continues to increase
+      type: prometheus
+      query: rate(heimdall_consensus_height[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Non-critical: Checkpoint submission may be delayed but should eventually succeed
+    - name: checkpoints_eventually_submitted
+      description: Checkpoints are submitted despite delays
+      type: prometheus
+      query: rate(heimdall_checkpoint_submitted_total[10m])
+      threshold: "> 0"
+      critical: false
+
+    # Non-critical: RPC latency may increase
+    - name: rpc_latency_degraded
+      description: RPC latency increases but remains functional
+      type: prometheus
+      query: histogram_quantile(0.95, rate(bor_rpc_duration_seconds_bucket[5m]))
+      threshold: "< 10.0"
+      critical: false
+
+  metrics:
+    - bor_blockchain_head_block
+    - heimdall_consensus_height
+    - heimdall_checkpoint_submitted_total
+    - bor_rpc_duration_seconds
+    - heimdall_p2p_peers

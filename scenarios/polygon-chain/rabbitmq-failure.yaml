@@ -1,0 +1,64 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rabbitmq-total-failure
+  description: Simulate complete RabbitMQ messaging failure
+  tags: [network, dependency, messaging, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target the RabbitMQ messaging node
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "rabbitmq"
+      alias: rabbitmq_node
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 30s
+
+  # Block all RabbitMQ traffic (AMQP and Management)
+  faults:
+    - phase: total_rabbitmq_failure
+      description: Simulate complete RabbitMQ unavailability
+      target: rabbitmq_node
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "5672,15672"
+        target_proto: tcp
+
+  success_criteria:
+    - name: bor_resilient
+      description: Bor continues producing blocks despite messaging issues
+      type: prometheus
+      query: increase(chain_head_block[1m])
+      threshold: "> 0"
+      window: 3m
+      critical: true
+
+    - name: heimdall_resilient
+      description: Heimdall consensus continues despite messaging issues
+      type: prometheus
+      query: increase(cometbft_consensus_height[1m])
+      threshold: "> 0"
+      window: 3m
+      critical: true
+
+    - name: checkpoint_api_working
+      description: Checkpoint API may be affected but should still respond
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[3m])
+      threshold: ">= 0"
+      window: 3m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - cometbft_consensus_validators

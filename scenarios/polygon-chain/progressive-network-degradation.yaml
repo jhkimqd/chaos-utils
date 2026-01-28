@@ -1,0 +1,110 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: progressive-network-degradation
+  description: Gradually increase network issues to test system resilience under progressive stress
+  tags: [network, latency, packet-loss, progressive, high-severity]
+  author: chaos-runner
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: degraded_validator
+
+  duration: 12m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Phase 1: Light latency
+    - phase: light_latency
+      description: Add 100ms latency
+      target: degraded_validator
+      type: network
+      params:
+        device: eth0
+        latency: 100
+        jitter: 20
+        target_proto: tcp,udp
+      duration: 3m
+
+    # Phase 2: Moderate latency + packet loss
+    - phase: moderate_degradation
+      description: Increase latency to 300ms and add 5% packet loss
+      target: degraded_validator
+      type: network
+      params:
+        device: eth0
+        latency: 300
+        jitter: 50
+        packet_loss: 5
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 3m
+
+    # Phase 3: Heavy degradation
+    - phase: heavy_degradation
+      description: Increase to 500ms latency and 10% packet loss
+      target: degraded_validator
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        jitter: 100
+        packet_loss: 10
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 6m
+
+  success_criteria:
+    # Critical: Network resilience - other validators must continue
+    - name: network_continues_producing_blocks
+      description: Overall network continues block production
+      type: prometheus
+      query: rate(bor_blockchain_head_block[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Critical: Consensus must progress
+    - name: consensus_progresses
+      description: Heimdall consensus continues
+      type: prometheus
+      query: rate(heimdall_consensus_height[1m])
+      threshold: "> 0"
+      critical: true
+
+    # Expected: Degraded validator loses peers
+    - name: degraded_validator_loses_peers
+      description: Affected validator experiences peer loss
+      type: prometheus
+      query: heimdall_p2p_peers{service="l2-cl-2-heimdall-v2-bor-validator"}
+      threshold: "< 5"
+      critical: false
+
+    # Expected: Checkpoint submission from degraded validator stops
+    - name: degraded_validator_stops_checkpoints
+      description: Affected validator stops submitting checkpoints
+      type: prometheus
+      query: rate(heimdall_checkpoint_submitted_total{service="l2-cl-2-heimdall-v2-bor-validator"}[5m])
+      threshold: "== 0"
+      critical: false
+
+    # Non-critical: Overall checkpoint rate may decrease
+    - name: overall_checkpoints_continue
+      description: Network checkpoint submission continues from healthy validators
+      type: prometheus
+      query: rate(heimdall_checkpoint_submitted_total[5m])
+      threshold: "> 0"
+      critical: false
+
+  metrics:
+    - bor_blockchain_head_block
+    - heimdall_consensus_height
+    - heimdall_checkpoint_submitted_total
+    - heimdall_p2p_peers
+    - bor_p2p_peers
+    - bor_rpc_duration_seconds
