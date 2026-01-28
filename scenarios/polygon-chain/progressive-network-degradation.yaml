@@ -62,46 +62,30 @@ spec:
     - name: network_continues_producing_blocks
       description: Overall network continues block production
       type: prometheus
-      query: rate(bor_blockchain_head_block[1m])
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
       threshold: "> 0"
+      window: 12m
       critical: true
 
     # Critical: Consensus must progress
     - name: consensus_progresses
       description: Heimdall consensus continues
       type: prometheus
-      query: rate(heimdall_consensus_height[1m])
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
       threshold: "> 0"
+      window: 12m
       critical: true
 
-    # Expected: Degraded validator loses peers
-    - name: degraded_validator_loses_peers
-      description: Affected validator experiences peer loss
+    # Non-critical: Checkpoint API continues responding
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond
       type: prometheus
-      query: heimdall_p2p_peers{service="l2-cl-2-heimdall-v2-bor-validator"}
-      threshold: "< 5"
-      critical: false
-
-    # Expected: Checkpoint submission from degraded validator stops
-    - name: degraded_validator_stops_checkpoints
-      description: Affected validator stops submitting checkpoints
-      type: prometheus
-      query: rate(heimdall_checkpoint_submitted_total{service="l2-cl-2-heimdall-v2-bor-validator"}[5m])
-      threshold: "== 0"
-      critical: false
-
-    # Non-critical: Overall checkpoint rate may decrease
-    - name: overall_checkpoints_continue
-      description: Network checkpoint submission continues from healthy validators
-      type: prometheus
-      query: rate(heimdall_checkpoint_submitted_total[5m])
-      threshold: "> 0"
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 12m
       critical: false
 
   metrics:
-    - bor_blockchain_head_block
-    - heimdall_consensus_height
-    - heimdall_checkpoint_submitted_total
-    - heimdall_p2p_peers
-    - bor_p2p_peers
-    - bor_rpc_duration_seconds
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total

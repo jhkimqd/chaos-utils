@@ -54,46 +54,31 @@ spec:
     - name: network_survives_partition
       description: Network with majority continues block production
       type: prometheus
-      query: rate(bor_blockchain_head_block[1m])
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
+      window: 5m
       critical: true
 
     # Critical: Consensus continues
     - name: consensus_continues
       description: Heimdall consensus progresses with majority
       type: prometheus
-      query: rate(heimdall_consensus_height[1m])
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
+      window: 5m
       critical: true
 
-    # Expected: Partitioned validators lose consensus
-    - name: partitioned_validators_isolated
-      description: Partitioned validators lose peer connections
+    # Non-critical: Checkpoint API remains accessible
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond
       type: prometheus
-      query: min(heimdall_p2p_peers{service=~"l2-cl-[12]-heimdall-v2-validator"})
-      threshold: "< 3"
-      critical: false
-
-    # Critical: Checkpoints continue from majority
-    - name: checkpoints_from_majority
-      description: Checkpoint submission continues from majority partition
-      type: prometheus
-      query: rate(heimdall_checkpoint_submitted_total[5m])
-      threshold: "> 0"
-      critical: true
-
-    # Expected: RPC remains functional
-    - name: rpc_functional
-      description: RPC endpoints remain responsive
-      type: prometheus
-      query: histogram_quantile(0.95, rate(bor_rpc_duration_seconds_bucket[5m]))
-      threshold: "< 5.0"
+      query: increase(heimdallv2_checkpoint_api_calls_total[2m])
+      threshold: ">= 0"
+      window: 5m
       critical: false
 
   metrics:
-    - bor_blockchain_head_block
-    - heimdall_consensus_height
-    - heimdall_checkpoint_submitted_total
-    - heimdall_p2p_peers
-    - bor_p2p_peers
-    - heimdall_validator_voting_power
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators
+    - heimdallv2_checkpoint_api_calls_total

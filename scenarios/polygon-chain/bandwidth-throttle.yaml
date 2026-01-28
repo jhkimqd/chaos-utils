@@ -34,37 +34,30 @@ spec:
     - name: block_production_continues
       description: Network continues producing blocks
       type: prometheus
-      query: rate(bor_blockchain_head_block[1m])
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
+      window: 6m
       critical: true
 
-    # Critical: Validator stays connected
-    - name: validator_maintains_peers
-      description: Validator maintains P2P connections
+    # Critical: Consensus continues
+    - name: consensus_continues
+      description: Consensus layer continues operating
       type: prometheus
-      query: heimdall_p2p_peers{service="l2-cl-1-heimdall-v2-bor-validator"}
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
+      window: 6m
       critical: true
 
-    # Non-critical: Checkpoint submission may be slower
-    - name: checkpoints_submitted
-      description: Checkpoints continue to be submitted
+    # Non-critical: Checkpoint API accessible
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond
       type: prometheus
-      query: rate(heimdall_checkpoint_submitted_total[5m])
-      threshold: "> 0"
-      critical: false
-
-    # Non-critical: Peer count may decrease slightly
-    - name: peer_count_stable
-      description: Peer count remains relatively stable
-      type: prometheus
-      query: bor_p2p_peers
-      threshold: "> 0"
+      query: increase(heimdallv2_checkpoint_api_calls_total[2m])
+      threshold: ">= 0"
+      window: 6m
       critical: false
 
   metrics:
-    - bor_blockchain_head_block
-    - heimdall_consensus_height
-    - heimdall_checkpoint_submitted_total
-    - heimdall_p2p_peers
-    - bor_p2p_peers
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total

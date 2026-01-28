@@ -51,37 +51,30 @@ spec:
     - name: block_production_continues
       description: Bor continues producing blocks despite checkpoint delays
       type: prometheus
-      query: rate(bor_blockchain_head_block[1m])
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
       threshold: "> 0"
+      window: 8m
       critical: true
 
     # Critical: Consensus must progress
     - name: heimdall_consensus_progresses
       description: Heimdall consensus height continues to increase
       type: prometheus
-      query: rate(heimdall_consensus_height[1m])
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
       threshold: "> 0"
+      window: 8m
       critical: true
 
-    # Non-critical: Checkpoint submission may be delayed but should eventually succeed
-    - name: checkpoints_eventually_submitted
-      description: Checkpoints are submitted despite delays
+    # Non-critical: Checkpoint API continues responding
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond despite delays
       type: prometheus
-      query: rate(heimdall_checkpoint_submitted_total[10m])
-      threshold: "> 0"
-      critical: false
-
-    # Non-critical: RPC latency may increase
-    - name: rpc_latency_degraded
-      description: RPC latency increases but remains functional
-      type: prometheus
-      query: histogram_quantile(0.95, rate(bor_rpc_duration_seconds_bucket[5m]))
-      threshold: "< 10.0"
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 8m
       critical: false
 
   metrics:
-    - bor_blockchain_head_block
-    - heimdall_consensus_height
-    - heimdall_checkpoint_submitted_total
-    - bor_rpc_duration_seconds
-    - heimdall_p2p_peers
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total

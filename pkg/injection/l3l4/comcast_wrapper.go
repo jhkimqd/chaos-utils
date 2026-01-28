@@ -124,7 +124,7 @@ func (cw *ComcastWrapper) buildComcastCommand(params FaultParams) ([]string, err
 
 	// Bandwidth
 	if params.Bandwidth > 0 {
-		cmd = append(cmd, "--bandwidth", fmt.Sprintf("%d", params.Bandwidth))
+		cmd = append(cmd, "--target-bw", fmt.Sprintf("%d", params.Bandwidth))
 	}
 
 	// Target ports
