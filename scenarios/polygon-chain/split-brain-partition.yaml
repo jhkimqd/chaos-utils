@@ -13,40 +13,69 @@ spec:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-1-heimdall-v2-bor-validator"
-      alias: partition_group_a
+      alias: partition_group_a_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: partition_group_a_bor
 
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-2-heimdall-v2-bor-validator"
-      alias: partition_group_b
+      alias: partition_group_b_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: partition_group_b_bor
 
   duration: 5m
   warmup: 30s
   cooldown: 1m
 
   faults:
-    # Partition group A from group B
-    - phase: partition_a_from_b
-      description: Block traffic from validator 1 to validator 2
-      target: partition_group_a
+    # Partition group A Heimdall from group B
+    - phase: partition_a_heimdall_from_b
+      description: Complete network isolation of validator 1 Heimdall
+      target: partition_group_a_heimdall
       type: network
       params:
         device: eth0
         packet_loss: 100
-        target_ports: "26656,26657"
         target_proto: tcp,udp
-        # Note: In production, you'd specify target IPs/CIDR
 
-    # Partition group B from group A (bidirectional)
-    - phase: partition_b_from_a
-      description: Block traffic from validator 2 to validator 1
-      target: partition_group_b
+    # Partition group A Bor from group B
+    - phase: partition_a_bor_from_b
+      description: Complete network isolation of validator 1 Bor
+      target: partition_group_a_bor
       type: network
       params:
         device: eth0
         packet_loss: 100
-        target_ports: "26656,26657"
+        target_proto: tcp,udp
+
+    # Partition group B Heimdall from group A (bidirectional)
+    - phase: partition_b_heimdall_from_a
+      description: Complete network isolation of validator 2 Heimdall
+      target: partition_group_b_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+    # Partition group B Bor from group A (bidirectional)
+    - phase: partition_b_bor_from_a
+      description: Complete network isolation of validator 2 Bor
+      target: partition_group_b_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
         target_proto: tcp,udp
 
   success_criteria:

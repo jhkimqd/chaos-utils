@@ -8,13 +8,19 @@ metadata:
   version: "0.0.1"
 
 spec:
-  # Target a specific validator node
+  # Target a specific validator node (both consensus and execution layers)
   targets:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-1-heimdall-v2-bor-validator"
-      alias: victim_validator
+      alias: victim_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: victim_validator_bor
 
   # Test runs for 5 minutes
   duration: 5m
@@ -23,14 +29,23 @@ spec:
 
   # Network fault: 100% packet loss on Heimdall consensus ports
   faults:
-    - phase: partition_consensus
+    - phase: partition_consensus_heimdall
       description: Block all Heimdall consensus communication (Tendermint P2P)
-      target: victim_validator
+      target: victim_validator_heimdall
       type: network
       params:
         device: eth0
         packet_loss: 100
         target_ports: "26656,26657"
+        target_proto: tcp,udp
+
+    - phase: partition_execution_bor
+      description: Block all Bor execution layer communication
+      target: victim_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
         target_proto: tcp,udp
 
   # Success criteria: network should continue operating
@@ -50,6 +65,22 @@ spec:
       threshold: "> 0"
       window: 5m
       critical: true
+
+    - name: victim_bor_chain_halts
+      description: Victim Bor execution layer stops producing blocks during isolation
+      type: prometheus
+      query: increase(chain_head_block{job="l2-el-1-bor-heimdall-v2-validator"}[1m])
+      threshold: "== 0"
+      window: 5m
+      critical: false
+
+    - name: victim_heimdall_consensus_halts
+      description: Victim Heimdall consensus stops progressing during isolation
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[1m])
+      threshold: "== 0"
+      window: 5m
+      critical: false
 
   # Metrics to collect
   metrics:

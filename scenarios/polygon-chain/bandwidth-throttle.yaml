@@ -13,16 +13,31 @@ spec:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-1-heimdall-v2-bor-validator"
-      alias: throttled_validator
+      alias: throttled_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: throttled_validator_bor
 
   duration: 6m
   warmup: 30s
   cooldown: 30s
 
   faults:
-    - phase: bandwidth_limit
-      description: Limit bandwidth to 1 Mbps to simulate congested network
-      target: throttled_validator
+    - phase: bandwidth_limit_heimdall
+      description: Limit Heimdall bandwidth to 1 Mbps
+      target: throttled_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        bandwidth: 1000  # 1 Mbps in kbps
+        target_proto: tcp,udp
+
+    - phase: bandwidth_limit_bor
+      description: Limit Bor bandwidth to 1 Mbps
+      target: throttled_validator_bor
       type: network
       params:
         device: eth0

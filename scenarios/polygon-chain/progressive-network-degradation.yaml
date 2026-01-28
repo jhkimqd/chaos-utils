@@ -13,17 +13,23 @@ spec:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-2-heimdall-v2-bor-validator"
-      alias: degraded_validator
+      alias: degraded_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: degraded_validator_bor
 
   duration: 12m
   warmup: 30s
   cooldown: 1m
 
   faults:
-    # Phase 1: Light latency
-    - phase: light_latency
-      description: Add 100ms latency
-      target: degraded_validator
+    # Phase 1: Light latency on Heimdall
+    - phase: light_latency_heimdall
+      description: Add 100ms latency to Heimdall
+      target: degraded_validator_heimdall
       type: network
       params:
         device: eth0
@@ -31,10 +37,21 @@ spec:
         target_proto: tcp,udp
       duration: 3m
 
-    # Phase 2: Moderate latency + packet loss
-    - phase: moderate_degradation
-      description: Increase latency to 300ms and add 5% packet loss
-      target: degraded_validator
+    # Phase 1: Light latency on Bor
+    - phase: light_latency_bor
+      description: Add 100ms latency to Bor
+      target: degraded_validator_bor
+      type: network
+      params:
+        device: eth0
+        latency: 100
+        target_proto: tcp,udp
+      duration: 3m
+
+    # Phase 2: Moderate latency + packet loss on Heimdall
+    - phase: moderate_degradation_heimdall
+      description: Increase latency to 300ms and add 5% packet loss on Heimdall
+      target: degraded_validator_heimdall
       type: network
       params:
         device: eth0
@@ -44,10 +61,36 @@ spec:
       duration: 3m
       delay: 3m
 
-    # Phase 3: Heavy degradation
-    - phase: heavy_degradation
-      description: Increase to 500ms latency and 10% packet loss
-      target: degraded_validator
+    # Phase 2: Moderate latency + packet loss on Bor
+    - phase: moderate_degradation_bor
+      description: Increase latency to 300ms and add 5% packet loss on Bor
+      target: degraded_validator_bor
+      type: network
+      params:
+        device: eth0
+        latency: 300
+        packet_loss: 5
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 3m
+
+    # Phase 3: Heavy degradation on Heimdall
+    - phase: heavy_degradation_heimdall
+      description: Increase to 500ms latency and 10% packet loss on Heimdall
+      target: degraded_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        packet_loss: 10
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 6m
+
+    # Phase 3: Heavy degradation on Bor
+    - phase: heavy_degradation_bor
+      description: Increase to 500ms latency and 10% packet loss on Bor
+      target: degraded_validator_bor
       type: network
       params:
         device: eth0
