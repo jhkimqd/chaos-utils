@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -29,7 +31,7 @@ type FrameworkConfig struct {
 
 // KurtosisConfig contains Kurtosis connection settings
 type KurtosisConfig struct {
-	DefaultEnclave string `yaml:"default_enclave"`
+	EnclaveName string `yaml:"enclave_name"`
 }
 
 // DockerConfig contains Docker settings for sidecar management
@@ -81,7 +83,7 @@ func DefaultConfig() *Config {
 			LogFormat: "text",
 		},
 		Kurtosis: KurtosisConfig{
-			DefaultEnclave: "polygon-chain",
+			EnclaveName: "pos",
 		},
 		Docker: DockerConfig{
 			SidecarImage: "jhkimqd/chaos-utils:latest",
@@ -114,6 +116,33 @@ func DefaultConfig() *Config {
 	}
 }
 
+// discoverPrometheusEndpoint attempts to discover Prometheus endpoint from Kurtosis enclave
+func discoverPrometheusEndpoint(enclaveName string) (string, error) {
+	if enclaveName == "" {
+		return "", fmt.Errorf("enclave name is empty")
+	}
+
+	// Run: kurtosis port print <enclave> prometheus http
+	cmd := exec.Command("kurtosis", "port", "print", enclaveName, "prometheus", "http")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to discover Prometheus endpoint: %w (output: %s)", err, string(output))
+	}
+
+	// Parse the output (e.g., "http://127.0.0.1:33066")
+	endpoint := strings.TrimSpace(string(output))
+	if endpoint == "" {
+		return "", fmt.Errorf("kurtosis returned empty endpoint")
+	}
+
+	// Validate it looks like a URL
+	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+		return "", fmt.Errorf("invalid endpoint format: %s", endpoint)
+	}
+
+	return endpoint, nil
+}
+
 // Load loads configuration from a YAML file
 func Load(path string) (*Config, error) {
 	// Start with defaults
@@ -136,6 +165,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	// Check if PROMETHEUS_URL environment variable is set
+	prometheusURLEnvSet := os.Getenv("PROMETHEUS_URL") != ""
+	prometheusURLEnv := os.Getenv("PROMETHEUS_URL")
+
 	// Expand environment variables in the YAML content
 	expandedData := []byte(os.ExpandEnv(string(data)))
 
@@ -144,10 +177,34 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Handle empty values after environment variable expansion
-	// If Prometheus URL is empty after expansion, use the default
-	if cfg.Prometheus.URL == "" {
-		cfg.Prometheus.URL = DefaultConfig().Prometheus.URL
+	// Handle Prometheus URL configuration:
+	// 1. If PROMETHEUS_URL env var is set, use it
+	// 2. If config had ${PROMETHEUS_URL} placeholder without env var, auto-discover
+	// 3. If config has no url field, auto-discover
+	// 4. If url is set to default (localhost:9090), auto-discover
+	shouldAutoDiscover := false
+
+	if prometheusURLEnvSet {
+		// Use the environment variable value
+		cfg.Prometheus.URL = prometheusURLEnv
+	} else if strings.Contains(string(data), "${PROMETHEUS_URL}") {
+		// Config uses placeholder but env var not set
+		shouldAutoDiscover = true
+	} else if cfg.Prometheus.URL == "http://localhost:9090" {
+		// Using default, likely no url field in config
+		shouldAutoDiscover = true
+	}
+
+	if shouldAutoDiscover {
+		fmt.Println("⚙️  Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
+		if endpoint, err := discoverPrometheusEndpoint(cfg.Kurtosis.EnclaveName); err == nil {
+			cfg.Prometheus.URL = endpoint
+			fmt.Printf("✓ Discovered Prometheus endpoint: %s\n", endpoint)
+		} else {
+			fmt.Printf("⚠️  Auto-discovery failed: %v\n", err)
+			fmt.Println("   Using default: http://localhost:9090")
+			cfg.Prometheus.URL = "http://localhost:9090"
+		}
 	}
 
 	return cfg, nil
@@ -169,8 +226,8 @@ func (c *Config) Save(path string) error {
 
 // Validate validates the configuration
 func (c *Config) Validate() error {
-	if c.Kurtosis.DefaultEnclave == "" {
-		return fmt.Errorf("kurtosis.default_enclave is required")
+	if c.Kurtosis.EnclaveName == "" {
+		return fmt.Errorf("kurtosis.enclave_name is required")
 	}
 
 	if c.Docker.SidecarImage == "" {

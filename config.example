@@ -1,0 +1,30 @@
+framework:
+    version: v1
+    log_level: info
+    log_format: text
+kurtosis:
+    enclave_name: pos
+docker:
+    sidecar_image: jhkimqd/chaos-utils:latest
+    pull_policy: if_not_present
+prometheus:
+    # url: auto-discovered from Kurtosis enclave (or set PROMETHEUS_URL env var to override)
+    timeout: 30s
+    refresh_interval: 15s
+reporting:
+    output_dir: ./reports
+    keep_last_n: 50
+    formats:
+        - json
+        - html
+emergency:
+    stop_file: /tmp/chaos-emergency-stop
+    auto_cleanup_timeout: 5m0s
+execution:
+    default_mode: sequential
+    default_warmup: 30s
+    default_cooldown: 30s
+    max_concurrent_faults: 5
+safety:
+    max_duration: 1h0m0s
+    require_confirmation: true

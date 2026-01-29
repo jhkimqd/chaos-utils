@@ -252,7 +252,7 @@ framework:
   log_format: text
 
 kurtosis:
-  default_enclave: "pos"
+  enclave_name: "pos"
 
 prometheus:
   url: ${PROMETHEUS_URL}
