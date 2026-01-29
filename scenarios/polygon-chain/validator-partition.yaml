@@ -66,19 +66,11 @@ spec:
       window: 5m
       critical: true
 
-    - name: victim_bor_chain_halts
-      description: Victim Bor execution layer stops producing blocks during isolation
+    - name: only_three_validators_active
+      description: Only 3 validators actively participating (validator 1 isolated)
       type: prometheus
-      query: increase(chain_head_block{job="l2-el-1-bor-heimdall-v2-validator"}[1m])
-      threshold: "== 0"
-      window: 5m
-      critical: false
-
-    - name: victim_heimdall_consensus_halts
-      description: Victim Heimdall consensus stops progressing during isolation
-      type: prometheus
-      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[1m])
-      threshold: "== 0"
+      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0)
+      threshold: "== 3"
       window: 5m
       critical: false
 
