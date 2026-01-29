@@ -299,16 +299,33 @@ func (pr *ProgressReporter) printTestSummary(report *TestReport) {
 	// Success criteria
 	if len(report.SuccessCriteria) > 0 {
 		passed := 0
-		failed := 0
+		failedCritical := 0
+		failedNonCritical := 0
 		for _, criterion := range report.SuccessCriteria {
 			if criterion.Passed {
 				passed++
 			} else {
-				failed++
+				if criterion.Critical {
+					failedCritical++
+				} else {
+					failedNonCritical++
+				}
 			}
 		}
 
-		fmt.Printf("✅ Success Criteria: %d passed, %d failed\n", passed, failed)
+		statusIcon := "✅"
+		statusText := fmt.Sprintf("%d passed", passed)
+		if failedCritical > 0 {
+			statusIcon = "🔴"
+			statusText += fmt.Sprintf(", %d critical failed", failedCritical)
+		}
+		if failedNonCritical > 0 {
+			if failedCritical == 0 {
+				statusIcon = "⚠️"
+			}
+			statusText += fmt.Sprintf(", %d non-critical failed", failedNonCritical)
+		}
+		fmt.Printf("%s Success Criteria: %s\n", statusIcon, statusText)
 		for _, criterion := range report.SuccessCriteria {
 			status := "✅"
 			if !criterion.Passed {
@@ -351,12 +368,27 @@ func (pr *ProgressReporter) printTextSummary(report *TestReport) {
 
 	if len(report.SuccessCriteria) > 0 {
 		passed := 0
+		failedCritical := 0
+		failedNonCritical := 0
 		for _, criterion := range report.SuccessCriteria {
 			if criterion.Passed {
 				passed++
+			} else {
+				if criterion.Critical {
+					failedCritical++
+				} else {
+					failedNonCritical++
+				}
 			}
 		}
-		fmt.Printf("  Success Criteria: %d/%d passed\n", passed, len(report.SuccessCriteria))
+		fmt.Printf("  Success Criteria: %d/%d passed", passed, len(report.SuccessCriteria))
+		if failedCritical > 0 {
+			fmt.Printf(", %d critical failed", failedCritical)
+		}
+		if failedNonCritical > 0 {
+			fmt.Printf(", %d non-critical failed", failedNonCritical)
+		}
+		fmt.Println()
 	}
 
 	fmt.Printf("  Cleanup: %d succeeded, %d failed\n",

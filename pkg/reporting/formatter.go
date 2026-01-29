@@ -159,18 +159,30 @@ func (f *Formatter) generateTextReport(report *TestReport, outputPath string) er
 	// Success Criteria
 	if len(report.SuccessCriteria) > 0 {
 		passed := 0
-		failed := 0
+		failedCritical := 0
+		failedNonCritical := 0
 		for _, criterion := range report.SuccessCriteria {
 			if criterion.Passed {
 				passed++
 			} else {
-				failed++
+				if criterion.Critical {
+					failedCritical++
+				} else {
+					failedNonCritical++
+				}
 			}
 		}
 
 		buf.WriteString("SUCCESS CRITERIA\n")
 		buf.WriteString(strings.Repeat("-", 80) + "\n")
-		buf.WriteString(fmt.Sprintf("Summary: %d passed, %d failed\n\n", passed, failed))
+		summary := fmt.Sprintf("Summary: %d passed", passed)
+		if failedCritical > 0 {
+			summary += fmt.Sprintf(", %d critical failed", failedCritical)
+		}
+		if failedNonCritical > 0 {
+			summary += fmt.Sprintf(", %d non-critical failed", failedNonCritical)
+		}
+		buf.WriteString(summary + "\n\n")
 
 		for i, criterion := range report.SuccessCriteria {
 			status := "PASS"
