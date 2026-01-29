@@ -38,6 +38,11 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// GetClient returns the underlying Docker API client
+func (c *Client) GetClient() *client.Client {
+	return c.cli
+}
+
 // GetContainerByName finds a container by name
 func (c *Client) GetContainerByName(ctx context.Context, name string) (*discovery.Service, error) {
 	containers, err := c.cli.ContainerList(ctx, types.ContainerListOptions{})

@@ -13,7 +13,7 @@ import (
 	"github.com/jihwankim/chaos-utils/pkg/core/cleanup"
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 	"github.com/jihwankim/chaos-utils/pkg/emergency"
-	"github.com/jihwankim/chaos-utils/pkg/injection/l3l4"
+	"github.com/jihwankim/chaos-utils/pkg/injection"
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 	"github.com/jihwankim/chaos-utils/pkg/injection/verification"
 	"github.com/jihwankim/chaos-utils/pkg/monitoring/collector"
@@ -101,14 +101,14 @@ type Orchestrator struct {
 	promClient   *prometheus.Client
 	detector     *detector.FailureDetector
 	collector    *collector.Collector
-	injector     *l3l4.ComcastWrapper
+	injector     *injection.Injector
 
 	// Test data
 	scenario      *scenario.Scenario
 	targets       []TargetInfo
 	scenarioPath  string
 	testID        string
-	injectedFaults map[string]bool // track which targets have faults injected
+	injectedFaults map[string]string // track which targets have faults injected (containerID -> faultType)
 }
 
 // TestResult represents the result of a chaos test execution
@@ -177,8 +177,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		Interval:         cfg.Prometheus.RefreshInterval,
 	})
 
-	// Create comcast injector
-	injector := l3l4.New(sidecarMgr)
+	// Create unified fault injector
+	injector := injection.New(sidecarMgr, dockerClient.GetClient())
 
 	return &Orchestrator{
 		cfg:              cfg,
@@ -196,7 +196,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		detector:         det,
 		collector:        col,
 		injector:         injector,
-		injectedFaults:   make(map[string]bool),
+		injectedFaults:   make(map[string]string),
 	}, nil
 }
 
@@ -551,51 +551,25 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 			continue
 		}
 
-		// Build fault parameters from scenario
-		params := l3l4.FaultParams{
-			Device: "eth0", // default device
-		}
-
-		// Parse network fault parameters
-		if fault.Type == "network" && fault.Params != nil {
-			if device, ok := fault.Params["device"].(string); ok {
-				params.Device = device
-			}
-			if latency, ok := fault.Params["latency"].(int); ok {
-				params.Latency = latency
-			}
-			if packetLoss, ok := fault.Params["packet_loss"].(float64); ok {
-				params.PacketLoss = packetLoss
-			} else if packetLoss, ok := fault.Params["packet_loss"].(int); ok {
-				params.PacketLoss = float64(packetLoss)
-			}
-			if bandwidth, ok := fault.Params["bandwidth"].(int); ok {
-				params.Bandwidth = bandwidth
-			}
-			if targetPorts, ok := fault.Params["target_ports"].(string); ok {
-				params.TargetPorts = targetPorts
-			}
-			if targetProto, ok := fault.Params["target_proto"].(string); ok {
-				params.TargetProto = targetProto
-			}
-			if targetIPs, ok := fault.Params["target_ips"].(string); ok {
-				params.TargetIPs = targetIPs
-			}
-			if targetCIDR, ok := fault.Params["target_cidr"].(string); ok {
-				params.TargetCIDR = targetCIDR
+		// Convert TargetInfo to injection.Target
+		injectionTargets := make([]injection.Target, len(targets))
+		for i, t := range targets {
+			injectionTargets[i] = injection.Target{
+				Name:        t.Name,
+				ContainerID: t.ContainerID,
 			}
 		}
 
-		// Inject fault on each target
+		// Inject fault using unified injector
+		fmt.Printf("    Injecting %s fault on %d target(s)...\n", fault.Type, len(targets))
+		if err := o.injector.InjectFault(ctx, &fault, injectionTargets); err != nil {
+			return fmt.Errorf("failed to inject fault: %w", err)
+		}
+
+		// Track injected faults for cleanup
 		for _, target := range targets {
-			fmt.Printf("    Injecting on %s (%s)...\n", target.Name, target.ContainerID[:12])
-
-			if err := o.injector.InjectFault(ctx, target.ContainerID, params); err != nil {
-				return fmt.Errorf("failed to inject fault on %s: %w", target.Name, err)
-			}
-
-			o.injectedFaults[target.ContainerID] = true
-			fmt.Printf("      ✓ Fault injected successfully\n")
+			o.injectedFaults[target.ContainerID] = fault.Type
+			fmt.Printf("      ✓ Fault injected on %s (%s)\n", target.Name, target.ContainerID[:12])
 		}
 	}
 
@@ -710,7 +684,7 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 	} else {
 		// Remove faults from each target
 		removed := 0
-		for containerID := range o.injectedFaults {
+		for containerID, faultType := range o.injectedFaults {
 			// Find target name
 			targetName := containerID[:12]
 			for _, target := range o.targets {
@@ -720,13 +694,13 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 				}
 			}
 
-			fmt.Printf("  Removing faults from %s...\n", targetName)
+			fmt.Printf("  Removing %s fault from %s...\n", faultType, targetName)
 
-			if err := o.injector.RemoveFault(ctx, containerID); err != nil {
+			if err := o.injector.RemoveFault(ctx, faultType, containerID); err != nil {
 				fmt.Printf("    ⚠ Error removing fault: %v\n", err)
 				// Continue with other targets
 			} else {
-				fmt.Printf("    ✓ Faults removed\n")
+				fmt.Printf("    ✓ Fault removed\n")
 				removed++
 			}
 		}

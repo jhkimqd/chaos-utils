@@ -185,3 +185,4 @@ func ParseNetworkParams(params map[string]interface{}) NetworkFaultParams {
 
 	return nfp
 }
+
