@@ -123,10 +123,11 @@ func discoverPrometheusEndpoint(enclaveName string) (string, error) {
 	}
 
 	// Run: kurtosis port print <enclave> prometheus http
+	// Use Output() instead of CombinedOutput() to ignore stderr (Kurtosis warnings)
 	cmd := exec.Command("kurtosis", "port", "print", enclaveName, "prometheus", "http")
-	output, err := cmd.CombinedOutput()
+	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to discover Prometheus endpoint: %w (output: %s)", err, string(output))
+		return "", fmt.Errorf("failed to discover Prometheus endpoint: %w", err)
 	}
 
 	// Parse the output (e.g., "http://127.0.0.1:33066")
