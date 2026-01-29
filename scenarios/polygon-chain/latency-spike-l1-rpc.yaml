@@ -13,7 +13,7 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "el-1-geth"
+        pattern: "el-\\d+-geth"
       alias: l1_rpc_node
 
   duration: 10m

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -855,15 +857,25 @@ func matchPattern(names []string, pattern string) bool {
 	return false
 }
 
-// match performs simple pattern matching (supports * wildcard)
+// match performs pattern matching (supports * wildcard and regex)
 func match(name, pattern string) bool {
-	// Simple substring matching for now
-	// In production, use proper regex matching
+	// Match all wildcard
 	if pattern == "*" {
 		return true
 	}
 
-	// Check if pattern contains the name
+	// Try regex first (if pattern looks like regex)
+	// Regex patterns typically contain: \d, \w, \s, [, ], (, ), {, }, ^, $, etc.
+	isRegex := strings.ContainsAny(pattern, `\[](){}^$+?.|`)
+	if isRegex {
+		re, err := regexp.Compile(pattern)
+		if err == nil {
+			return re.MatchString(name)
+		}
+		// If regex compilation fails, fall through to simple matching
+	}
+
+	// Simple wildcard matching with *
 	if len(pattern) > 0 && pattern[0] == '*' {
 		pattern = pattern[1:]
 	}
