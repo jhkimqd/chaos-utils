@@ -1,0 +1,107 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cascading-latency-spike
+  description: Cascading latency starting from L1 RPC propagating through the system
+  tags: [network, latency, cascading, service-degradation, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # L1 RPC node (matches any L1 execution client)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "el-\\d+-geth-lighthouse"
+      alias: l1_rpc_slow
+
+    # L2 RPC node (matches any L2 RPC node)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-\\d+-bor-heimdall-v2-rpc"
+      alias: l2_rpc_slow
+
+    # Validator (matches validator 3)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: validator_slow
+
+  duration: 15m
+  warmup: 1m
+  cooldown: 1m
+
+  faults:
+    # Phase 1: L1 RPC latency starts (0-5min)
+    - phase: l1_latency_starts
+      description: L1 RPC experiences 300ms latency
+      target: l1_rpc_slow
+      type: network
+      params:
+        device: eth0
+        latency: 300
+        target_ports: "8545,8546"
+        target_proto: tcp
+      duration: 13m
+
+    # Phase 2: L2 RPC affected (5-10min)
+    - phase: l2_rpc_cascades
+      description: L2 RPC latency increases to 400ms due to L1 dependency
+      target: l2_rpc_slow
+      type: network
+      params:
+        device: eth0
+        latency: 400
+        target_ports: "8545,8546"
+        target_proto: tcp
+      duration: 8m
+      delay: 5m
+
+    # Phase 3: Validator affected (10-15min)
+    - phase: validator_cascades
+      description: Validator experiences 200ms latency due to cascading effect
+      target: validator_slow
+      type: network
+      params:
+        device: eth0
+        latency: 200
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 10m
+
+  success_criteria:
+    # Critical: Block production continues despite cascading latency
+    - name: resilient_block_production
+      description: Block production continues through cascading latency
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    # Critical: Consensus survives cascade
+    - name: consensus_survives_cascade
+      description: Consensus continues despite cascading failures
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    # Non-critical: Checkpoints degraded but continuing
+    - name: checkpoint_degradation
+      description: Checkpoints continue with degraded performance
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 15m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - rpc_duration_eth_blockNumber_success

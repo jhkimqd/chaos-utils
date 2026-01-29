@@ -1,0 +1,129 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: monitoring-stress-test
+  description: Progressive failure injection to validate monitoring and alerting systems detect issues
+  tags: [monitoring, alerting, progressive, validation, medium-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: monitored_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: monitored_validator_bor
+
+  duration: 18m
+  warmup: 1m
+  cooldown: 1m
+
+  # Progressive failure injection to test monitoring thresholds
+  faults:
+    # Phase 1: Subtle degradation (should NOT trigger alerts)
+    - phase: subtle_degradation_heimdall
+      description: 5% packet loss - below alert threshold
+      target: monitored_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 5
+        target_proto: tcp,udp
+      duration: 5m
+
+    - phase: subtle_degradation_bor
+      description: 5% packet loss - below alert threshold
+      target: monitored_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 5
+        target_proto: tcp,udp
+      duration: 5m
+
+    # Phase 2: Noticeable degradation (should trigger WARNING)
+    - phase: noticeable_degradation_heimdall
+      description: 25% packet loss - should trigger warnings
+      target: monitored_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 25
+        target_proto: tcp,udp
+      duration: 5m
+      delay: 6m
+
+    - phase: noticeable_degradation_bor
+      description: 25% packet loss - should trigger warnings
+      target: monitored_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 25
+        target_proto: tcp,udp
+      duration: 5m
+      delay: 6m
+
+    # Phase 3: Severe degradation (should trigger CRITICAL)
+    - phase: severe_degradation_heimdall
+      description: 75% packet loss - should trigger critical alerts
+      target: monitored_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 75
+        target_proto: tcp,udp
+      duration: 5m
+      delay: 12m
+
+    - phase: severe_degradation_bor
+      description: 75% packet loss - should trigger critical alerts
+      target: monitored_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 75
+        target_proto: tcp,udp
+      duration: 5m
+      delay: 12m
+
+  success_criteria:
+    # Critical: Network continues with other validators
+    - name: network_resilient_to_single_failure
+      description: Network continues with remaining healthy validators
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[1-3]-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 18m
+      critical: true
+
+    # Critical: Consensus continues with majority
+    - name: consensus_with_majority
+      description: Consensus continues with healthy validators
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[1-3]-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 18m
+      critical: true
+
+    # Monitoring validation: Validator 4 should show degradation
+    - name: degraded_validator_detected
+      description: Monitoring should detect validator 4 degradation
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[5m])
+      threshold: "< 10"
+      window: 18m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators
+    - cometbft_consensus_validator_missed_blocks

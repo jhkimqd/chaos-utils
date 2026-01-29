@@ -1,0 +1,85 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: mixed-dependency-failure
+  description: Multiple dependencies fail in different ways - some with errors, others with high latency
+  tags: [network, dependency, latency, failure, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # L1 RPC node - complete failure
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "el-\\d+-geth-lighthouse"
+      alias: l1_rpc_failed
+
+    # RabbitMQ - high latency
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "rabbitmq"
+      alias: rabbitmq_slow
+
+  duration: 10m
+  warmup: 1m
+  cooldown: 1m
+
+  faults:
+    # Dependency 1: Complete L1 RPC failure (100% packet loss)
+    - phase: l1_rpc_failure
+      description: L1 RPC completely unavailable
+      target: l1_rpc_failed
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "8545,8546"
+        target_proto: tcp
+
+    # Dependency 2: RabbitMQ with severe latency (10x normal)
+    - phase: rabbitmq_latency
+      description: RabbitMQ responds with 1000ms latency (10x increase)
+      target: rabbitmq_slow
+      type: network
+      params:
+        device: eth0
+        latency: 1000
+        target_ports: "5672,15672"
+        target_proto: tcp
+
+  success_criteria:
+    # Critical: L2 block production continues
+    - name: l2_resilient_to_mixed_failures
+      description: L2 continues producing blocks despite mixed dependency failures
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Critical: Consensus continues
+    - name: consensus_resilient
+      description: Heimdall consensus continues despite dependency issues
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Non-critical: Checkpoint API may be degraded but accessible
+    - name: checkpoint_api_degraded
+      description: Checkpoint API still accessible despite L1 issues
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 10m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - heimdallv2_checkpoint_api_calls_success_total

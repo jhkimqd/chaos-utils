@@ -1,0 +1,65 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rpc-node-degradation
+  description: RPC node experiences high load causing service degradation while staying within SLOs
+  tags: [network, latency, rpc, service-level, medium-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-\\d+-bor-heimdall-v2-rpc"
+      alias: degraded_rpc_bor
+
+  duration: 8m
+  warmup: 1m
+  cooldown: 1m
+
+  # Simulate high traffic load by adding latency to RPC responses
+  faults:
+    - phase: rpc_service_degradation
+      description: Add 250ms latency to simulate RPC node under heavy load
+      target: degraded_rpc_bor
+      type: network
+      params:
+        device: eth0
+        latency: 250
+        target_ports: "8545,8546"
+        target_proto: tcp
+
+  success_criteria:
+    # Critical: Validators continue producing blocks
+    - name: validators_unaffected
+      description: Validators continue block production despite RPC degradation
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: Consensus continues
+    - name: consensus_unaffected
+      description: Consensus continues despite RPC degradation
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Non-critical: RPC still responds (degraded but functional)
+    - name: rpc_within_slo
+      description: RPC remains functional despite degraded performance
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[3m])
+      threshold: ">= 0"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
