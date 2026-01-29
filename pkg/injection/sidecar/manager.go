@@ -83,7 +83,9 @@ func (m *Manager) CreateSidecar(ctx context.Context, targetContainerID string) (
 func (m *Manager) DestroySidecar(ctx context.Context, targetContainerID string) error {
 	sidecarID, exists := m.createdSidecars[targetContainerID]
 	if !exists {
-		return fmt.Errorf("no sidecar found for target %s", targetContainerID)
+		// Sidecar already cleaned up or never existed - this is not an error
+		// This makes cleanup idempotent and prevents duplicate cleanup errors
+		return nil
 	}
 
 	fmt.Printf("Destroying sidecar %s for target %s\n", sidecarID[:12], targetContainerID[:12])
@@ -92,7 +94,8 @@ func (m *Manager) DestroySidecar(ctx context.Context, targetContainerID string) 
 	timeout := 10
 	if err := m.dockerClient.ContainerStop(ctx, sidecarID, &timeout); err != nil {
 		// If container is already stopped, that's fine
-		if !strings.Contains(err.Error(), "is already stopped") {
+		if !strings.Contains(err.Error(), "is already stopped") &&
+			!strings.Contains(err.Error(), "No such container") {
 			return fmt.Errorf("failed to stop sidecar: %w", err)
 		}
 	}
