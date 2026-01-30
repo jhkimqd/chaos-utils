@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/docker/docker/client"
+	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 	"github.com/jihwankim/chaos-utils/pkg/injection/container"
 	"github.com/jihwankim/chaos-utils/pkg/injection/l3l4"
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
+	"github.com/jihwankim/chaos-utils/pkg/injection/stress"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
 )
 
@@ -22,13 +23,15 @@ type Target struct {
 type Injector struct {
 	networkInjector  *l3l4.ComcastWrapper
 	containerManager *container.Manager
+	stressInjector   *stress.StressWrapper
 }
 
 // New creates a new unified fault injector
-func New(sidecarMgr *sidecar.Manager, dockerClient *client.Client) *Injector {
+func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 	return &Injector{
 		networkInjector:  l3l4.New(sidecarMgr),
-		containerManager: container.NewManager(dockerClient),
+		containerManager: container.NewManager(dockerClient.GetClient()),
+		stressInjector:   stress.New(sidecarMgr, dockerClient),
 	}
 }
 
@@ -43,6 +46,10 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 		return i.injectContainerKill(ctx, fault, targets)
 	case "container_pause":
 		return i.injectContainerPause(ctx, fault, targets)
+	case "cpu_stress", "cpu":
+		return i.injectCPUStress(ctx, fault, targets)
+	case "memory_stress", "memory_pressure", "memory":
+		return i.injectMemoryStress(ctx, fault, targets)
 	default:
 		return fmt.Errorf("unknown fault type: %s", fault.Type)
 	}
@@ -198,6 +205,88 @@ func (i *Injector) injectContainerPause(ctx context.Context, fault *scenario.Fau
 	return nil
 }
 
+// injectCPUStress handles CPU stress injection
+func (i *Injector) injectCPUStress(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	// Parse CPU stress parameters
+	params := stress.StressParams{
+		Method:     "stress", // default
+		CPUPercent: 50,       // default
+		Duration:   "5m",     // default
+		Cores:      1,        // default - limiting to 50% of 1 core = 0.5 cores
+	}
+
+	if fault.Params != nil {
+		if method, ok := fault.Params["method"].(string); ok {
+			params.Method = method
+		}
+		if cpuPercent, ok := fault.Params["cpu_percent"].(int); ok {
+			params.CPUPercent = cpuPercent
+		} else if cpuPercent, ok := fault.Params["cpu_percent"].(float64); ok {
+			params.CPUPercent = int(cpuPercent)
+		}
+		if duration, ok := fault.Params["duration"].(string); ok {
+			params.Duration = duration
+		}
+		if cores, ok := fault.Params["cores"].(int); ok {
+			params.Cores = cores
+		} else if cores, ok := fault.Params["cores"].(float64); ok {
+			params.Cores = int(cores)
+		}
+	}
+
+	// Validate parameters
+	if err := stress.ValidateStressParams(params); err != nil {
+		return fmt.Errorf("invalid CPU stress parameters: %w", err)
+	}
+
+	// Inject on all targets
+	for _, target := range targets {
+		if err := i.stressInjector.InjectCPUStress(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject CPU stress on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectMemoryStress handles memory stress injection
+func (i *Injector) injectMemoryStress(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	// Parse memory stress parameters
+	params := stress.StressParams{
+		Method:   "stress",
+		MemoryMB: 512, // default
+		Duration: "5m",
+	}
+
+	if fault.Params != nil {
+		if method, ok := fault.Params["method"].(string); ok {
+			params.Method = method
+		}
+		if memoryMB, ok := fault.Params["memory_mb"].(int); ok {
+			params.MemoryMB = memoryMB
+		} else if memoryMB, ok := fault.Params["memory_mb"].(float64); ok {
+			params.MemoryMB = int(memoryMB)
+		}
+		if duration, ok := fault.Params["duration"].(string); ok {
+			params.Duration = duration
+		}
+	}
+
+	// Validate parameters
+	if err := stress.ValidateStressParams(params); err != nil {
+		return fmt.Errorf("invalid memory stress parameters: %w", err)
+	}
+
+	// Inject on all targets
+	for _, target := range targets {
+		if err := i.stressInjector.InjectMemoryStress(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject memory stress on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
 // RemoveFault removes a fault from a target
 func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerID string) error {
 	switch faultType {
@@ -209,6 +298,9 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 	case "container_pause":
 		// Unpause if it was paused
 		return i.containerManager.UnpauseContainer(ctx, containerID)
+	case "cpu_stress", "cpu", "memory_stress", "memory_pressure", "memory":
+		// Remove stress faults
+		return i.stressInjector.RemoveFault(ctx, containerID)
 	default:
 		return fmt.Errorf("unknown fault type for removal: %s", faultType)
 	}

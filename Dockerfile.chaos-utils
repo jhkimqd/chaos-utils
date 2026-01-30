@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     busybox \
     wget \
     gnupg \
+    stress-ng \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Envoy

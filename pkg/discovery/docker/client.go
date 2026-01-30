@@ -226,6 +226,16 @@ func (c *Client) ContainerList(ctx context.Context, options types.ContainerListO
 	return c.cli.ContainerList(ctx, options)
 }
 
+// ContainerInspect returns detailed information about a container
+func (c *Client) ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+	return c.cli.ContainerInspect(ctx, containerID)
+}
+
+// ContainerUpdate updates container configuration
+func (c *Client) ContainerUpdate(ctx context.Context, containerID string, updateConfig container.UpdateConfig) (container.ContainerUpdateOKBody, error) {
+	return c.cli.ContainerUpdate(ctx, containerID, updateConfig)
+}
+
 // Helper to build Docker API filters from label map
 func buildLabelFilters(labels map[string]string) filters.Args {
 	f := filters.NewArgs()

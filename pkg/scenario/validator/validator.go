@@ -275,7 +275,13 @@ func (v *Validator) validateFaults(s *scenario.Scenario) {
 }
 
 func (v *Validator) validateFaultType(fault scenario.Fault, index int) {
-	validTypes := []string{"network", "cpu", "memory", "disk", "process", "custom"}
+	validTypes := []string{
+		"network",
+		"cpu", "cpu_stress",
+		"memory", "memory_stress", "memory_pressure",
+		"container_restart", "container_kill", "container_pause",
+		"disk", "process", "custom",
+	}
 	valid := false
 	for _, t := range validTypes {
 		if fault.Type == t {

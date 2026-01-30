@@ -178,7 +178,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	})
 
 	// Create unified fault injector
-	injector := injection.New(sidecarMgr, dockerClient.GetClient())
+	injector := injection.New(sidecarMgr, dockerClient)
 
 	return &Orchestrator{
 		cfg:              cfg,
