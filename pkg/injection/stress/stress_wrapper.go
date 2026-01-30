@@ -6,7 +6,6 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 )
 
 // StressParams defines parameters for CPU/memory stress injection
@@ -29,7 +28,6 @@ type StressParams struct {
 
 // StressWrapper wraps resource constraint injection via Docker API
 type StressWrapper struct {
-	sidecarMgr   *sidecar.Manager
 	dockerClient DockerClient
 	// Store original container resources for restoration
 	originalResources map[string]container.Resources
@@ -43,9 +41,8 @@ type DockerClient interface {
 }
 
 // New creates a new stress wrapper
-func New(sidecarMgr *sidecar.Manager, dockerClient DockerClient) *StressWrapper {
+func New(dockerClient DockerClient) *StressWrapper {
 	return &StressWrapper{
-		sidecarMgr:        sidecarMgr,
 		dockerClient:      dockerClient,
 		originalResources: make(map[string]container.Resources),
 	}

@@ -31,7 +31,7 @@ func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 	return &Injector{
 		networkInjector:  l3l4.New(sidecarMgr),
 		containerManager: container.NewManager(dockerClient.GetClient()),
-		stressInjector:   stress.New(sidecarMgr, dockerClient),
+		stressInjector:   stress.New(dockerClient),
 	}
 }
 
