@@ -128,19 +128,20 @@ func (i *Injector) injectContainerRestart(ctx context.Context, fault *scenario.F
 		containerIDs[i] = target.ContainerID
 	}
 
-	// If stagger is specified and we have multiple targets, use staggered restart
-	if params.Stagger > 0 && len(containerIDs) > 1 {
+	// Choose restart strategy based on parameters
+	if len(containerIDs) == 1 {
+		// Single container - use simple restart
+		return i.containerManager.RestartContainer(ctx, containerIDs[0], params)
+	}
+
+	if params.Stagger > 0 {
+		// Multiple containers with stagger - restart one by one with delay
 		return i.containerManager.RestartContainersStaggered(ctx, containerIDs, params)
 	}
 
-	// Otherwise restart all simultaneously
-	for _, containerID := range containerIDs {
-		if err := i.containerManager.RestartContainer(ctx, containerID, params); err != nil {
-			return fmt.Errorf("failed to restart container %s: %w", containerID, err)
-		}
-	}
-
-	return nil
+	// Multiple containers with stagger=0 - truly simultaneous restart
+	// Stop all first, then start all
+	return i.containerManager.RestartContainersSimultaneous(ctx, containerIDs, params)
 }
 
 // injectContainerKill handles container kill faults

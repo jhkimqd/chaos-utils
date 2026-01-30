@@ -1,0 +1,94 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: simultaneous-validator-restart
+  description: All validators restart simultaneously - simulates upgrade scenario that caught production bug
+  tags: [restart, upgrade, high-severity, real-world-bug]
+  author: DevTools
+  version: "0.0.1"
+  references:
+    - "Production incident: Block production stopped after simultaneous validator restart during upgrade"
+
+spec:
+  targets:
+    # All 4 validators (Heimdall consensus layer)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-.*-heimdall-v2-bor-validator"
+      alias: all_validators_heimdall
+
+    # All 4 validators (Bor execution layer)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-.*-bor-heimdall-v2-validator"
+      alias: all_validators_bor
+
+  duration: 5m
+  warmup: 2m  # Ensure clean state before restart
+  cooldown: 3m  # Longer cooldown to ensure recovery
+
+  # Restart all validators simultaneously
+  faults:
+    - phase: simultaneous_restart_heimdall
+      description: Restart all Heimdall validators at once (upgrade scenario)
+      target: all_validators_heimdall
+      type: container_restart
+      params:
+        grace_period: 10  # Allow graceful shutdown
+        restart_delay: 0  # Immediate restart
+        stagger: 0  # No stagger = simultaneous
+
+    - phase: simultaneous_restart_bor
+      description: Restart all Bor validators at once (upgrade scenario)
+      target: all_validators_bor
+      type: container_restart
+      params:
+        grace_period: 10
+        restart_delay: 0
+        stagger: 0
+
+  success_criteria:
+    # Critical: Block production must resume after restart
+    - name: block_production_resumes
+      description: Block production resumes within 2 minutes after restart
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Critical: Consensus must resume after restart
+    - name: consensus_resumes
+      description: Consensus resumes within 2 minutes after restart
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Critical: All validators must come back online
+    - name: all_validators_online
+      description: All 4 validators return to service
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1)
+      threshold: "== 4"
+      window: 5m
+      critical: true
+
+    # Expected: No missed blocks after recovery
+    - name: no_missed_blocks_after_recovery
+      description: Validators should not miss blocks after coming back online
+      type: prometheus
+      query: increase(cometbft_consensus_validator_missed_blocks[3m])
+      threshold: "< 5"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators
+    - cometbft_consensus_validator_missed_blocks
+    - up

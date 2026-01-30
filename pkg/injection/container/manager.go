@@ -30,6 +30,11 @@ func (m *Manager) RestartContainer(ctx context.Context, containerID string, para
 	return m.restartMgr.RestartContainer(ctx, containerID, params)
 }
 
+// RestartContainersSimultaneous restarts multiple containers simultaneously
+func (m *Manager) RestartContainersSimultaneous(ctx context.Context, containerIDs []string, params RestartParams) error {
+	return m.restartMgr.RestartContainersSimultaneous(ctx, containerIDs, params)
+}
+
 // RestartContainersStaggered restarts multiple containers with stagger
 func (m *Manager) RestartContainersStaggered(ctx context.Context, containerIDs []string, params RestartParams) error {
 	return m.restartMgr.RestartContainersStaggered(ctx, containerIDs, params)
