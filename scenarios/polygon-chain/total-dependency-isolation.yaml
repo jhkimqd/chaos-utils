@@ -1,0 +1,91 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: total-dependency-isolation
+  description: Complete isolation from all external dependencies - L1 RPC and messaging infrastructure
+  tags: [network, dependency, isolation, extreme, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # L1 RPC node
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "el-\\d+-geth-lighthouse"
+      alias: l1_rpc
+
+    # RabbitMQ messaging
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "rabbitmq"
+      alias: rabbitmq
+
+  duration: 10m
+  warmup: 1m
+  cooldown: 1m
+
+  # Complete isolation of all external dependencies
+  faults:
+    - phase: l1_complete_isolation
+      description: Complete L1 RPC isolation
+      target: l1_rpc
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+    - phase: rabbitmq_complete_isolation
+      description: Complete RabbitMQ isolation
+      target: rabbitmq
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: L2 continues operating independently
+    - name: l2_operates_independently
+      description: L2 block production continues without external dependencies
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Critical: Internal consensus unaffected
+    - name: internal_consensus_independent
+      description: L2 consensus continues without external dependencies
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Expected: Checkpoint submission will fail
+    - name: checkpoint_submission_fails
+      description: Checkpoint submission expected to fail without L1
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_success_total[5m])
+      threshold: "== 0"
+      window: 10m
+      critical: false
+
+    # Expected: API call attempts continue (retries)
+    - name: checkpoint_retries_continue
+      description: System continues attempting checkpoint submissions
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 10m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - heimdallv2_checkpoint_api_calls_success_total

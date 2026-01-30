@@ -1,0 +1,134 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: progressive-network-degradation
+  description: Gradually increase network issues to test system resilience under progressive stress
+  tags: [network, latency, packet-loss, progressive, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: degraded_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: degraded_validator_bor
+
+  duration: 12m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Phase 1: Light latency on Heimdall
+    - phase: light_latency_heimdall
+      description: Add 100ms latency to Heimdall
+      target: degraded_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        latency: 100
+        target_proto: tcp,udp
+      duration: 3m
+
+    # Phase 1: Light latency on Bor
+    - phase: light_latency_bor
+      description: Add 100ms latency to Bor
+      target: degraded_validator_bor
+      type: network
+      params:
+        device: eth0
+        latency: 100
+        target_proto: tcp,udp
+      duration: 3m
+
+    # Phase 2: Moderate latency + packet loss on Heimdall
+    - phase: moderate_degradation_heimdall
+      description: Increase latency to 300ms and add 5% packet loss on Heimdall
+      target: degraded_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        latency: 300
+        packet_loss: 5
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 3m
+
+    # Phase 2: Moderate latency + packet loss on Bor
+    - phase: moderate_degradation_bor
+      description: Increase latency to 300ms and add 5% packet loss on Bor
+      target: degraded_validator_bor
+      type: network
+      params:
+        device: eth0
+        latency: 300
+        packet_loss: 5
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 3m
+
+    # Phase 3: Heavy degradation on Heimdall
+    - phase: heavy_degradation_heimdall
+      description: Increase to 500ms latency and 10% packet loss on Heimdall
+      target: degraded_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        packet_loss: 10
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 6m
+
+    # Phase 3: Heavy degradation on Bor
+    - phase: heavy_degradation_bor
+      description: Increase to 500ms latency and 10% packet loss on Bor
+      target: degraded_validator_bor
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        packet_loss: 10
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 6m
+
+  success_criteria:
+    # Critical: Network resilience - other validators must continue
+    - name: network_continues_producing_blocks
+      description: Overall network continues block production
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Consensus must progress
+    - name: consensus_progresses
+      description: Heimdall consensus continues
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Non-critical: Checkpoint API continues responding
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 12m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total

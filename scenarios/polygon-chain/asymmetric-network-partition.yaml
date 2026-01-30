@@ -1,0 +1,83 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: asymmetric-network-partition
+  description: One-way network partition where validator 1 cannot reach validator 2, but validator 2 can reach validator 1
+  tags: [network, partition, asymmetric, byzantine, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Validator 1 - blocks outgoing to validator 2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: validator1_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: validator1_bor
+
+  duration: 6m
+  warmup: 30s
+  cooldown: 1m
+
+  # Create asymmetric partition - validator 1 cannot send to others
+  # Note: This creates a unidirectional partition which can expose Byzantine-like scenarios
+  faults:
+    - phase: asymmetric_partition_heimdall
+      description: Block outgoing traffic from validator 1 Heimdall
+      target: validator1_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "26656,26657"
+        target_proto: tcp,udp
+
+    - phase: asymmetric_partition_bor
+      description: Block outgoing traffic from validator 1 Bor
+      target: validator1_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: Network continues with majority
+    - name: network_continues_asymmetric
+      description: Network continues despite asymmetric partition
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    # Critical: Consensus progresses with majority
+    - name: consensus_handles_asymmetry
+      description: Consensus continues with other validators
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    # Expected: Affected validator may fall behind
+    - name: validator1_degraded
+      description: Validator 1 may stop participating in consensus
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[1m])
+      threshold: "<= 0"
+      window: 6m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators

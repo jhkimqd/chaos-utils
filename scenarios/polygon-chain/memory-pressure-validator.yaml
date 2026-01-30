@@ -1,0 +1,90 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: memory-pressure-validator
+  description: Validator under memory pressure - simulates memory leak or high memory usage
+  tags: [memory, resource-exhaustion, performance, medium-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: memory_constrained_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: memory_constrained_bor
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 2m
+
+  # Apply memory limits to constrain validator resources
+  # Note: Limits are set to create pressure without killing processes
+  # Typical usage: Heimdall ~300-500MB, Bor ~800MB-1.5GB under normal load
+  faults:
+    - phase: memory_limit_heimdall
+      description: Limit Heimdall to 512MB memory (creates pressure without OOM)
+      target: memory_constrained_heimdall
+      type: memory_pressure
+      params:
+        memory_mb: 512  # Conservative limit to avoid OOM kill
+        method: limit   # Cgroup limit - caps maximum memory usage
+
+    - phase: memory_limit_bor
+      description: Limit Bor to 1GB memory (creates pressure without OOM)
+      target: memory_constrained_bor
+      type: memory_pressure
+      params:
+        memory_mb: 1024  # Conservative limit to avoid OOM kill
+        method: limit    # Cgroup limit - caps maximum memory usage
+
+  success_criteria:
+    # Critical: Network continues with memory-constrained validator
+    - name: network_continues_under_pressure
+      description: Block production continues despite memory pressure
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: Consensus continues under memory pressure
+    - name: consensus_continues_under_pressure
+      description: Consensus progresses despite memory constraints
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Expected: Memory-constrained validator stays online (no OOM kill)
+    - name: validator_survives_memory_pressure
+      description: Validator stays online under memory pressure
+      type: prometheus
+      query: up{job="l2-cl-2-heimdall-v2-bor-validator"}
+      threshold: "== 1"
+      window: 8m
+      critical: false
+
+    # Expected: Performance degradation on constrained validator
+    - name: performance_degradation_detected
+      description: Memory-constrained validator shows reduced performance
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])
+      threshold: "< 100"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - process_resident_memory_bytes
+    - go_memstats_alloc_bytes
+    - up

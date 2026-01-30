@@ -1,0 +1,80 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: checkpoint-delay-cascade
+  description: Simulate progressive delays in checkpoint submission from multiple validators
+  tags: [latency, cascade, checkpoint, medium-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target multiple validators to simulate cascading delays
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-.*-heimdall.*validator"
+      alias: all_validators
+
+  duration: 8m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Phase 1: Add moderate latency to first validator
+    - phase: initial_delay
+      description: Add 200ms latency to first validator's checkpoint communication
+      target: all_validators
+      type: network
+      params:
+        device: eth0
+        latency: 200
+        target_ports: "26656,26657,1317"
+        target_proto: tcp,udp
+      duration: 3m
+
+    # Phase 2: Increase latency progressively
+    - phase: progressive_delay
+      description: Increase latency to 500ms to simulate cascade effect
+      target: all_validators
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        target_ports: "26656,26657,1317"
+        target_proto: tcp,udp
+      duration: 3m
+      delay: 3m
+
+  success_criteria:
+    # Critical: Network must continue producing blocks
+    - name: block_production_continues
+      description: Bor continues producing blocks despite checkpoint delays
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: Consensus must progress
+    - name: heimdall_consensus_progresses
+      description: Heimdall consensus height continues to increase
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Non-critical: Checkpoint API continues responding
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond despite delays
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: ">= 0"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total

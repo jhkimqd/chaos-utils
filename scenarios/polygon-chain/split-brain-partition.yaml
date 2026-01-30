@@ -1,0 +1,113 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: split-brain-partition
+  description: Create a network partition splitting validators into two groups
+  tags: [network, partition, split-brain, critical-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: partition_group_a_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: partition_group_a_bor
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: partition_group_b_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: partition_group_b_bor
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Partition group A Heimdall from group B
+    - phase: partition_a_heimdall_from_b
+      description: Complete network isolation of validator 1 Heimdall
+      target: partition_group_a_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+    # Partition group A Bor from group B
+    - phase: partition_a_bor_from_b
+      description: Complete network isolation of validator 1 Bor
+      target: partition_group_a_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+    # Partition group B Heimdall from group A (bidirectional)
+    - phase: partition_b_heimdall_from_a
+      description: Complete network isolation of validator 2 Heimdall
+      target: partition_group_b_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+    # Partition group B Bor from group A (bidirectional)
+    - phase: partition_b_bor_from_a
+      description: Complete network isolation of validator 2 Bor
+      target: partition_group_b_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: Network must continue with majority
+    - name: network_survives_partition
+      description: Network with majority continues block production
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Critical: Consensus continues
+    - name: consensus_continues
+      description: Heimdall consensus progresses with majority
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Non-critical: Checkpoint API remains accessible
+    - name: checkpoint_api_accessible
+      description: Checkpoint API continues to respond
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[2m])
+      threshold: ">= 0"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators
+    - heimdallv2_checkpoint_api_calls_total

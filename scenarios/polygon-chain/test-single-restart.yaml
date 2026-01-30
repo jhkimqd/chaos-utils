@@ -1,0 +1,45 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: test-single-restart
+  description: Test container restart functionality on a single RPC node
+  tags: [test, restart, validation]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Target a single RPC node (not a validator, so less critical)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-rpc"
+      alias: test_rpc_node
+
+  duration: 30s
+  warmup: 10s
+  cooldown: 10s
+
+  # Restart single RPC node
+  faults:
+    - phase: test_restart
+      description: Test restart of single RPC node
+      target: test_rpc_node
+      type: container_restart
+      params:
+        grace_period: 10
+        restart_delay: 2
+
+  success_criteria:
+    # Just verify the network continues (not checking the restarted node)
+    - name: network_continues
+      description: Network continues during single RPC restart
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 30s
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - up

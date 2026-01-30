@@ -1,0 +1,54 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: quick-cleanup-test
+  description: Quick test to verify cleanup works
+  tags: [test, quick]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target a validator node (both consensus and execution layers)
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: test_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: test_validator_bor
+
+  # Short durations for quick test
+  duration: 1m
+  warmup: 10s
+  cooldown: 10s
+
+  # Simple fault: 50% packet loss
+  faults:
+    - phase: test_fault_heimdall
+      description: Test 50% packet loss on Heimdall (all traffic)
+      target: test_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 50
+        target_proto: tcp,udp
+
+    - phase: test_fault_bor
+      description: Test 50% packet loss on Bor (all traffic)
+      target: test_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 50
+        target_proto: tcp,udp
+
+  # No success criteria for quick test
+  success_criteria: []
+
+  # No metrics collection for quick test
+  metrics: []

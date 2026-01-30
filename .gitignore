@@ -26,3 +26,15 @@ _testmain.go
 # Output files
 *output.log
 *.log
+
+# Build artifacts
+/bin/
+chaos-runner
+
+# Framework artifacts
+/reports/
+config.yaml
+
+# Development
+.vscode/
+.idea/

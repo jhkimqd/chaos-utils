@@ -1,0 +1,94 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: intermittent-checkpoint-failures
+  description: Checkpoint submission experiences intermittent failures to test retry and recovery logic
+  tags: [network, checkpoint, intermittent, data-integrity, medium-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: validator_with_flaky_checkpoint
+
+  duration: 12m
+  warmup: 30s
+  cooldown: 1m
+
+  # Simulate intermittent checkpoint failures with varying packet loss
+  faults:
+    # Phase 1: Light intermittent failures (20% packet loss)
+    - phase: light_intermittent
+      description: 20% packet loss on checkpoint submission ports
+      target: validator_with_flaky_checkpoint
+      type: network
+      params:
+        device: eth0
+        packet_loss: 20
+        target_ports: "1317,26657"
+        target_proto: tcp
+      duration: 4m
+
+    # Phase 2: Moderate intermittent failures (50% packet loss)
+    - phase: moderate_intermittent
+      description: 50% packet loss on checkpoint submission ports
+      target: validator_with_flaky_checkpoint
+      type: network
+      params:
+        device: eth0
+        packet_loss: 50
+        target_ports: "1317,26657"
+        target_proto: tcp
+      duration: 4m
+      delay: 4m
+
+    # Phase 3: Heavy intermittent failures (80% packet loss)
+    - phase: heavy_intermittent
+      description: 80% packet loss on checkpoint submission ports
+      target: validator_with_flaky_checkpoint
+      type: network
+      params:
+        device: eth0
+        packet_loss: 80
+        target_ports: "1317,26657"
+        target_proto: tcp
+      duration: 4m
+      delay: 8m
+
+  success_criteria:
+    # Critical: Block production continues
+    - name: block_production_continues
+      description: Block production continues despite checkpoint issues
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Consensus continues
+    - name: consensus_continues
+      description: Consensus continues despite intermittent failures
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Non-critical: Some checkpoints still succeed
+    - name: checkpoint_retry_succeeds
+      description: Checkpoint submission retries eventually succeed
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_success_total[5m])
+      threshold: ">= 0"
+      window: 12m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - heimdallv2_checkpoint_api_calls_success_total
