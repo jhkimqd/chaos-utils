@@ -202,7 +202,7 @@ func (v *Validator) validateTargetSelector(sel scenario.TargetSelector, index in
 		return
 	}
 
-	validTypes := []string{"kurtosis_service", "docker_container", "manual"}
+	validTypes := []string{"kurtosis_service", "docker_container"}
 	valid := false
 	for _, t := range validTypes {
 		if sel.Type == t {
@@ -229,11 +229,6 @@ func (v *Validator) validateTargetSelector(sel scenario.TargetSelector, index in
 	case "docker_container":
 		if sel.Pattern == "" && sel.ContainerID == "" && len(sel.Labels) == 0 {
 			v.Errors = append(v.Errors, fmt.Sprintf("spec.targets[%d].selector must have pattern, container_id, or labels for docker_container type", index))
-		}
-
-	case "manual":
-		if sel.ContainerID == "" {
-			v.Errors = append(v.Errors, fmt.Sprintf("spec.targets[%d].selector.container_id is required for manual type", index))
 		}
 	}
 }

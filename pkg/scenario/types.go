@@ -63,7 +63,7 @@ type Target struct {
 
 // TargetSelector defines how to select target services
 type TargetSelector struct {
-	// Type of selector: kurtosis_service, docker_container, manual
+	// Type of selector: kurtosis_service, docker_container
 	Type string `yaml:"type"`
 
 	// Enclave name for Kurtosis services
