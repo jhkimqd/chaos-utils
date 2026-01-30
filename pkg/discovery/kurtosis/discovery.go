@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/kurtosis-tech/kurtosis/api/golang/core/lib/enclaves"
-	"github.com/kurtosis-tech/kurtosis/api/golang/engine/lib/kurtosis_context"
 	"github.com/jihwankim/chaos-utils/pkg/discovery"
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
+	"github.com/kurtosis-tech/kurtosis/api/golang/engine/lib/kurtosis_context"
 )
 
 // Discovery provides Kurtosis-based service discovery
@@ -53,11 +52,17 @@ func (d *Discovery) DiscoverServices(ctx context.Context, enclaveName string) ([
 
 	// Convert to our Service type
 	result := make([]*discovery.Service, 0, len(services))
-	for serviceName, serviceCtx := range services {
+	for serviceName := range services {
+		// Get the actual service context
+		serviceCtx, err := enclaveCtx.GetServiceContext(string(serviceName))
+		if err != nil {
+			continue // Skip services we can't access
+		}
+
 		svc := &discovery.Service{
-			Name:      serviceName,
-			ShortName: serviceName,
-			IP:        serviceCtx.GetPrivateIPAddress().String(),
+			Name:      string(serviceName),
+			ShortName: string(serviceName),
+			IP:        serviceCtx.GetPrivateIPAddress(),
 			Ports:     make(map[string]uint16),
 		}
 
@@ -68,11 +73,11 @@ func (d *Discovery) DiscoverServices(ctx context.Context, enclaveName string) ([
 		}
 
 		// Infer service type and role from name
-		svc.Type, svc.Role = inferServiceInfo(serviceName)
+		svc.Type, svc.Role = inferServiceInfo(string(serviceName))
 
 		// Try to get container ID from Docker
 		// Kurtosis services typically have container names matching service names
-		if dockerSvc, err := d.dockerClient.GetContainerByName(ctx, serviceName); err == nil {
+		if dockerSvc, err := d.dockerClient.GetContainerByName(ctx, string(serviceName)); err == nil {
 			svc.ContainerID = dockerSvc.ContainerID
 			svc.ContainerName = dockerSvc.ContainerName
 			svc.NetworkMode = dockerSvc.NetworkMode
@@ -80,7 +85,7 @@ func (d *Discovery) DiscoverServices(ctx context.Context, enclaveName string) ([
 			svc.Labels = dockerSvc.Labels
 		} else {
 			// Try with kurtosis enclave prefix
-			containerName := fmt.Sprintf("%s--%s", enclaveName, serviceName)
+			containerName := fmt.Sprintf("%s--%s", enclaveName, string(serviceName))
 			if dockerSvc, err := d.dockerClient.GetContainerByName(ctx, containerName); err == nil {
 				svc.ContainerID = dockerSvc.ContainerID
 				svc.ContainerName = dockerSvc.ContainerName
@@ -144,9 +149,10 @@ func (d *Discovery) ListEnclaves(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to list enclaves: %w", err)
 	}
 
-	names := make([]string, 0, len(enclaves))
-	for name := range enclaves {
-		names = append(names, string(name))
+	enclavesByName := enclaves.GetEnclavesByName()
+	names := make([]string, 0, len(enclavesByName))
+	for name := range enclavesByName {
+		names = append(names, name)
 	}
 
 	return names, nil
