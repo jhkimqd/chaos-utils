@@ -7,7 +7,11 @@ import (
 
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 	"github.com/jihwankim/chaos-utils/pkg/injection/container"
+	"github.com/jihwankim/chaos-utils/pkg/injection/disk"
+	"github.com/jihwankim/chaos-utils/pkg/injection/dns"
+	"github.com/jihwankim/chaos-utils/pkg/injection/firewall"
 	"github.com/jihwankim/chaos-utils/pkg/injection/l3l4"
+	"github.com/jihwankim/chaos-utils/pkg/injection/process"
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 	"github.com/jihwankim/chaos-utils/pkg/injection/stress"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
@@ -22,16 +26,26 @@ type Target struct {
 // Injector provides unified interface for all fault types
 type Injector struct {
 	networkInjector  *l3l4.ComcastWrapper
+	tcInjector       *l3l4.TCWrapper
 	containerManager *container.Manager
 	stressInjector   *stress.StressWrapper
+	firewallInjector *firewall.IptablesWrapper
+	dnsInjector      *dns.DNSWrapper
+	processInjector  *process.PriorityWrapper
+	diskInjector     *disk.IODelayWrapper
 }
 
 // New creates a new unified fault injector
 func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 	return &Injector{
 		networkInjector:  l3l4.New(sidecarMgr),
+		tcInjector:       l3l4.NewTCWrapper(sidecarMgr),
 		containerManager: container.NewManager(dockerClient.GetClient()),
 		stressInjector:   stress.New(dockerClient),
+		firewallInjector: firewall.New(sidecarMgr),
+		dnsInjector:      dns.New(sidecarMgr),
+		processInjector:  process.New(dockerClient),
+		diskInjector:     disk.New(dockerClient),
 	}
 }
 
@@ -50,6 +64,14 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 		return i.injectCPUStress(ctx, fault, targets)
 	case "memory_stress", "memory_pressure", "memory":
 		return i.injectMemoryStress(ctx, fault, targets)
+	case "connection_drop":
+		return i.injectConnectionDrop(ctx, fault, targets)
+	case "dns":
+		return i.injectDNSDelay(ctx, fault, targets)
+	case "process_priority":
+		return i.injectProcessPriority(ctx, fault, targets)
+	case "disk_io":
+		return i.injectDiskIODelay(ctx, fault, targets)
 	default:
 		return fmt.Errorf("unknown fault type: %s", fault.Type)
 	}
@@ -89,9 +111,28 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		if targetCIDR, ok := fault.Params["target_cidr"].(string); ok {
 			params.TargetCIDR = targetCIDR
 		}
+		if reorder, ok := fault.Params["reorder"].(int); ok {
+			params.Reorder = reorder
+		}
+		if reorderCorr, ok := fault.Params["reorder_correlation"].(int); ok {
+			params.ReorderCorrelation = reorderCorr
+		}
 	}
 
-	// Inject on all targets
+	// If packet reordering is specified, use TC wrapper instead of comcast
+	if params.Reorder > 0 {
+		if params.Latency == 0 {
+			return fmt.Errorf("packet reordering requires latency to be set")
+		}
+		for _, target := range targets {
+			if err := i.tcInjector.InjectPacketReorder(ctx, target.ContainerID, params); err != nil {
+				return fmt.Errorf("failed to inject packet reorder on %s: %w", target.Name, err)
+			}
+		}
+		return nil
+	}
+
+	// Otherwise use comcast for standard network faults
 	for _, target := range targets {
 		if err := i.networkInjector.InjectFault(ctx, target.ContainerID, params); err != nil {
 			return fmt.Errorf("failed to inject network fault on %s: %w", target.Name, err)
@@ -288,11 +329,151 @@ func (i *Injector) injectMemoryStress(ctx context.Context, fault *scenario.Fault
 	return nil
 }
 
+// injectConnectionDrop handles connection drop fault injection
+func (i *Injector) injectConnectionDrop(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := firewall.ConnectionDropParams{
+		RuleType:    "drop",
+		TargetProto: "tcp",
+		Probability: 0.1,
+		Stateful:    true,
+	}
+
+	if fault.Params != nil {
+		if ruleType, ok := fault.Params["rule_type"].(string); ok {
+			params.RuleType = ruleType
+		}
+		if targetPorts, ok := fault.Params["target_ports"].(string); ok {
+			params.TargetPorts = targetPorts
+		}
+		if targetProto, ok := fault.Params["target_proto"].(string); ok {
+			params.TargetProto = targetProto
+		}
+		if prob, ok := fault.Params["probability"].(float64); ok {
+			params.Probability = prob
+		}
+		if stateful, ok := fault.Params["stateful"].(bool); ok {
+			params.Stateful = stateful
+		}
+	}
+
+	if err := firewall.ValidateConnectionDropParams(params); err != nil {
+		return fmt.Errorf("invalid connection drop parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.firewallInjector.InjectConnectionDrop(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject connection drop on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectDNSDelay handles DNS delay fault injection
+func (i *Injector) injectDNSDelay(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := dns.DNSParams{
+		DelayMs:     2000,
+		FailureRate: 0,
+		Method:      "dnsmasq",
+	}
+
+	if fault.Params != nil {
+		if delayMs, ok := fault.Params["delay_ms"].(int); ok {
+			params.DelayMs = delayMs
+		}
+		if failureRate, ok := fault.Params["failure_rate"].(float64); ok {
+			params.FailureRate = failureRate
+		}
+		if method, ok := fault.Params["method"].(string); ok {
+			params.Method = method
+		}
+	}
+
+	if err := dns.ValidateDNSParams(params); err != nil {
+		return fmt.Errorf("invalid DNS parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.dnsInjector.InjectDNSDelay(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject DNS delay on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectProcessPriority handles process priority fault injection
+func (i *Injector) injectProcessPriority(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := process.PriorityParams{
+		Priority: 19,
+	}
+
+	if fault.Params != nil {
+		if priority, ok := fault.Params["priority"].(int); ok {
+			params.Priority = priority
+		}
+		if processPattern, ok := fault.Params["process_pattern"].(string); ok {
+			params.ProcessPattern = processPattern
+		}
+	}
+
+	if err := process.ValidatePriorityParams(params); err != nil {
+		return fmt.Errorf("invalid priority parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.processInjector.InjectPriorityChange(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject priority change on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectDiskIODelay handles disk I/O delay fault injection
+func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := disk.IODelayParams{
+		IOLatencyMs: 200,
+		Operation:   "all",
+		Method:      "dm-delay",
+	}
+
+	if fault.Params != nil {
+		if ioLatencyMs, ok := fault.Params["io_latency_ms"].(int); ok {
+			params.IOLatencyMs = ioLatencyMs
+		}
+		if targetPath, ok := fault.Params["target_path"].(string); ok {
+			params.TargetPath = targetPath
+		}
+		if operation, ok := fault.Params["operation"].(string); ok {
+			params.Operation = operation
+		}
+		if method, ok := fault.Params["method"].(string); ok {
+			params.Method = method
+		}
+	}
+
+	if err := disk.ValidateIODelayParams(params); err != nil {
+		return fmt.Errorf("invalid I/O delay parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.diskInjector.InjectIODelay(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject I/O delay on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
 // RemoveFault removes a fault from a target
 func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerID string) error {
 	switch faultType {
 	case "network":
-		return i.networkInjector.RemoveFault(ctx, containerID)
+		// Try to remove both comcast and tc rules
+		_ = i.networkInjector.RemoveFault(ctx, containerID)
+		_ = i.tcInjector.RemoveFault(ctx, containerID)
+		return nil
 	case "container_restart", "container_kill":
 		// Restart and kill don't need removal - containers are already running
 		return nil
@@ -302,6 +483,18 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 	case "cpu_stress", "cpu", "memory_stress", "memory_pressure", "memory":
 		// Remove stress faults
 		return i.stressInjector.RemoveFault(ctx, containerID)
+	case "connection_drop":
+		return i.firewallInjector.RemoveFault(ctx, containerID)
+	case "dns":
+		return i.dnsInjector.RemoveFault(ctx, containerID)
+	case "process_priority":
+		// For process priority, we need the params to know which process
+		// For now, just return nil - priority will reset on process restart
+		return nil
+	case "disk_io":
+		// For disk I/O, we need the params to know the target path
+		// For now, just return nil - ionice will reset on process restart
+		return nil
 	default:
 		return fmt.Errorf("unknown fault type for removal: %s", faultType)
 	}

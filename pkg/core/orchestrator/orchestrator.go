@@ -520,7 +520,9 @@ func (o *Orchestrator) executeWarmup(ctx context.Context) error {
 	}
 
 	fmt.Printf("Warmup period: %s\n", warmup)
-	time.Sleep(warmup)
+	if err := o.interruptibleSleep(ctx, warmup); err != nil {
+		return err
+	}
 	fmt.Println("✓ Warmup complete")
 	return nil
 }
@@ -594,15 +596,20 @@ func (o *Orchestrator) executeMonitor(ctx context.Context) error {
 		fmt.Println("  Starting metrics collection...")
 		o.collector.Start(ctx)
 
-		// Monitor for the duration
-		time.Sleep(duration)
+		// Monitor for the duration (interruptible)
+		if err := o.interruptibleSleep(ctx, duration); err != nil {
+			o.collector.Stop()
+			return err
+		}
 
 		// Stop collection
 		o.collector.Stop()
 		fmt.Println("  ✓ Metrics collection stopped")
 	} else {
 		fmt.Println("  ⚠ Prometheus not available, monitoring duration only")
-		time.Sleep(duration)
+		if err := o.interruptibleSleep(ctx, duration); err != nil {
+			return err
+		}
 	}
 
 	fmt.Println("✓ Monitoring complete")
@@ -670,9 +677,35 @@ func (o *Orchestrator) executeCooldown(ctx context.Context) error {
 	}
 
 	fmt.Printf("Cooldown period: %s\n", cooldown)
-	time.Sleep(cooldown)
+	if err := o.interruptibleSleep(ctx, cooldown); err != nil {
+		return err
+	}
 	fmt.Println("✓ Cooldown complete")
 	return nil
+}
+
+// interruptibleSleep sleeps for duration but can be interrupted by context cancellation or stop request
+func (o *Orchestrator) interruptibleSleep(ctx context.Context, duration time.Duration) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	deadline := time.Now().Add(duration)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("interrupted by context cancellation")
+		case <-ticker.C:
+			// Check if stop was requested
+			if o.stopRequested {
+				return fmt.Errorf("interrupted by emergency stop")
+			}
+			// Check if duration elapsed
+			if time.Now().After(deadline) {
+				return nil
+			}
+		}
+	}
 }
 
 // executeTeardown removes all faults

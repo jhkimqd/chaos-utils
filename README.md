@@ -10,6 +10,15 @@ Chaos Runner helps you systematically test your Polygon Chain network by:
 - Evaluating success criteria automatically
 - Generating detailed test reports
 
+### Key Features
+
+- **Simple CLI**: Single `run` command interface
+- **Auto-Configuration**: Config auto-generated on first run
+- **Declarative Scenarios**: Define tests in YAML
+- **Safe by Default**: Automatic cleanup and emergency stop
+- **Integrated Monitoring**: Built-in Prometheus integration
+- **Production-Ready**: Sidecar isolation prevents interference
+
 
 ## Quick Start
 
@@ -33,14 +42,20 @@ make build-runner
 ### Run Your First Test
 
 ```bash
-# Set Prometheus URL
-export PROMETHEUS_URL=$(kurtosis port print $ENCLAVE_NAME prometheus http)
-
-# Run a quick 1-minute test
+# First run auto-generates config.yaml with defaults
 ./bin/chaos-runner run --scenario scenarios/polygon-chain/quick-test.yaml
 
-# Run full validator partition test (5 minutes)
+# Edit config.yaml to customize (enclave name, Prometheus URL, etc.)
+vim config.yaml
+
+# Run validator partition test (5 minutes)
 ./bin/chaos-runner run --scenario scenarios/polygon-chain/validator-partition.yaml
+```
+
+**Note**: Config is auto-generated on first run. You'll see:
+```
+⚠️  Config file not found, creating default configuration at: config.yaml
+   You can edit this file to customize settings (enclave name, Prometheus URL, etc.)
 ```
 
 ## Architecture
@@ -74,28 +89,26 @@ chaos-utils/
 **Safety Features**:
 - Pre-flight cleanup removes remnants from previous tests
 - Automatic `comcast --stop` before each fault injection
-- Emergency stop via Ctrl+C or `/tmp/chaos-emergency-stop` file
+- Emergency stop via Ctrl+C (SIGINT/SIGTERM handling)
 - Cleanup verification ensures no tc/iptables rules remain
 
 ## Usage
 
-### Available Commands
+### Single Command Interface
+
+Chaos Runner provides a simplified single-command interface:
 
 ```bash
 # Run a chaos test
 ./bin/chaos-runner run --scenario <path-to-yaml>
 
-# Validate scenario without executing
+# Validate scenario without executing (dry-run)
 ./bin/chaos-runner run --scenario <path> --dry-run
 
-# Discover services in enclave
-./bin/chaos-runner discover --enclave <name>
+# Override configuration values
+./bin/chaos-runner run --scenario <path> --enclave <name> --set duration=10m
 
-# Validate scenario syntax
-./bin/chaos-runner validate --scenario <path>
-
-# Emergency stop (in another terminal)
-touch /tmp/chaos-emergency-stop
+# Emergency stop: Press Ctrl+C in the running terminal
 ```
 
 ### Example: Validator Partition Test
@@ -244,43 +257,77 @@ reports/test-20260128-154326-test-1769582606.json
 
 ## Configuration
 
-Edit `config.yaml` to customize:
+### Auto-Generated Configuration
+
+On first run, `config.yaml` is automatically created with sensible defaults. Edit it to customize:
 
 ```yaml
 framework:
-  log_level: info
-  log_format: text
+  log_level: info        # debug, info, warn, error
+  log_format: text       # text or json
 
 kurtosis:
-  enclave_name: "pos"
+  enclave_name: "pos"    # Your Kurtosis enclave name
 
 prometheus:
-  url: ${PROMETHEUS_URL}
+  url: http://localhost:9090  # Auto-discovered if available
   timeout: 30s
 
 docker:
-  sidecar_image: "jhkimqd/chaos-utils:latest"
+  sidecar_image: "jhkimqd/chaos-utils:latest"  # Fault injection sidecar
 
 reporting:
   output_dir: "./reports"
-  keep_last_n: 50
+  keep_last_n: 50        # Keep last 50 test reports
 
-emergency:
-  stop_file: "/tmp/chaos-emergency-stop"
+execution:
+  default_warmup: 30s
+  default_cooldown: 30s
+  max_concurrent_faults: 5
+
+safety:
+  max_duration: 1h       # Maximum test duration
+  require_confirmation: true
 ```
+
+### Configuration Priority
+
+1. Command-line flags (highest priority)
+2. Environment variables (e.g., `PROMETHEUS_URL`)
+3. config.yaml values
+4. Default values (lowest priority)
 
 ## Troubleshooting
 
-### Prometheus Connection Issues
+### First Run Setup
+
+If auto-generated config needs adjustment:
+
 ```bash
-# Check Prometheus URL
+# Edit config.yaml
+vim config.yaml
+
+# Update enclave name
+kurtosis:
+  enclave_name: "your-enclave-name"
+
+# Update Prometheus URL (auto-discovered by default)
+prometheus:
+  url: "http://127.0.0.1:PORT"
+```
+
+### Prometheus Connection Issues
+
+```bash
+# Find Prometheus port
 kurtosis port print <enclave> prometheus http
 
-# Set environment variable
+# Edit config.yaml or use environment variable
 export PROMETHEUS_URL="http://127.0.0.1:32906"
 ```
 
 ### Docker Permission Errors
+
 ```bash
 # Add user to docker group
 sudo usermod -aG docker $USER
@@ -288,6 +335,7 @@ newgrp docker
 ```
 
 ### Cleanup Verification
+
 ```bash
 # Check for remnant sidecars (should be empty)
 docker ps --filter "name=chaos-sidecar"
@@ -296,11 +344,22 @@ docker ps --filter "name=chaos-sidecar"
 docker rm -f $(docker ps -aq --filter "name=chaos-sidecar")
 ```
 
+### View Available Scenarios
+
+```bash
+# List all scenario files
+ls -la scenarios/polygon-chain/
+
+# View scenario details
+cat scenarios/polygon-chain/validator-partition.yaml
+```
+
 ## Advanced Usage
 
 ### Override Scenario Values
 
 ```bash
+# Override duration and warmup period
 ./bin/chaos-runner run \
   --scenario scenarios/polygon-chain/validator-partition.yaml \
   --set duration=10m \
@@ -310,6 +369,7 @@ docker rm -f $(docker ps -aq --filter "name=chaos-sidecar")
 ### Custom Enclave
 
 ```bash
+# Use a different Kurtosis enclave
 ./bin/chaos-runner run \
   --scenario scenarios/polygon-chain/validator-partition.yaml \
   --enclave my-custom-enclave
@@ -318,28 +378,61 @@ docker rm -f $(docker ps -aq --filter "name=chaos-sidecar")
 ### Different Output Format
 
 ```bash
+# Change output format
 ./bin/chaos-runner run \
   --scenario scenarios/polygon-chain/validator-partition.yaml \
-  --format json  # or: text, tui
+  --format json  # Options: text, json, tui
+```
+
+### Verbose Logging
+
+```bash
+# Enable debug logging
+./bin/chaos-runner run \
+  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --verbose
+```
+
+### Custom Config File
+
+```bash
+# Use a different config file
+./bin/chaos-runner run \
+  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --config /path/to/custom-config.yaml
 ```
 
 ## Development
 
 ### Project Structure
 
-- **cmd/**: CLI commands (Cobra)
-- **pkg/core/**: Orchestrator & state machine
-- **pkg/discovery/**: Kurtosis & Docker clients
-- **pkg/injection/**: Sidecar & fault injection
-- **pkg/monitoring/**: Prometheus & metrics
-- **pkg/scenario/**: YAML parser & validator
-- **pkg/reporting/**: Test results & logs
+```
+chaos-utils/
+├── cmd/chaos-runner/          # CLI entry point (single `run` command)
+├── pkg/
+│   ├── core/orchestrator/     # State machine & test execution
+│   ├── discovery/             # Kurtosis & Docker service discovery
+│   ├── injection/             # Sidecar management & fault injection
+│   ├── monitoring/            # Prometheus integration
+│   ├── scenario/              # YAML parser & validator
+│   ├── reporting/             # Test results & logging
+│   ├── emergency/             # Emergency stop & cleanup
+│   └── config/                # Configuration management
+├── scenarios/polygon-chain/   # Built-in test scenarios
+└── reports/                   # Test execution reports (auto-generated)
+```
 
 ### Build from Source
 
 ```bash
-make build-runner  # Builds ./bin/chaos-runner
-make clean         # Remove binaries
+# Build the binary
+make build-runner  # Creates ./bin/chaos-runner
+
+# Clean build artifacts
+make clean
+
+# Run tests
+make test
 ```
 
 ### Docker Image

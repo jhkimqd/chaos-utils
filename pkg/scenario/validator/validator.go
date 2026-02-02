@@ -275,6 +275,10 @@ func (v *Validator) validateFaultType(fault scenario.Fault, index int) {
 		"cpu", "cpu_stress",
 		"memory", "memory_stress", "memory_pressure",
 		"container_restart", "container_kill", "container_pause",
+		"connection_drop",
+		"dns",
+		"process_priority",
+		"disk_io",
 		"disk", "process", "custom",
 	}
 	valid := false

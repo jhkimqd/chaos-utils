@@ -22,6 +22,12 @@ type FaultParams struct {
 	// Bandwidth limit in kbit/s
 	Bandwidth int
 
+	// Reorder percentage (0-100) - requires latency to be set
+	Reorder int
+
+	// ReorderCorrelation percentage (0-100) - correlation between reordered packets
+	ReorderCorrelation int
+
 	// TargetPorts is a comma-separated list of target ports (e.g., "80,443")
 	TargetPorts string
 
@@ -127,6 +133,9 @@ func (cw *ComcastWrapper) buildComcastCommand(params FaultParams) ([]string, err
 		cmd = append(cmd, "--target-bw", fmt.Sprintf("%d", params.Bandwidth))
 	}
 
+	// Note: Packet reordering is handled by TCWrapper, not comcast
+	// Comcast doesn't support reorder - use TCWrapper.InjectPacketReorder() instead
+
 	// Target ports
 	if params.TargetPorts != "" {
 		cmd = append(cmd, "--target-port", params.TargetPorts)
@@ -165,8 +174,21 @@ func ValidateFaultParams(params FaultParams) error {
 	}
 
 	// Check that at least one fault is specified
-	if params.Latency == 0 && params.PacketLoss == 0 && params.Bandwidth == 0 {
-		return fmt.Errorf("at least one fault type must be specified (latency, packet-loss, or bandwidth)")
+	if params.Latency == 0 && params.PacketLoss == 0 && params.Bandwidth == 0 && params.Reorder == 0 {
+		return fmt.Errorf("at least one fault type must be specified (latency, packet-loss, bandwidth, or reorder)")
+	}
+
+	// Reorder requires latency
+	if params.Reorder > 0 && params.Latency == 0 {
+		return fmt.Errorf("packet reordering requires latency to be set")
+	}
+
+	if params.Reorder < 0 || params.Reorder > 100 {
+		return fmt.Errorf("reorder must be between 0 and 100")
+	}
+
+	if params.ReorderCorrelation < 0 || params.ReorderCorrelation > 100 {
+		return fmt.Errorf("reorder_correlation must be between 0 and 100")
 	}
 
 	return nil
