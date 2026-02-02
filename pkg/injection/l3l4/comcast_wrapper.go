@@ -63,8 +63,13 @@ func (cw *ComcastWrapper) InjectFault(ctx context.Context, targetContainerID str
 		}
 	}
 
-	// Always run comcast --stop first to clear any existing rules
+	// Forcefully clear any existing tc rules first
 	// This prevents "rules already setup" errors from previous failed/interrupted tests
+	// Use tc directly to remove all rules, then comcast --stop as backup
+	tcClearCmd := []string{"tc", "qdisc", "del", "dev", "eth0", "root"}
+	_, _ = cw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, tcClearCmd) // Ignore errors - rules may not exist
+
+	// Also run comcast --stop to clean comcast-specific state
 	stopCmd := []string{"comcast", "--stop"}
 	_, _ = cw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, stopCmd) // Ignore errors - may not have rules
 
