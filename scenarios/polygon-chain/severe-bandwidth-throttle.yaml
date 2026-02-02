@@ -1,0 +1,61 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: severe-bandwidth-throttle
+  description: Extreme bandwidth throttle (56 Kbps dial-up speeds) - tests data sync
+  tags: [network, bandwidth, extreme]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: throttled_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: throttled_bor
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: extreme_throttle_heimdall
+      description: 56 Kbps bandwidth (dial-up modem speed)
+      target: throttled_heimdall
+      type: network
+      params:
+        device: eth0
+        bandwidth: 56        # 56 Kbps - dial-up modem speed!
+        target_proto: tcp,udp
+
+    - phase: extreme_throttle_bor
+      description: 56 Kbps bandwidth on Bor
+      target: throttled_bor
+      type: network
+      params:
+        device: eth0
+        bandwidth: 56
+
+  success_criteria:
+    - name: network_continues_producing
+      description: Other validators maintain block production
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[134]-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: throttled_validator_maintains_connection
+      description: Throttled validator stays connected (may lag)
+      type: prometheus
+      query: up{job="l2-cl-2-heimdall-v2-bor-validator"}
+      threshold: "== 1"
+      window: 10m
+      critical: true

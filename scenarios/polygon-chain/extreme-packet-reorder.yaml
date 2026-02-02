@@ -1,0 +1,58 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: extreme-packet-reorder
+  description: Extreme packet reordering (90%) with high latency - tests breaking point
+  tags: [network, packet-reorder, consensus, extreme]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: validator1_consensus
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: extreme_reorder
+      description: Extreme packet reordering - likely to cause issues
+      target: validator1_consensus
+      type: network
+      params:
+        device: eth0
+        latency: 200        # 200ms delay (high)
+        reorder: 90         # 90% reordering (extreme)
+        reorder_correlation: 10  # 10% correlation (very random)
+        target_ports: "26656,26657"
+        target_proto: tcp
+
+  success_criteria:
+    - name: other_validators_continue
+      description: Other validators (not affected) continue producing blocks
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[2-4]-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: quorum_maintained
+      description: At least 75% (3/4) validators remain active
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-validator"} == 1)
+      threshold: ">= 3"
+      window: 10m
+      critical: true
+
+    - name: network_recovers_after_fault
+      description: Affected validator recovers after fault is removed
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 2m
+      critical: false
