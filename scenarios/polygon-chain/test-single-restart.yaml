@@ -2,44 +2,126 @@ apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
   name: test-single-restart
-  description: Test container restart functionality on a single RPC node
-  tags: [test, restart, validation]
+  description: Single validator restart with rapid recovery - tests restart resilience with subtle degradation metrics
+  tags: [test, restart, validation, subtle-metrics]
   author: DevTools
   version: "0.0.1"
 
 spec:
   targets:
-    # Target a single RPC node (not a validator, so less critical)
+    # Target a single validator to test restart and recovery
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-5-bor-heimdall-v2-rpc"
-      alias: test_rpc_node
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: test_validator_heimdall
 
-  duration: 30s
-  warmup: 10s
-  cooldown: 10s
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: test_validator_bor
 
-  # Restart single RPC node
+  duration: 3m
+  warmup: 30s
+  cooldown: 30s
+
+  # Rapid restart with minimal delay
   faults:
-    - phase: test_restart
-      description: Test restart of single RPC node
-      target: test_rpc_node
+    - phase: test_restart_heimdall
+      description: Rapid restart of heimdall validator (simulates quick crash + recovery)
+      target: test_validator_heimdall
       type: container_restart
       params:
-        grace_period: 10
-        restart_delay: 2
+        grace_period: 0
+        restart_delay: 1  # Very quick restart
+      delay: 1m
+
+    - phase: test_restart_bor
+      description: Rapid restart of bor validator (simulates quick crash + recovery)
+      target: test_validator_bor
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 1  # Very quick restart
+      delay: 1m
 
   success_criteria:
-    # Just verify the network continues (not checking the restarted node)
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
     - name: network_continues
-      description: Network continues during single RPC restart
+      description: CRITICAL - Network continues during validator restart
       type: prometheus
       query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
-      window: 30s
+      window: 3m
       critical: true
 
+    - name: validator_recovers
+      description: BASELINE - Heimdall validator comes back online quickly
+      type: prometheus
+      query: up{job="l2-cl-4-heimdall-v2-bor-validator"}
+      threshold: "== 1"
+      window: 3m
+      critical: false
+
+    - name: bor_validator_recovers
+      description: BASELINE - Bor validator comes back online quickly
+      type: prometheus
+      query: up{job="l2-el-4-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      window: 3m
+      critical: false
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: missed_proposals_minimal
+      description: Missed proposals under 3 (quick restart minimizes impact)
+      type: prometheus
+      query: sum(increase(panoptichain_heimdall_missed_block_proposal{job="l2-cl-4-heimdall-v2-bor-validator"}[3m]))
+      threshold: "< 3"
+      window: 3m
+      critical: false
+
+    - name: late_votes_during_recovery
+      description: Late votes under 500 total (brief spike during restart)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_late_votes{job="l2-cl-4-heimdall-v2-bor-validator"}[3m]))
+      threshold: "< 500"
+      window: 3m
+      critical: false
+
+    - name: peer_reconnection_fast
+      description: P2P peers reconnect quickly (back to 3+ within window)
+      type: prometheus
+      query: min_over_time(cometbft_p2p_peers{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
+      threshold: ">= 3"
+      window: 3m
+      critical: false
+
+    - name: consensus_height_resumes
+      description: Validator resumes consensus participation after restart
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 3m
+      critical: false
+
+    - name: bor_block_production_resumes
+      description: Bor resumes block production after restart
+      type: prometheus
+      query: increase(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 3m
+      critical: false
+
   metrics:
+    # Basic metrics
     - chain_head_block
+    - cometbft_consensus_height
     - up
+
+    # Subtle degradation metrics
+    - panoptichain_heimdall_missed_block_proposal
+    - cometbft_consensus_late_votes
+    - cometbft_p2p_peers

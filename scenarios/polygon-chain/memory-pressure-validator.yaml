@@ -2,8 +2,8 @@ apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
   name: memory-pressure-validator
-  description: Validator under memory pressure - simulates memory leak or high memory usage
-  tags: [memory, resource-exhaustion, performance, medium-severity]
+  description: Validator under moderate memory pressure (768MB/1536MB) - tests memory constraints with subtle degradation metrics
+  tags: [memory, resource-exhaustion, performance, low-severity, subtle-metrics]
   author: DevTools
   version: "0.0.1"
 
@@ -25,66 +25,107 @@ spec:
   warmup: 2m
   cooldown: 2m
 
-  # Apply memory limits to constrain validator resources
-  # Note: Limits are set to create pressure without killing processes
+  # Apply moderate memory limits to create pressure without OOM kill
   # Typical usage: Heimdall ~300-500MB, Bor ~800MB-1.5GB under normal load
   faults:
     - phase: memory_limit_heimdall
-      description: Limit Heimdall to 512MB memory (creates pressure without OOM)
+      description: Limit Heimdall to 768MB memory
       target: memory_constrained_heimdall
       type: memory_pressure
       params:
-        memory_mb: 512  # Conservative limit to avoid OOM kill
+        memory_mb: 768
         method: limit   # Cgroup limit - caps maximum memory usage
 
     - phase: memory_limit_bor
-      description: Limit Bor to 1GB memory (creates pressure without OOM)
+      description: Limit Bor to 1536MB memory
       target: memory_constrained_bor
       type: memory_pressure
       params:
-        memory_mb: 1024  # Conservative limit to avoid OOM kill
+        memory_mb: 1536
         method: limit    # Cgroup limit - caps maximum memory usage
 
   success_criteria:
-    # Critical: Network continues with memory-constrained validator
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
     - name: network_continues_under_pressure
-      description: Block production continues despite memory pressure
+      description: CRITICAL - Block production continues despite memory pressure
       type: prometheus
       query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
       window: 8m
       critical: true
 
-    # Critical: Consensus continues under memory pressure
     - name: consensus_continues_under_pressure
-      description: Consensus progresses despite memory constraints
+      description: CRITICAL - Consensus progresses despite memory constraints
       type: prometheus
       query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
       window: 8m
       critical: true
 
-    # Expected: Memory-constrained validator stays online (no OOM kill)
     - name: validator_survives_memory_pressure
-      description: Validator stays online under memory pressure
+      description: BASELINE - Validator stays online under memory pressure (no OOM kill)
       type: prometheus
       query: up{job="l2-cl-2-heimdall-v2-bor-validator"}
       threshold: "== 1"
       window: 8m
       critical: false
 
-    # Expected: Performance degradation on constrained validator
-    - name: performance_degradation_detected
-      description: Memory-constrained validator shows reduced performance
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: late_votes_from_memory_pressure
+      description: Late votes under 5000/min (memory pressure causes GC pauses)
       type: prometheus
-      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])
-      threshold: "< 100"
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 5000"
+      window: 8m
+      critical: false
+
+    - name: duplicate_votes_from_gc_pauses
+      description: Duplicate votes under 250/min (GC pauses cause reprocessing)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 250"
+      window: 8m
+      critical: false
+
+    - name: peer_connections_stable
+      description: P2P connections stay above 2 (memory pressure shouldn't drop connections)
+      type: prometheus
+      query: min(cometbft_p2p_peers{job="l2-cl-2-heimdall-v2-bor-validator"})
+      threshold: ">= 2"
+      window: 8m
+      critical: false
+
+    - name: consensus_round_duration_impact
+      description: Consensus rounds under 15s (memory pressure adds GC delays)
+      type: prometheus
+      query: rate(cometbft_consensus_round_duration_seconds_sum{job="l2-cl-2-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job="l2-cl-2-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 15.0"
+      window: 8m
+      critical: false
+
+    - name: block_interval_degradation
+      description: Block intervals under 20s (memory constraints slow processing)
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 20.0"
       window: 8m
       critical: false
 
   metrics:
+    # Basic metrics
     - chain_head_block
     - cometbft_consensus_height
     - process_resident_memory_bytes
     - go_memstats_alloc_bytes
     - up
+
+    # Subtle degradation metrics
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_duplicate_vote
+    - cometbft_p2p_peers
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count

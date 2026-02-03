@@ -2,8 +2,8 @@ apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
   name: severe-bandwidth-throttle
-  description: Extreme bandwidth throttle (56 Kbps dial-up speeds) - tests data sync
-  tags: [network, bandwidth, extreme]
+  description: Extreme bandwidth throttle (32 Kbps) - tests data sync under severe constraints with subtle degradation metrics
+  tags: [network, bandwidth, extreme, subtle-metrics]
   author: DevTools
   version: "0.0.1"
 
@@ -27,25 +27,28 @@ spec:
 
   faults:
     - phase: extreme_throttle_heimdall
-      description: 56 Kbps bandwidth (dial-up modem speed)
+      description: 32 Kbps bandwidth (slower than dial-up, increased stress from 56 Kbps)
       target: throttled_heimdall
       type: network
       params:
         device: eth0
-        bandwidth: 56        # 56 Kbps - dial-up modem speed!
+        bandwidth: 32        # 32 Kbps - slower than dial-up modem!
         target_proto: tcp,udp
 
     - phase: extreme_throttle_bor
-      description: 56 Kbps bandwidth on Bor
+      description: 32 Kbps bandwidth on Bor (increased stress from 56 Kbps)
       target: throttled_bor
       type: network
       params:
         device: eth0
-        bandwidth: 56
+        bandwidth: 32        # 32 Kbps - severe throttle!
+        target_proto: tcp,udp
 
   success_criteria:
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
     - name: network_continues_producing
-      description: Other validators maintain block production
+      description: CRITICAL - Other validators maintain block production
       type: prometheus
       query: increase(chain_head_block{job=~"l2-el-[134]-.*-validator"}[1m])
       threshold: "> 0"
@@ -53,9 +56,64 @@ spec:
       critical: true
 
     - name: throttled_validator_maintains_connection
-      description: Throttled validator stays connected (may lag)
+      description: CRITICAL - Throttled validator stays connected (may lag)
       type: prometheus
       query: up{job="l2-cl-2-heimdall-v2-bor-validator"}
       threshold: "== 1"
       window: 10m
       critical: true
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: late_votes_from_bandwidth_limits
+      description: Late votes under 3500/min (bandwidth limits delay data transmission)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 3500"
+      window: 10m
+      critical: false
+
+    - name: peer_connections_survive_throttle
+      description: P2P peers stay above 2 (bandwidth limits may cause timeouts)
+      type: prometheus
+      query: min(cometbft_p2p_peers{job="l2-cl-2-heimdall-v2-bor-validator"})
+      threshold: ">= 2"
+      window: 10m
+      critical: false
+
+    - name: duplicate_votes_from_sync_delays
+      description: Duplicate votes under 200/min (bandwidth causes sync issues)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 200"
+      window: 10m
+      critical: false
+
+    - name: consensus_round_duration_stressed
+      description: Consensus rounds under 8s (bandwidth limits slow communication)
+      type: prometheus
+      query: rate(cometbft_consensus_round_duration_seconds_sum{job="l2-cl-2-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job="l2-cl-2-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 8.0"
+      window: 10m
+      critical: false
+
+    - name: throttled_validator_falls_behind
+      description: Throttled validator continues (but may be slower than others)
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[3m])
+      threshold: "> 0"
+      window: 10m
+      critical: false
+
+  metrics:
+    # Basic metrics
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+
+    # Subtle degradation metrics
+    - cometbft_consensus_late_votes
+    - cometbft_p2p_peers
+    - cometbft_consensus_duplicate_vote
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count

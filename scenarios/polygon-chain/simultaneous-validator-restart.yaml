@@ -77,12 +77,12 @@ spec:
       window: 5m
       critical: true
 
-    # Expected: No missed blocks after recovery
-    - name: no_missed_blocks_after_recovery
-      description: Validators should not miss blocks after coming back online
+    # Expected: No missing validators after recovery
+    - name: no_missing_validators_after_recovery
+      description: All validators should be participating after coming back online
       type: prometheus
-      query: increase(cometbft_consensus_validator_missed_blocks[3m])
-      threshold: "< 5"
+      query: cometbft_consensus_missing_validators
+      threshold: "== 0"
       window: 5m
       critical: false
 
@@ -90,5 +90,6 @@ spec:
     - chain_head_block
     - cometbft_consensus_height
     - cometbft_consensus_validators
-    - cometbft_consensus_validator_missed_blocks
+    - cometbft_consensus_missing_validators
+    - panoptichain_heimdall_missed_block_proposal
     - up

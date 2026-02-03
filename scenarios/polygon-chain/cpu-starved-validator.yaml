@@ -2,8 +2,8 @@ apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
   name: cpu-starved-validator
-  description: Validator with CPU throttling - simulates CPU-starved environment or noisy neighbor
-  tags: [cpu, resource-exhaustion, performance, medium-severity]
+  description: Validator with moderate CPU throttling (60%/75%) - tests CPU-starved environment with subtle degradation metrics
+  tags: [cpu, resource-exhaustion, performance, low-severity, subtle-metrics]
   author: DevTools
   version: "0.0.1"
 
@@ -27,90 +27,132 @@ spec:
 
   # Progressive CPU throttling
   faults:
-    # Phase 1: 80% CPU stress (high load)
+    # Phase 1: 60% CPU stress (moderate load)
     - phase: moderate_cpu_throttle_heimdall
-      description: Stress Heimdall CPU at 80% on 2 cores
+      description: Stress Heimdall CPU at 60% on 2 cores
       target: cpu_throttled_heimdall
       type: cpu_stress
       params:
-        cpu_percent: 80
+        cpu_percent: 60
         cores: 2
-        method: stress  # Active CPU stress - will spike CPU usage!
+        method: stress
       duration: 4m
 
     - phase: moderate_cpu_throttle_bor
-      description: Stress Bor CPU at 80% on 2 cores
+      description: Stress Bor CPU at 60% on 2 cores
       target: cpu_throttled_bor
       type: cpu_stress
       params:
-        cpu_percent: 80
+        cpu_percent: 60
         cores: 2
-        method: stress  # Active CPU stress - will spike CPU usage!
+        method: stress
       duration: 4m
 
-    # Phase 2: 95% CPU stress (extreme load)
+    # Phase 2: 75% CPU stress (higher load)
     - phase: severe_cpu_throttle_heimdall
-      description: Stress Heimdall CPU at 95% on 3 cores (extreme load)
+      description: Stress Heimdall CPU at 75% on 3 cores
       target: cpu_throttled_heimdall
       type: cpu_stress
       params:
-        cpu_percent: 95
+        cpu_percent: 75
         cores: 3
-        method: stress  # Active CPU stress - extreme load!
+        method: stress
       duration: 4m
       delay: 4m
 
     - phase: severe_cpu_throttle_bor
-      description: Stress Bor CPU at 95% on 3 cores (extreme load)
+      description: Stress Bor CPU at 75% on 3 cores
       target: cpu_throttled_bor
       type: cpu_stress
       params:
-        cpu_percent: 95
+        cpu_percent: 75
         cores: 3
-        method: stress  # Active CPU stress - extreme load!
+        method: stress
       duration: 4m
       delay: 4m
 
   success_criteria:
-    # Critical: Network survives CPU starvation
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
     - name: network_survives_cpu_starvation
-      description: Block production continues despite CPU throttling
+      description: CRITICAL - Block production continues despite CPU throttling
       type: prometheus
       query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
       window: 8m
       critical: true
 
-    # Critical: Consensus survives CPU starvation
     - name: consensus_survives_cpu_starvation
-      description: Consensus continues despite CPU throttling
+      description: CRITICAL - Consensus continues despite CPU throttling
       type: prometheus
       query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
       window: 8m
       critical: true
 
-    # Expected: CPU-starved validator shows degraded performance
-    - name: cpu_starved_validator_degrades
-      description: CPU-throttled validator shows reduced consensus participation
-      type: prometheus
-      query: increase(cometbft_consensus_height{job="l2-cl-3-heimdall-v2-bor-validator"}[2m])
-      threshold: "< 80"
-      window: 8m
-      critical: false
-
-    # Expected: Other validators compensate
     - name: healthy_validators_compensate
-      description: Validators 1,2,4 maintain normal performance
+      description: BASELINE - Validators 1,2,4 maintain normal performance
       type: prometheus
       query: increase(cometbft_consensus_height{job=~"l2-cl-[124]-heimdall-v2-bor-validator"}[1m])
       threshold: "> 40"
       window: 8m
       critical: false
 
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: late_votes_from_cpu_pressure
+      description: Late votes under 5000/min (CPU stress delays vote processing)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-3-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 5000"
+      window: 8m
+      critical: false
+
+    - name: duplicate_votes_from_processing_delays
+      description: Duplicate votes under 300/min (CPU delays cause reprocessing)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job="l2-cl-3-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 300"
+      window: 8m
+      critical: false
+
+    - name: consensus_round_duration_stressed
+      description: Consensus rounds under 15s (CPU limits slow consensus processing)
+      type: prometheus
+      query: rate(cometbft_consensus_round_duration_seconds_sum{job="l2-cl-3-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job="l2-cl-3-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 15.0"
+      window: 8m
+      critical: false
+
+    - name: block_interval_under_cpu_stress
+      description: Block intervals under 20s (CPU limits affect block production)
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 20.0"
+      window: 8m
+      critical: false
+
+    - name: missed_proposals_from_cpu_limits
+      description: Missed proposals under 10/min (CPU stress delays block preparation)
+      type: prometheus
+      query: sum(rate(panoptichain_heimdall_missed_block_proposal{job="l2-cl-3-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 10"
+      window: 8m
+      critical: false
+
   metrics:
+    # Basic metrics
     - chain_head_block
     - cometbft_consensus_height
     - process_cpu_seconds_total
     - go_goroutines
     - up
+
+    # Subtle degradation metrics
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_duplicate_vote
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - panoptichain_heimdall_missed_block_proposal

@@ -126,4 +126,5 @@ spec:
     - chain_head_block
     - cometbft_consensus_height
     - cometbft_consensus_validators
-    - cometbft_consensus_validator_missed_blocks
+    - cometbft_consensus_missing_validators
+    - panoptichain_heimdall_missed_block_proposal
