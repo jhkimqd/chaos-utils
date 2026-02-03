@@ -1,0 +1,129 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: slow-disk-io-validator
+  description: Validator with moderate disk I/O latency (150ms) - tests storage resilience with subtle degradation metrics
+  tags: [disk, io-latency, storage, subtle-metrics, low-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: slow_io_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: slow_io_bor
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 3m
+
+  faults:
+    - phase: heimdall_io_latency
+      description: Moderate I/O latency (150ms) on Heimdall data directory
+      target: slow_io_heimdall
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/root/.heimdalld/data"
+        operation: all
+
+    - phase: bor_io_latency
+      description: Moderate I/O latency (150ms) on Bor chaindata
+      target: slow_io_bor
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/root/.bor/data/bor/chaindata"
+        operation: all
+
+  success_criteria:
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
+    - name: network_continues
+      description: CRITICAL - Other validators maintain normal block production
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: validator_stays_up
+      description: CRITICAL - Validator doesn't crash despite slow I/O
+      type: prometheus
+      query: up{job="l2-cl-4-heimdall-v2-bor-validator"}
+      threshold: "== 1"
+      window: 8m
+      critical: true
+
+    - name: slow_io_validator_continues
+      description: BASELINE - Validator with slow I/O continues consensus participation
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[3m])
+      threshold: ">= 0"
+      window: 8m
+      critical: false
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: missed_proposals_from_slow_disk
+      description: Missed proposals under 8/min (slow disk delays block preparation)
+      type: prometheus
+      query: sum(rate(panoptichain_heimdall_missed_block_proposal{job="l2-cl-4-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 8"
+      window: 8m
+      critical: false
+
+    - name: late_votes_from_state_reads
+      description: Late votes under 4000/min (slow disk delays state reads for voting)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-4-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 4000"
+      window: 8m
+      critical: false
+
+    - name: consensus_round_duration_impact
+      description: Consensus rounds under 12s (slow disk adds state access latency)
+      type: prometheus
+      query: rate(cometbft_consensus_round_duration_seconds_sum{job="l2-cl-4-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job="l2-cl-4-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 12.0"
+      window: 8m
+      critical: false
+
+    - name: block_interval_degradation
+      description: Block intervals under 18s (slow disk affects block processing)
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 18.0"
+      window: 8m
+      critical: false
+
+    - name: duplicate_votes_manageable
+      description: Duplicate votes under 200/min (indicates sync delays from slow storage)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job="l2-cl-4-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 200"
+      window: 8m
+      critical: false
+
+  metrics:
+    # Basic metrics
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+
+    # Subtle degradation metrics
+    - panoptichain_heimdall_missed_block_proposal
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - cometbft_consensus_duplicate_vote

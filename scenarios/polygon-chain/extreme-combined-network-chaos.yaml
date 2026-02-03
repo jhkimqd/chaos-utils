@@ -1,0 +1,94 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: extreme-combined-network-chaos
+  description: Simultaneous extreme latency + packet loss + reordering on all validators
+  tags: [extreme, network, combined, chaos]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-.*-heimdall-v2-bor-validator"
+      alias: all_validators_heimdall
+
+  duration: 12m
+  warmup: 2m
+  cooldown: 3m
+
+  # Combine multiple network faults simultaneously
+  faults:
+    # Phase 1: Extreme latency (5 seconds!)
+    - phase: extreme_latency_all
+      description: 5 second latency on all validator consensus - way beyond normal timeout
+      target: all_validators_heimdall
+      type: network
+      params:
+        device: eth0
+        latency: 5000  # 5 seconds - extremely high
+        target_ports: "26656,26657"
+        target_proto: tcp
+      duration: 4m
+
+    # Phase 2: Add massive packet loss
+    - phase: massive_packet_loss
+      description: 50% packet loss on top of latency
+      target: all_validators_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 50
+        target_proto: tcp,udp
+      duration: 4m
+      delay: 4m
+
+    # Phase 3: Add packet reordering chaos
+    - phase: packet_chaos
+      description: 90% packet reordering - extreme disorder
+      target: all_validators_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_reorder: 90
+        reorder_correlation: 25
+        target_proto: tcp
+      duration: 4m
+      delay: 8m
+
+  success_criteria:
+    # Survival mode: ANY block production is success
+    - name: network_survives
+      description: Network produces ANY blocks despite extreme chaos
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # At least some consensus activity
+    - name: some_consensus_activity
+      description: At least one validator maintains consensus
+      type: prometheus
+      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) > 0)
+      threshold: ">= 1"
+      window: 12m
+      critical: true
+
+    # Validators stay running (don't crash)
+    - name: no_crashes
+      description: Validators must not crash despite network chaos
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1)
+      threshold: ">= 3"
+      window: 12m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_rounds
+    - up

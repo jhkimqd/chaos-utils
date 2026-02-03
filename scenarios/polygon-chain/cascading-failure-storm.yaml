@@ -1,0 +1,118 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cascading-failure-storm
+  description: Progressive validator failures with network degradation - simulates worst-case cascade
+  tags: [extreme, cascading, progressive, multi-fault]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: validator_1
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: validator_2
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: validator_3
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-.*-heimdall-v2-bor-validator"
+      alias: all_validators
+
+  duration: 15m
+  warmup: 2m
+  cooldown: 3m
+
+  # Cascading failures over time
+  faults:
+    # T+0: Validator 1 gets extreme latency
+    - phase: cascade_stage_1
+      description: Validator 1 - 3 second latency (isolation begins)
+      target: validator_1
+      type: network
+      params:
+        device: eth0
+        latency: 3000
+        target_proto: tcp
+      duration: 15m
+
+    # T+3min: Validator 2 crashes
+    - phase: cascade_stage_2
+      description: Validator 2 - Hard crash
+      target: validator_2
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 15
+      delay: 3m
+
+    # T+6min: All validators hit with packet loss
+    - phase: cascade_stage_3
+      description: All validators - 40% packet loss (network degradation)
+      target: all_validators
+      type: network
+      params:
+        device: eth0
+        packet_loss: 40
+        target_proto: tcp,udp
+      duration: 9m
+      delay: 6m
+
+    # T+9min: Validator 3 gets CPU starved
+    - phase: cascade_stage_4
+      description: Validator 3 - CPU starvation
+      target: validator_3
+      type: cpu
+      params:
+        cpu_percent: 90
+      duration: 6m
+      delay: 9m
+
+  success_criteria:
+    # Network must survive the cascade
+    - name: network_survives_cascade
+      description: Network maintains block production throughout cascade
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    # At least 2 validators maintain consensus
+    - name: minimum_quorum_maintained
+      description: At least 2 validators active throughout
+      type: prometheus
+      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0)
+      threshold: ">= 2"
+      window: 15m
+      critical: true
+
+    # All validators eventually recover
+    - name: full_recovery
+      description: All 4 validators online by end of test
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1)
+      threshold: "== 4"
+      window: 15m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_rounds
+    - up
