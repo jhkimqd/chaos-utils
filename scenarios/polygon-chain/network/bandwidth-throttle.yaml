@@ -68,7 +68,7 @@ spec:
       description: Checkpoint API continues to respond
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_total[2m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 6m
       critical: false
 

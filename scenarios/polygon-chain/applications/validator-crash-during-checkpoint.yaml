@@ -1,0 +1,151 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: validator-crash-during-checkpoint
+  description: Validator suffers multiple crashes during checkpoint submission - tests checkpoint recovery with subtle degradation metrics
+  tags: [crash, restart, checkpoint, edge-case, high-severity, subtle-metrics]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: checkpoint_submitter_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: checkpoint_submitter_bor
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 3m
+
+  # Multiple validator crashes to stress recovery mechanisms
+  # Using container_restart instead of container_kill to avoid Docker filesystem state issues
+  # Checkpoint submission happens periodically, so crashes will likely intersect
+  faults:
+    # First crash - early in test
+    - phase: crash_heimdall_1
+      description: First crash of Heimdall validator (simulates early crash + recovery)
+      target: checkpoint_submitter_heimdall
+      type: container_restart
+      params:
+        grace_period: 0  # Immediate kill (simulates SIGKILL)
+        restart_delay: 3  # Reduced from 5s for faster recovery testing
+      delay: 2m  # Crash after 2 minutes
+
+    - phase: crash_bor_1
+      description: First crash of Bor validator (simulates early crash + recovery)
+      target: checkpoint_submitter_bor
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 3
+      delay: 2m
+
+    # Second crash - mid test
+    - phase: crash_heimdall_2
+      description: Second crash of Heimdall validator (stress recovery mechanisms)
+      target: checkpoint_submitter_heimdall
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 3
+      delay: 5m  # Crash again after recovering from first
+
+    - phase: crash_bor_2
+      description: Second crash of Bor validator (stress recovery mechanisms)
+      target: checkpoint_submitter_bor
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 3
+      delay: 5m
+
+  success_criteria:
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
+    - name: network_survives_crash
+      description: CRITICAL - Other validators continue producing blocks
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: checkpoints_continue
+      description: CRITICAL - Checkpoint submission continues from other validators
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: crashed_validator_recovers
+      description: BASELINE - Crashed validators come back online after restarts (both Heimdall and Bor)
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-2-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      window: 10m
+      critical: false
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: missed_proposals_during_recovery
+      description: Missed proposals under 8/min (crashes cause missed proposal opportunities)
+      type: prometheus
+      query: sum(rate(panoptichain_heimdall_missed_block_proposal{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 8"
+      window: 10m
+      critical: false
+
+    - name: peer_reconnection_after_crash
+      description: P2P peers reconnect (minimum 3 peers after recovery)
+      type: prometheus
+      query: min_over_time(cometbft_p2p_peers{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])
+      threshold: ">= 3"
+      window: 10m
+      critical: false
+
+    - name: late_votes_during_sync
+      description: Late votes under 2500/min (crash recovery causes sync delays)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 2500"
+      window: 10m
+      critical: false
+
+    - name: consensus_height_recovery
+      description: Validator syncs back (height increases after crashes)
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[3m])
+      threshold: "> 0"
+      window: 10m
+      critical: false
+
+    - name: validator_power_maintained
+      description: Validator maintains voting power (doesn't get jailed)
+      type: prometheus
+      query: cometbft_consensus_validator_power{job="l2-cl-2-heimdall-v2-bor-validator"}
+      threshold: "> 0"
+      window: 10m
+      critical: false
+
+  metrics:
+    # Basic metrics
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - heimdallv2_checkpoint_api_calls_success_total
+    - up
+
+    # Subtle degradation metrics
+    - panoptichain_heimdall_missed_block_proposal
+    - cometbft_p2p_peers
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_validator_power

@@ -83,7 +83,7 @@ spec:
       description: Checkpoint submission retries eventually succeed
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_success_total[5m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 12m
       critical: false
 

@@ -69,7 +69,7 @@ spec:
         device: eth0
         packet_loss: 40
         target_proto: tcp,udp
-      duration: 9m
+      duration: 7m
       delay: 6m
 
     # T+9min: Validator 3 gets CPU starved
@@ -79,7 +79,7 @@ spec:
       type: cpu
       params:
         cpu_percent: 90
-      duration: 6m
+      duration: 4m
       delay: 9m
 
   success_criteria:

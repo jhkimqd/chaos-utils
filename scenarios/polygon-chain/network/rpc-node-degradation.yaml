@@ -55,7 +55,7 @@ spec:
       description: RPC remains functional despite degraded performance
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_total[3m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 8m
       critical: false
 

@@ -38,45 +38,53 @@ spec:
   cooldown: 1m
 
   faults:
+    # NOTE: This creates full network isolation (including monitoring).
+    # For true split-brain, ideally add target_hosts to scope packet loss
+    # to opposite partition only, preserving intra-partition communication.
+
     # Partition group A Heimdall from group B
     - phase: partition_a_heimdall_from_b
-      description: Complete network isolation of validator 1 Heimdall
+      description: Complete network isolation of validator 1 Heimdall from all nodes
       target: partition_group_a_heimdall
       type: network
       params:
         device: eth0
         packet_loss: 100
         target_proto: tcp,udp
+        # TODO: Add target_hosts parameter when supported to scope to partition B only
 
     # Partition group A Bor from group B
     - phase: partition_a_bor_from_b
-      description: Complete network isolation of validator 1 Bor
+      description: Complete network isolation of validator 1 Bor from all nodes
       target: partition_group_a_bor
       type: network
       params:
         device: eth0
         packet_loss: 100
         target_proto: tcp,udp
+        # TODO: Add target_hosts parameter when supported
 
     # Partition group B Heimdall from group A (bidirectional)
     - phase: partition_b_heimdall_from_a
-      description: Complete network isolation of validator 2 Heimdall
+      description: Complete network isolation of validator 2 Heimdall from all nodes
       target: partition_group_b_heimdall
       type: network
       params:
         device: eth0
         packet_loss: 100
         target_proto: tcp,udp
+        # TODO: Add target_hosts parameter when supported
 
     # Partition group B Bor from group A (bidirectional)
     - phase: partition_b_bor_from_a
-      description: Complete network isolation of validator 2 Bor
+      description: Complete network isolation of validator 2 Bor from all nodes
       target: partition_group_b_bor
       type: network
       params:
         device: eth0
         packet_loss: 100
         target_proto: tcp,udp
+        # TODO: Add target_hosts parameter when supported
 
   success_criteria:
     # Critical: Network must continue with majority
@@ -102,7 +110,7 @@ spec:
       description: Checkpoint API continues to respond
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_total[2m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 5m
       critical: false
 

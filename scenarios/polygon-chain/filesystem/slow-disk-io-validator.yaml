@@ -67,7 +67,7 @@ spec:
       description: BASELINE - Validator with slow I/O continues consensus participation
       type: prometheus
       query: increase(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[3m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 8m
       critical: false
 

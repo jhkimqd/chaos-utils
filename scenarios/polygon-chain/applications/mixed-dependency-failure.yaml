@@ -74,7 +74,7 @@ spec:
       description: Checkpoint API still accessible despite L1 issues
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_total[5m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 10m
       critical: false
 

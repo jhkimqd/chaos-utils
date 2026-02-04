@@ -96,7 +96,7 @@ spec:
       description: Checkpoints continue with degraded performance
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_total[5m])
-      threshold: ">= 0"
+      threshold: "> 0"
       window: 15m
       critical: false
 
