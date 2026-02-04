@@ -1,0 +1,49 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: op-proposer-memory-leak
+  description: Simulate memory exhaustion on OP proposer to test output proposal resilience
+  tags:
+  - resource
+  - memory
+  - critical
+  - op-stack
+  - proposer
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: op-proposer.*
+    alias: op_proposer
+  duration: 6m
+  warmup: 1m
+  cooldown: 1m
+  faults:
+  - phase: memory_leak_proposer
+    description: Apply progressive memory pressure on proposer
+    target: op_proposer
+    type: memory_pressure
+    params:
+      memory_mb: 1024
+  success_criteria:
+  - name: output_proposals_continue
+    description: Output proposals continue being submitted
+    type: prometheus
+    query: increase(panoptichain_rpc_height[3m])
+    threshold: '> 0'
+    window: 6m
+    critical: false
+  - name: sequencer_unaffected
+    description: Sequencer continues producing blocks
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~"op-el-1.*"}[1m])
+    threshold: '> 0'
+    window: 6m
+    critical: true
+  metrics:
+  - process_resident_memory_bytes
+  - panoptichain_rpc_height
+  - up

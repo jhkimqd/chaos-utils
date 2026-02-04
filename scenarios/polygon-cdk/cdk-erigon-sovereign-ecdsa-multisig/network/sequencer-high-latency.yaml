@@ -1,0 +1,64 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: sequencer-high-latency
+  description: Inject 500ms latency on sequencer RPC to test transaction submission resilience
+  tags: [network, latency, high, sequencer, rpc]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target sequencer (works for both cdk-erigon and op-geth)
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: ".*sequencer.*|.*op-el-1.*"
+      alias: sequencer_node
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  # Add 500ms latency on RPC ports
+  faults:
+    - phase: sequencer_latency
+      description: Add 500ms latency to sequencer RPC endpoints
+      target: sequencer_node
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        target_ports: "8545,8546,8547"
+        target_proto: tcp
+
+  success_criteria:
+    - name: blocks_continue_production
+      description: Block production continues despite RPC latency
+      type: prometheus
+      query: increase(panoptichain_rpc_height[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: sequencer_remains_available
+      description: Sequencer service remains available
+      type: prometheus
+      query: up{job=~"cdk-erigon-sequencer.*"}
+      threshold: "== 1"
+      window: 5m
+      critical: false
+
+    - name: gas_usage_continues
+      description: Gas continues to be used (transactions processing)
+      type: prometheus
+      query: increase(panoptichain_rpc_gas_used_sum[2m])
+      threshold: "> 0"
+      window: 5m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - panoptichain_rpc_gas_used_sum
+    - panoptichain_rpc_block_interval_sum
+    - up

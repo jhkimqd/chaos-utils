@@ -1,0 +1,77 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: aggkit-cascade-restart
+  description: Restart AggKit and its bridge dependency to test cascade recovery
+  tags: [failure, restart, high, aggkit, cascade, multi-target]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target AggKit and its bridge
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "aggkit"
+      alias: aggkit_node
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "aggkit.*bridge.*"
+      alias: aggkit_bridge
+
+  duration: 6m
+  warmup: 1m
+  cooldown: 2m
+
+  # Cascade restart: bridge first, then aggkit
+  faults:
+    - phase: restart_aggkit_bridge
+      description: Restart AggKit bridge service
+      target: aggkit_bridge
+      type: container_restart
+      params:
+        grace_period: 5s
+        restart_delay: 10s
+
+    - phase: restart_aggkit
+      description: Restart AggKit node
+      target: aggkit_node
+      type: container_restart
+      params:
+        grace_period: 5s
+        restart_delay: 10s
+      delay: 30s
+
+  success_criteria:
+    - name: chain_continues_operating
+      description: Chain continues block production during cascade restart
+      type: prometheus
+      query: increase(panoptichain_rpc_height[1m])
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    - name: bridge_deposits_resume
+      description: Bridge operations resume after cascade recovery
+      type: prometheus
+      query: increase(panoptichain_rpc_bridge_deposit_count[2m])
+      threshold: ">= 0"
+      window: 4m
+      critical: false
+
+    - name: gas_used_increases
+      description: Transactions continue being processed
+      type: prometheus
+      query: increase(panoptichain_rpc_gas_used_sum[1m])
+      threshold: "> 0"
+      window: 4m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - panoptichain_rpc_gas_used_sum
+    - up
+    - process_start_time_seconds

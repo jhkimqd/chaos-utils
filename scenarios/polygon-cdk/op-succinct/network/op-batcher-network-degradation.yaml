@@ -1,0 +1,63 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: op-batcher-network-degradation
+  description: Network degradation on OP Stack batcher to test batch submission resilience
+  tags: [network, latency, packet-loss, critical, op-stack, batcher]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target OP batcher
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "op-batcher.*"
+      alias: op_batcher
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  # Combined network degradation: latency + packet loss
+  faults:
+    - phase: batcher_network_degradation
+      description: Inject 300ms latency and 10% packet loss on batcher
+      target: op_batcher
+      type: network
+      params:
+        device: eth0
+        latency: 300
+        packet_loss: 10
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: sequencer_continues_operating
+      description: OP sequencer continues producing blocks
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job=~"op-el-1.*"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: batches_eventually_submitted
+      description: Batches are eventually submitted despite network issues
+      type: prometheus
+      query: increase(panoptichain_rpc_height[5m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: batcher_submission_delays
+      description: Batch submission times increase but remain under threshold
+      type: prometheus
+      query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 5m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - panoptichain_rpc_block_interval_sum
+    - up

@@ -1,0 +1,62 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rpc-node-memory-pressure
+  description: Memory pressure on RPC nodes to test query performance under stress
+  tags: [resource, memory, medium, rpc, performance]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target RPC nodes
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: ".*rpc.*|cdk-erigon-rpc|op-el-2.*"
+      alias: rpc_node
+
+  duration: 6m
+  warmup: 1m
+  cooldown: 1m
+
+  # Memory pressure
+  faults:
+    - phase: memory_pressure_rpc
+      description: Apply memory pressure on RPC nodes
+      target: rpc_node
+      type: memory_pressure
+      params:
+        memory_mb: 1536
+
+  success_criteria:
+    - name: rpc_remains_available
+      description: RPC nodes remain available despite memory pressure
+      type: prometheus
+      query: up{job=~".*rpc.*"}
+      threshold: "== 1"
+      window: 6m
+      critical: true
+
+    - name: rpc_requests_processed
+      description: RPC requests continue to be processed
+      type: prometheus
+      query: increase(panoptichain_rpc_gas_used_count[2m])
+      threshold: "> 0"
+      window: 6m
+      critical: false
+
+    - name: rpc_response_times_acceptable
+      description: RPC response times increase but remain under threshold
+      type: prometheus
+      query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]), 0.001)
+      threshold: "< 5.0"
+      window: 6m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_gas_used_count
+    - panoptichain_rpc_block_interval_sum
+    - process_resident_memory_bytes
+    - go_memstats_alloc_bytes
+    - up

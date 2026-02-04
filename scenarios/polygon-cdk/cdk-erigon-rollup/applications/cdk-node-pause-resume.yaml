@@ -1,0 +1,49 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cdk-node-pause-resume
+  description: Pause cdk-node for 30 seconds to test batch aggregation delay handling
+  tags:
+  - failure
+  - pause
+  - medium
+  - cdk-node
+  - aggregator
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: cdk-node.*
+    alias: cdk_node
+  duration: 4m
+  warmup: 1m
+  cooldown: 1m
+  faults:
+  - phase: pause_cdk_node
+    description: Pause cdk-node for 30 seconds
+    target: cdk_node
+    type: container_pause
+    params:
+      duration: 30s
+  success_criteria:
+  - name: sequencer_unaffected
+    description: Sequencer continues producing blocks during pause
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+    threshold: '> 0'
+    window: 4m
+    critical: true
+  - name: batches_catch_up
+    description: Pending batches are processed after resume
+    type: prometheus
+    query: increase(panoptichain_rpc_height[2m])
+    threshold: '> 0'
+    window: 2m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up

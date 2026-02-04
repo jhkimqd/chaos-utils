@@ -1,0 +1,63 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: l1-execution-cpu-stress
+  description: CPU stress on L1 execution layer to test L2 resilience to slow L1
+  tags: [resource, cpu, critical, l1, execution]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target L1 execution layer
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "el-1-geth.*"
+      alias: l1_execution
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 2m
+
+  # CPU stress at 75%
+  faults:
+    - phase: cpu_stress_l1
+      description: Stress L1 execution CPU at 75% on 3 cores
+      target: l1_execution
+      type: cpu_stress
+      params:
+        cpu_percent: 75
+        cores: 3
+        method: stress
+
+  success_criteria:
+    - name: l1_continues_operating
+      description: L1 continues producing blocks despite CPU stress
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job=~"el-1-geth.*"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: l2_continues_operating
+      description: L2 continues producing blocks despite slow L1
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job=~".*sequencer.*|.*l2.*"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: batch_submissions_may_delay
+      description: Batch submissions may be delayed but eventually succeed
+      type: prometheus
+      query: increase(panoptichain_rpc_height[3m])
+      threshold: "> 0"
+      window: 8m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - process_cpu_seconds_total
+    - l1_panoptichain_rpc_block_interval_sum
+    - up

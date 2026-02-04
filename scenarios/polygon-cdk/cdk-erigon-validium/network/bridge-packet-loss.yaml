@@ -1,0 +1,62 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bridge-packet-loss
+  description: Inject 20% packet loss on bridge service to test message reliability
+  tags: [network, packet-loss, medium, bridge, l1-l2]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target bridge service (multiple patterns for different stacks)
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: ".*bridge.*|zkevm-bridge-service"
+      alias: bridge_node
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  # Inject 20% packet loss
+  faults:
+    - phase: bridge_packet_loss
+      description: Inject 20% packet loss on bridge service network
+      target: bridge_node
+      type: network
+      params:
+        device: eth0
+        packet_loss: 20
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: bridge_deposits_continue
+      description: Bridge deposits continue being processed despite packet loss
+      type: prometheus
+      query: increase(panoptichain_rpc_bridge_deposit_count[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: bridge_withdrawals_continue
+      description: Bridge withdrawals continue being processed
+      type: prometheus
+      query: increase(panoptichain_rpc_bridge_event_deposit_count[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: bridge_claims_processed
+      description: Bridge claims are processed (may be delayed)
+      type: prometheus
+      query: increase(panoptichain_rpc_bridge_deposit_count[5m])
+      threshold: "> 0"
+      window: 5m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_bridge_deposit_count
+    - panoptichain_rpc_bridge_event_deposit_count
+    - up

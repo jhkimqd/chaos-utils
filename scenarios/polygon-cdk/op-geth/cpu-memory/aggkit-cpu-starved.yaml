@@ -1,0 +1,63 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: aggkit-cpu-starved
+  description: CPU starvation on AggKit to test performance under limited resources
+  tags: [resource, cpu, medium, aggkit, performance]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target AggKit
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "aggkit"
+      alias: aggkit_node
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 2m
+
+  # CPU stress at 70%
+  faults:
+    - phase: cpu_starved_aggkit
+      description: Stress AggKit CPU at 70% on 2 cores
+      target: aggkit_node
+      type: cpu_stress
+      params:
+        cpu_percent: 70
+        cores: 2
+        method: stress
+
+  success_criteria:
+    - name: aggkit_continues_operating
+      description: AggKit continues operating despite CPU starvation
+      type: prometheus
+      query: up{job="aggkit"}
+      threshold: "== 1"
+      window: 8m
+      critical: true
+
+    - name: block_production_continues
+      description: Block production continues (may slow down)
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job="aggkit"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: transaction_processing_delayed
+      description: Transaction processing continues but may be delayed
+      type: prometheus
+      query: increase(panoptichain_rpc_gas_used_sum[2m])
+      threshold: "> 0"
+      window: 8m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - panoptichain_rpc_gas_used_sum
+    - process_cpu_seconds_total
+    - up

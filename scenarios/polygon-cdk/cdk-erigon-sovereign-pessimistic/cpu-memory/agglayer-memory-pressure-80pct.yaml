@@ -1,0 +1,62 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: agglayer-memory-pressure-80pct
+  description: Apply 80% memory pressure on agglayer to test memory management
+  tags: [resource, memory, high, agglayer, stability]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target agglayer
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "agglayer"
+      alias: agglayer_node
+
+  duration: 6m
+  warmup: 1m
+  cooldown: 1m
+
+  # Memory pressure at 80%
+  faults:
+    - phase: memory_pressure_agglayer
+      description: Apply memory pressure consuming 2GB
+      target: agglayer_node
+      type: memory_pressure
+      params:
+        memory_mb: 2048
+
+  success_criteria:
+    - name: agglayer_remains_operational
+      description: Agglayer continues operating despite memory pressure
+      type: prometheus
+      query: up{job="agglayer"}
+      threshold: "== 1"
+      window: 6m
+      critical: true
+
+    - name: certificate_processing_continues
+      description: Certificate processing continues (may slow down)
+      type: prometheus
+      query: increase(agglayer_certificates_processed_total[2m])
+      threshold: "> 0"
+      window: 6m
+      critical: false
+
+    - name: memory_usage_under_limit
+      description: Memory usage stays under OOM threshold
+      type: prometheus
+      query: process_resident_memory_bytes{job="agglayer"}
+      threshold: "< 4e9"
+      window: 6m
+      critical: false
+
+  metrics:
+    - process_resident_memory_bytes
+    - agglayer_certificates_processed_total
+    - agglayer_pending_certificates
+    - go_memstats_alloc_bytes
+    - up

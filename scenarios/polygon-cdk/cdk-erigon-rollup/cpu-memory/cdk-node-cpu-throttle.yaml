@@ -1,0 +1,63 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cdk-node-cpu-throttle
+  description: CPU throttling on cdk-node (aggregator/sender) to test batch processing
+  tags: [resource, cpu, high, cdk-node, aggregator]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target cdk-node
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "cdk-node.*"
+      alias: cdk_node
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 2m
+
+  # CPU stress at 65%
+  faults:
+    - phase: cpu_throttle_cdk_node
+      description: Throttle cdk-node CPU at 65% on 2 cores
+      target: cdk_node
+      type: cpu_stress
+      params:
+        cpu_percent: 65
+        cores: 2
+        method: stress
+
+  success_criteria:
+    - name: sequencer_unaffected
+      description: Sequencer continues producing blocks
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: aggregator_continues_processing
+      description: Aggregator continues processing batches
+      type: prometheus
+      query: increase(panoptichain_rpc_height[3m])
+      threshold: "> 0"
+      window: 8m
+      critical: false
+
+    - name: batch_processing_delayed
+      description: Batch processing times increase but remain manageable
+      type: prometheus
+      query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]), 0.001)
+      threshold: "< 60"
+      window: 8m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - panoptichain_rpc_block_interval_sum
+    - process_cpu_seconds_total
+    - up

@@ -1,0 +1,52 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: postgres-connection-latency
+  description: Inject 200ms latency on PostgreSQL connections to test database resilience
+  tags:
+  - network
+  - latency
+  - medium
+  - database
+  - postgres
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: postgres.*
+    alias: postgres_db
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: postgres_latency
+    description: Add 200ms latency to PostgreSQL connections
+    target: postgres_db
+    type: network
+    params:
+      device: eth0
+      latency: 200
+      target_ports: '5432'
+      target_proto: tcp
+  success_criteria:
+  - name: services_continue_operating
+    description: Services continue operating despite slow database
+    type: prometheus
+    query: increase(panoptichain_rpc_height[1m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: services_maintain_functionality
+    description: Services maintain functionality despite database latency
+    type: prometheus
+    query: increase(panoptichain_rpc_gas_used_sum[2m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up

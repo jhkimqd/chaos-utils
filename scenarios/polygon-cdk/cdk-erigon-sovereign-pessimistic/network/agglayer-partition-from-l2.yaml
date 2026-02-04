@@ -1,0 +1,55 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: agglayer-partition-from-l2
+  description: Isolate agglayer from L2 chains to test cross-chain coordination resilience
+  tags: [network, partition, critical, agglayer, cross-chain]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target agglayer service
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "agglayer"
+      alias: agglayer_node
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  # Block all network communication from agglayer
+  faults:
+    - phase: partition_agglayer
+      description: Block all agglayer network communication to simulate isolation
+      target: agglayer_node
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: l2_chains_continue_operating
+      description: L2 chains continue producing blocks despite agglayer isolation
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: agglayer_recovers_after_partition
+      description: Agglayer should recover and sync after partition is removed
+      type: prometheus
+      query: up{job="agglayer"}
+      threshold: "== 1"
+      window: 1m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - agglayer_pending_certificates
+    - agglayer_settled_certificates
+    - up

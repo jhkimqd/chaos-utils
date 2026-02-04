@@ -1,0 +1,52 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cdk-node-aggregator-partition
+  description: Partition between sequencer and aggregator to test batch coordination
+  tags:
+  - network
+  - partition
+  - critical
+  - aggregator
+  - sequencer
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: cdk-node.*|.*aggregator.*
+    alias: aggregator_node
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: partition_aggregator
+    description: Isolate aggregator from network to test batch coordination
+    target: aggregator_node
+    type: network
+    params:
+      device: eth0
+      packet_loss: 100
+      target_proto: tcp,udp
+  success_criteria:
+  - name: sequencer_continues_operating
+    description: Sequencer continues producing blocks despite aggregator partition
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: batches_accumulate
+    description: Batches accumulate while aggregator is partitioned
+    type: prometheus
+    query: panoptichain_rpc_gas_used_sum
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - panoptichain_rpc_block_interval_sum
+  - up
