@@ -36,6 +36,27 @@ spec:
     threshold: '> 0'
     window: 6m
     critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: empty_blocks_low
+    description: Not producing too many empty blocks
+    type: prometheus
+    query: rate(panoptichain_rpc_empty_block[2m])
+    threshold: < 0.5
+    window: 5m
+    critical: false
+  - name: block_time_stable
+    description: Block time remains stable despite resource pressure
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
   - name: sequencer_unaffected
     description: Sequencer continues producing blocks
     type: prometheus
@@ -47,3 +68,11 @@ spec:
   - process_resident_memory_bytes
   - panoptichain_rpc_height
   - up
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_empty_block
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_transactions_per_block_sum
+  - panoptichain_rpc_transactions_per_block_count
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count

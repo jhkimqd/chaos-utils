@@ -2,8 +2,7 @@ apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
   name: op-batcher-crash-during-submission
-  description: Kill OP batcher during active batch submission to test transaction
-    recovery
+  description: Kill OP batcher during active batch submission to test transaction recovery
   tags:
   - failure
   - crash
@@ -44,6 +43,24 @@ spec:
     threshold: '> 0'
     window: 2m
     critical: false
+  - name: proofs_being_generated
+    description: ZK proofs are being generated
+    type: prometheus
+    query: increase(succinct_highest_proven_contiguous_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: l2_finalization_continues
+    description: L2 blocks continue to be finalized with ZK proofs
+    type: prometheus
+    query: increase(succinct_l2_finalized_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
   metrics:
   - panoptichain_rpc_height
   - up
+  - succinct_l2_finalized_block
+  - succinct_highest_proven_contiguous_block
+  - succinct_current_proving_proofs
+  - succinct_agg_proof_request_error_count

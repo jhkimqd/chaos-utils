@@ -36,13 +36,47 @@ spec:
     threshold: '> 0'
     window: 6m
     critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: empty_blocks_low
+    description: Not producing too many empty blocks
+    type: prometheus
+    query: rate(panoptichain_rpc_empty_block[2m])
+    threshold: < 0.5
+    window: 5m
+    critical: false
+  - name: block_time_stable
+    description: Block time remains stable despite resource pressure
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
   - name: rpc_response_times_acceptable
     description: RPC response times increase but remain under threshold
     type: prometheus
-    query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]),
-      0.001)
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]), 0.001)
     threshold: < 5.0
     window: 6m
+    critical: false
+  - name: proofs_being_generated
+    description: ZK proofs are being generated
+    type: prometheus
+    query: increase(succinct_highest_proven_contiguous_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: l2_finalization_continues
+    description: L2 blocks continue to be finalized with ZK proofs
+    type: prometheus
+    query: increase(succinct_l2_finalized_block[10m])
+    threshold: '> 0'
+    window: 10m
     critical: false
   metrics:
   - panoptichain_rpc_gas_used_count
@@ -50,3 +84,13 @@ spec:
   - process_resident_memory_bytes
   - go_memstats_alloc_bytes
   - up
+  - panoptichain_rpc_empty_block
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_transactions_per_block_sum
+  - panoptichain_rpc_transactions_per_block_count
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count
+  - succinct_l2_finalized_block
+  - succinct_highest_proven_contiguous_block
+  - succinct_current_proving_proofs
+  - succinct_agg_proof_request_error_count

@@ -3,77 +3,90 @@ kind: ChaosScenario
 metadata:
   name: bridge-intermittent-restarts
   description: Restart bridge service every 60 seconds (3x) to test stability under frequent restarts
-  tags: [failure, restart, high, bridge, intermittent]
+  tags:
+  - failure
+  - restart
+  - high
+  - bridge
+  - intermittent
   author: DevTools
-  version: "0.0.1"
-
+  version: 0.0.1
 spec:
-  # Target bridge service
   targets:
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: ".*bridge.*|zkevm-bridge-service"
-      alias: bridge_node
-
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*bridge.*|zkevm-bridge-service
+    alias: bridge_node
   duration: 5m
   warmup: 30s
   cooldown: 30s
-
-  # Intermittent restarts every 60 seconds
   faults:
-    - phase: restart_bridge_1
-      description: First bridge restart
-      target: bridge_node
-      type: container_restart
-      params:
-        grace_period: 3s
-        restart_delay: 5s
-
-    - phase: restart_bridge_2
-      description: Second bridge restart
-      target: bridge_node
-      type: container_restart
-      params:
-        grace_period: 3s
-        restart_delay: 5s
-      delay: 60s
-
-    - phase: restart_bridge_3
-      description: Third bridge restart
-      target: bridge_node
-      type: container_restart
-      params:
-        grace_period: 3s
-        restart_delay: 5s
-      delay: 120s
-
+  - phase: restart_bridge_1
+    description: First bridge restart
+    target: bridge_node
+    type: container_restart
+    params:
+      grace_period: 3s
+      restart_delay: 5s
+  - phase: restart_bridge_2
+    description: Second bridge restart
+    target: bridge_node
+    type: container_restart
+    params:
+      grace_period: 3s
+      restart_delay: 5s
+    delay: 60s
+  - phase: restart_bridge_3
+    description: Third bridge restart
+    target: bridge_node
+    type: container_restart
+    params:
+      grace_period: 3s
+      restart_delay: 5s
+    delay: 120s
   success_criteria:
-    - name: bridge_recovers_each_time
-      description: Bridge recovers after each restart
-      type: prometheus
-      query: up{job=~".*bridge.*"}
-      threshold: "== 1"
-      window: 1m
-      critical: true
-
-    - name: deposits_eventually_processed
-      description: Deposits continue being processed (may accumulate during restarts)
-      type: prometheus
-      query: increase(panoptichain_rpc_bridge_deposit_count[5m])
-      threshold: "> 0"
-      window: 5m
-      critical: false
-
-    - name: no_data_loss
-      description: Bridge sync progress continues (no rollback)
-      type: prometheus
-      query: panoptichain_rpc_bridge_deposit_count
-      threshold: "> 0"
-      window: 5m
-      critical: false
-
+  - name: bridge_recovers_each_time
+    description: Bridge recovers after each restart
+    type: prometheus
+    query: up{job=~".*bridge.*"}
+    threshold: == 1
+    window: 1m
+    critical: true
+  - name: deposits_eventually_processed
+    description: Deposits continue being processed (may accumulate during restarts)
+    type: prometheus
+    query: increase(panoptichain_rpc_bridge_deposit_count[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: no_data_loss
+    description: Bridge sync progress continues (no rollback)
+    type: prometheus
+    query: panoptichain_rpc_bridge_deposit_count
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: bridge_events_recent
+    description: Bridge events are recent (< 5 minutes old)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_bridge_event
+    threshold: < 300
+    window: 5m
+    critical: false
+  - name: global_exit_root_synchronized
+    description: L1-L2 coordination continues (global exit root updates)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_global_exit_root
+    threshold: < 180
+    window: 5m
+    critical: false
   metrics:
-    - panoptichain_rpc_bridge_deposit_count
-    - panoptichain_rpc_bridge_event_deposit_count
-    - up
+  - panoptichain_rpc_bridge_deposit_count
+  - panoptichain_rpc_bridge_event_deposit_count
+  - up
+  - panoptichain_rpc_time_since_last_bridge_event
+  - panoptichain_rpc_bridge_event_amount_sum
+  - panoptichain_rpc_bridge_event_amount_count
+  - panoptichain_rpc_time_since_last_global_exit_root
+  - panoptichain_rpc_global_exit_roots

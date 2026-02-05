@@ -51,8 +51,28 @@ spec:
     threshold: '> 0'
     window: 2m
     critical: false
+  - name: bridge_events_recent
+    description: Bridge events are recent (< 5 minutes old)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_bridge_event
+    threshold: < 300
+    window: 5m
+    critical: false
+  - name: global_exit_root_synchronized
+    description: L1-L2 coordination continues (global exit root updates)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_global_exit_root
+    threshold: < 180
+    window: 5m
+    critical: false
   metrics:
   - panoptichain_rpc_height
   - panoptichain_rpc_gas_used_sum
   - up
   - process_start_time_seconds
+  - panoptichain_rpc_time_since_last_bridge_event
+  - panoptichain_rpc_bridge_event_amount_sum
+  - panoptichain_rpc_bridge_event_amount_count
+  - panoptichain_rpc_bridge_deposit_count
+  - panoptichain_rpc_time_since_last_global_exit_root
+  - panoptichain_rpc_global_exit_roots

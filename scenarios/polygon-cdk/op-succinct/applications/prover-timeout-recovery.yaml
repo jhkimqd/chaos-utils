@@ -43,7 +43,25 @@ spec:
     threshold: '> 0'
     window: 3m
     critical: false
+  - name: proofs_being_generated
+    description: ZK proofs are being generated
+    type: prometheus
+    query: increase(succinct_highest_proven_contiguous_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: l2_finalization_continues
+    description: L2 blocks continue to be finalized with ZK proofs
+    type: prometheus
+    query: increase(succinct_l2_finalized_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
   metrics:
   - panoptichain_rpc_height
   - panoptichain_rpc_gas_used_sum
   - up
+  - succinct_l2_finalized_block
+  - succinct_highest_proven_contiguous_block
+  - succinct_current_proving_proofs
+  - succinct_agg_proof_request_error_count

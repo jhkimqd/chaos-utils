@@ -44,7 +44,24 @@ spec:
     threshold: '> 0'
     window: 6m
     critical: false
+  - name: batches_being_sequenced
+    description: New batches are being sequenced
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: batches_being_verified
+    description: Batches are being verified (proofs generated)
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_verified_batches[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
   metrics:
   - up
   - panoptichain_rpc_height
   - panoptichain_rpc_gas_used_sum
+  - panoptichain_rpc_zkevm_total_sequenced_batches
+  - panoptichain_rpc_zkevm_total_verified_batches
+  - panoptichain_rpc_zkevm_time_since_last_aggregation

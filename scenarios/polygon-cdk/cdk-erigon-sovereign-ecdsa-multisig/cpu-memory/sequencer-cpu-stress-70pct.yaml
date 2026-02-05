@@ -3,61 +3,86 @@ kind: ChaosScenario
 metadata:
   name: sequencer-cpu-stress-70pct
   description: Stress sequencer CPU at 70% to test performance under high load
-  tags: [resource, cpu, high, sequencer, performance]
+  tags:
+  - resource
+  - cpu
+  - high
+  - sequencer
+  - performance
   author: DevTools
-  version: "0.0.1"
-
+  version: 0.0.1
 spec:
-  # Target sequencer (works for both cdk-erigon and op-geth)
   targets:
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: ".*sequencer.*|cdk-erigon-sequencer|op-el-1.*"
-      alias: sequencer_node
-
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*sequencer.*|cdk-erigon-sequencer|op-el-1.*
+    alias: sequencer_node
   duration: 8m
   warmup: 2m
   cooldown: 2m
-
-  # CPU stress at 70% on 2 cores
   faults:
-    - phase: cpu_stress_sequencer
-      description: Stress sequencer CPU at 70% on 2 cores
-      target: sequencer_node
-      type: cpu_stress
-      params:
-        cpu_percent: 70
-        cores: 2
-        method: stress
-
+  - phase: cpu_stress_sequencer
+    description: Stress sequencer CPU at 70% on 2 cores
+    target: sequencer_node
+    type: cpu_stress
+    params:
+      cpu_percent: 70
+      cores: 2
+      method: stress
   success_criteria:
-    - name: blocks_continue_production
-      description: Block production continues despite CPU stress
-      type: prometheus
-      query: increase(panoptichain_rpc_height[1m])
-      threshold: "> 0"
-      window: 8m
-      critical: true
-
-    - name: block_production_rate_acceptable
-      description: Block production rate remains above minimum threshold
-      type: prometheus
-      query: rate(panoptichain_rpc_height[2m])
-      threshold: "> 0.1"
-      window: 8m
-      critical: false
-
-    - name: transaction_processing_continues
-      description: Transactions continue to be processed
-      type: prometheus
-      query: increase(panoptichain_rpc_gas_used_sum[2m])
-      threshold: "> 0"
-      window: 8m
-      critical: false
-
+  - name: blocks_continue_production
+    description: Block production continues despite CPU stress
+    type: prometheus
+    query: increase(panoptichain_rpc_height[1m])
+    threshold: '> 0'
+    window: 8m
+    critical: true
+  - name: block_production_rate_acceptable
+    description: Block production rate remains above minimum threshold
+    type: prometheus
+    query: rate(panoptichain_rpc_height[2m])
+    threshold: '> 0.1'
+    window: 8m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: empty_blocks_low
+    description: Not producing too many empty blocks
+    type: prometheus
+    query: rate(panoptichain_rpc_empty_block[2m])
+    threshold: < 0.5
+    window: 5m
+    critical: false
+  - name: block_time_stable
+    description: Block time remains stable despite resource pressure
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: transaction_processing_continues
+    description: Transactions continue to be processed
+    type: prometheus
+    query: increase(panoptichain_rpc_gas_used_sum[2m])
+    threshold: '> 0'
+    window: 8m
+    critical: false
   metrics:
-    - panoptichain_rpc_height
-    - process_cpu_seconds_total
-    - panoptichain_rpc_gas_used_sum
-    - up
+  - panoptichain_rpc_height
+  - process_cpu_seconds_total
+  - panoptichain_rpc_gas_used_sum
+  - up
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_empty_block
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_transactions_per_block_sum
+  - panoptichain_rpc_transactions_per_block_count
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count

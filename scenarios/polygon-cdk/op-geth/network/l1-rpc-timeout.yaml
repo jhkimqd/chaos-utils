@@ -39,6 +39,20 @@ spec:
     threshold: '> 0'
     window: 5m
     critical: true
+  - name: block_time_stable
+    description: L2 block time remains stable despite L1 slowness
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: L2 transaction processing continues normally
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
   - name: batch_submission_may_delay
     description: Batch submissions may be delayed but should eventually succeed
     type: prometheus
@@ -48,5 +62,11 @@ spec:
     critical: false
   metrics:
   - panoptichain_rpc_height
-  - l1_panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_time_to_finalized
   - up
+  - panoptichain_rpc_finalized_height
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count
