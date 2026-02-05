@@ -29,7 +29,7 @@ _testmain.go
 
 # Build artifacts
 /bin/
-chaos-runner
+/chaos-runner
 
 # Framework artifacts
 /reports/

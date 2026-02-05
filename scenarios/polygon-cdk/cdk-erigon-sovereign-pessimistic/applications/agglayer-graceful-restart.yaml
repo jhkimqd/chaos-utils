@@ -1,0 +1,63 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: agglayer-graceful-restart
+  description: Gracefully restart agglayer with 5s grace period to test clean shutdown
+  tags: [failure, restart, medium, agglayer, graceful]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target agglayer
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "agglayer"
+      alias: agglayer_node
+
+  duration: 5m
+  warmup: 1m
+  cooldown: 1m
+
+  # Graceful restart with grace period
+  faults:
+    - phase: restart_agglayer
+      description: Gracefully restart agglayer with 5s grace period
+      target: agglayer_node
+      type: container_restart
+      params:
+        grace_period: 5s
+        restart_delay: 10s
+
+  success_criteria:
+    - name: agglayer_recovers
+      description: Agglayer comes back online after restart
+      type: prometheus
+      query: up{job="agglayer"}
+      threshold: "== 1"
+      window: 2m
+      critical: true
+
+    - name: l2_chains_unaffected
+      description: L2 chains continue operating during agglayer restart
+      type: prometheus
+      query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: certificates_resume_processing
+      description: Certificate processing resumes after restart
+      type: prometheus
+      query: increase(agglayer_certificates_processed_total[2m])
+      threshold: "> 0"
+      window: 2m
+      critical: false
+
+  metrics:
+    - agglayer_certificates_processed_total
+    - agglayer_pending_certificates
+    - panoptichain_rpc_height
+    - up
+    - process_start_time_seconds

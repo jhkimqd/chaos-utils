@@ -122,26 +122,42 @@ func discoverPrometheusEndpoint(enclaveName string) (string, error) {
 		return "", fmt.Errorf("enclave name is empty")
 	}
 
-	// Run: kurtosis port print <enclave> prometheus http
-	// Use Output() instead of CombinedOutput() to ignore stderr (Kurtosis warnings)
-	cmd := exec.Command("kurtosis", "port", "print", enclaveName, "prometheus", "http")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to discover Prometheus endpoint: %w", err)
+	// Try multiple Prometheus service name patterns (different Kurtosis deployments use different naming)
+	serviceNames := []string{
+		"prometheus-001", // kurtosis-cdk uses prometheus-001
+		"prometheus",     // kurtosis-pos uses prometheus
 	}
 
-	// Parse the output (e.g., "http://127.0.0.1:33066")
-	endpoint := strings.TrimSpace(string(output))
-	if endpoint == "" {
-		return "", fmt.Errorf("kurtosis returned empty endpoint")
+	var lastErr error
+	for _, serviceName := range serviceNames {
+		// Run: kurtosis port print <enclave> <service> http
+		// Use Output() instead of CombinedOutput() to ignore stderr (Kurtosis warnings)
+		cmd := exec.Command("kurtosis", "port", "print", enclaveName, serviceName, "http")
+		output, err := cmd.Output()
+		if err != nil {
+			lastErr = err
+			continue // Try next service name
+		}
+
+		// Parse the output (e.g., "http://127.0.0.1:33066")
+		endpoint := strings.TrimSpace(string(output))
+		if endpoint == "" {
+			continue // Try next service name
+		}
+
+		// Validate it looks like a URL
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			continue // Try next service name
+		}
+
+		return endpoint, nil
 	}
 
-	// Validate it looks like a URL
-	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		return "", fmt.Errorf("invalid endpoint format: %s", endpoint)
+	// All attempts failed
+	if lastErr != nil {
+		return "", fmt.Errorf("failed to discover Prometheus endpoint (tried: %v): %w", serviceNames, lastErr)
 	}
-
-	return endpoint, nil
+	return "", fmt.Errorf("failed to discover Prometheus endpoint (tried: %v)", serviceNames)
 }
 
 // Load loads configuration from a YAML file

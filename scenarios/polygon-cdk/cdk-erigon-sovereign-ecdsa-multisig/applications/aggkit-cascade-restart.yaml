@@ -1,0 +1,78 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: aggkit-cascade-restart
+  description: Restart AggKit and its bridge dependency to test cascade recovery
+  tags:
+  - failure
+  - restart
+  - high
+  - aggkit
+  - cascade
+  - multi-target
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: aggkit
+    alias: aggkit_node
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: aggkit.*bridge.*
+    alias: aggkit_bridge
+  duration: 6m
+  warmup: 1m
+  cooldown: 2m
+  faults:
+  - phase: restart_aggkit_bridge
+    description: Restart AggKit bridge service
+    target: aggkit_bridge
+    type: container_restart
+    params:
+      grace_period: 5s
+      restart_delay: 10s
+  - phase: restart_aggkit
+    description: Restart AggKit node
+    target: aggkit_node
+    type: container_restart
+    params:
+      grace_period: 5s
+      restart_delay: 10s
+    delay: 30s
+  success_criteria:
+  - name: operations_resume
+    description: AggKit operations resume after cascade recovery
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job="aggkit"}[1m])
+    threshold: '> 0'
+    window: 2m
+    critical: false
+  - name: bridge_events_recent
+    description: Bridge events are recent (< 5 minutes old)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_bridge_event
+    threshold: < 300
+    window: 5m
+    critical: false
+  - name: global_exit_root_synchronized
+    description: L1-L2 coordination continues (global exit root updates)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_global_exit_root
+    threshold: < 180
+    window: 5m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up
+  - process_start_time_seconds
+  - panoptichain_rpc_time_since_last_bridge_event
+  - panoptichain_rpc_bridge_event_amount_sum
+  - panoptichain_rpc_bridge_event_amount_count
+  - panoptichain_rpc_bridge_deposit_count
+  - panoptichain_rpc_time_since_last_global_exit_root
+  - panoptichain_rpc_global_exit_roots

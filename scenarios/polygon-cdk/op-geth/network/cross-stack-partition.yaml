@@ -1,0 +1,92 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cross-stack-partition
+  description: Partition L1 from all L2 services to test complete L1 isolation
+  tags:
+  - network
+  - partition
+  - critical
+  - l1
+  - multi-target
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: el-1-geth.*
+    alias: l1_execution
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: cl-1-lighthouse.*
+    alias: l1_consensus
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: partition_l1_execution
+    description: Isolate L1 execution layer from network
+    target: l1_execution
+    type: network
+    params:
+      device: eth0
+      packet_loss: 100
+      target_proto: tcp,udp
+  - phase: partition_l1_consensus
+    description: Isolate L1 consensus layer from network
+    target: l1_consensus
+    type: network
+    params:
+      device: eth0
+      packet_loss: 100
+      target_proto: tcp,udp
+  success_criteria:
+  - name: l2_continues_producing_blocks
+    description: L2 continues producing blocks despite L1 isolation (for duration of test)
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*|.*l2.*"}[1m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: block_time_stable
+    description: Block time remains stable (not increasing significantly)
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: finalization_continues
+    description: Blocks continue to finalize despite L1 isolation
+    type: prometheus
+    query: increase(panoptichain_rpc_finalized_height[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: batch_submissions_fail
+    description: Batch submissions to L1 fail during partition
+    type: prometheus
+    query: increase(panoptichain_rpc_height[3m])
+    threshold: == 0
+    window: 3m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_finalized_height
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_gas_used_sum
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_time_to_finalized
+  - up
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count

@@ -1,0 +1,87 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: agglayer-memory-pressure-80pct
+  description: Apply 80% memory pressure on agglayer to test memory management
+  tags:
+  - resource
+  - memory
+  - high
+  - agglayer
+  - stability
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: agglayer
+    alias: agglayer_node
+  duration: 6m
+  warmup: 1m
+  cooldown: 1m
+  faults:
+  - phase: memory_pressure_agglayer
+    description: Apply memory pressure consuming 2GB
+    target: agglayer_node
+    type: memory_pressure
+    params:
+      memory_mb: 2048
+  success_criteria:
+  - name: agglayer_remains_operational
+    description: Agglayer continues operating despite memory pressure
+    type: prometheus
+    query: up{job="agglayer"}
+    threshold: == 1
+    window: 6m
+    critical: true
+  - name: certificate_processing_continues
+    description: Certificate processing continues (may slow down)
+    type: prometheus
+    query: increase(agglayer_certificates_processed_total[2m])
+    threshold: '> 0'
+    window: 6m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: empty_blocks_low
+    description: Not producing too many empty blocks
+    type: prometheus
+    query: rate(panoptichain_rpc_empty_block[2m])
+    threshold: < 0.5
+    window: 5m
+    critical: false
+  - name: block_time_stable
+    description: Block time remains stable despite resource pressure
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: memory_usage_under_limit
+    description: Memory usage stays under OOM threshold
+    type: prometheus
+    query: process_resident_memory_bytes{job="agglayer"}
+    threshold: < 4e9
+    window: 6m
+    critical: false
+  metrics:
+  - process_resident_memory_bytes
+  - agglayer_certificates_processed_total
+  - agglayer_pending_certificates
+  - go_memstats_alloc_bytes
+  - up
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_empty_block
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_transactions_per_block_sum
+  - panoptichain_rpc_transactions_per_block_count
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count

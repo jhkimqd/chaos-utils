@@ -1,0 +1,67 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: postgres-restart-under-load
+  description: Restart PostgreSQL database under load to test connection recovery
+  tags:
+  - failure
+  - restart
+  - critical
+  - database
+  - postgres
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: postgres.*
+    alias: postgres_db
+  duration: 5m
+  warmup: 1m
+  cooldown: 2m
+  faults:
+  - phase: restart_postgres
+    description: Restart PostgreSQL with 5s grace period
+    target: postgres_db
+    type: container_restart
+    params:
+      grace_period: 5s
+      restart_delay: 10s
+  success_criteria:
+  - name: services_reconnect
+    description: Services reconnect to database and resume operations
+    type: prometheus
+    query: increase(panoptichain_rpc_height[1m])
+    threshold: '> 0'
+    window: 2m
+    critical: true
+  - name: connection_pool_recovered
+    description: Database connection pool recovers and services resume
+    type: prometheus
+    query: increase(panoptichain_rpc_gas_used_sum[1m])
+    threshold: '> 0'
+    window: 2m
+    critical: false
+  - name: batches_being_sequenced
+    description: New batches are being sequenced
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: batches_being_verified
+    description: Batches are being verified (proofs generated)
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_verified_batches[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - up
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - panoptichain_rpc_zkevm_total_sequenced_batches
+  - panoptichain_rpc_zkevm_total_verified_batches
+  - panoptichain_rpc_zkevm_time_since_last_aggregation
