@@ -116,8 +116,8 @@ func DefaultConfig() *Config {
 	}
 }
 
-// discoverPrometheusEndpoint attempts to discover Prometheus endpoint from Kurtosis enclave
-func discoverPrometheusEndpoint(enclaveName string) (string, error) {
+// DiscoverPrometheusEndpoint attempts to discover Prometheus endpoint from Kurtosis enclave
+func DiscoverPrometheusEndpoint(enclaveName string) (string, error) {
 	if enclaveName == "" {
 		return "", fmt.Errorf("enclave name is empty")
 	}
@@ -194,34 +194,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Handle Prometheus URL configuration:
-	// 1. If PROMETHEUS_URL env var is set, use it
-	// 2. If config had ${PROMETHEUS_URL} placeholder without env var, auto-discover
-	// 3. If config has no url field, auto-discover
-	// 4. If url is set to default (localhost:9090), auto-discover
-	shouldAutoDiscover := false
-
+	// Apply PROMETHEUS_URL env var if set (takes priority over config file)
 	if prometheusURLEnvSet {
-		// Use the environment variable value
 		cfg.Prometheus.URL = prometheusURLEnv
-	} else if strings.Contains(string(data), "${PROMETHEUS_URL}") {
-		// Config uses placeholder but env var not set
-		shouldAutoDiscover = true
-	} else if cfg.Prometheus.URL == "http://localhost:9090" {
-		// Using default, likely no url field in config
-		shouldAutoDiscover = true
-	}
-
-	if shouldAutoDiscover {
-		fmt.Println("⚙️  Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
-		if endpoint, err := discoverPrometheusEndpoint(cfg.Kurtosis.EnclaveName); err == nil {
-			cfg.Prometheus.URL = endpoint
-			fmt.Printf("✓ Discovered Prometheus endpoint: %s\n", endpoint)
-		} else {
-			fmt.Printf("⚠️  Auto-discovery failed: %v\n", err)
-			fmt.Println("   Using default: http://localhost:9090")
-			cfg.Prometheus.URL = "http://localhost:9090"
-		}
 	}
 
 	return cfg, nil
