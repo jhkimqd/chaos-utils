@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jihwankim/chaos-utils/pkg/config"
 	"github.com/jihwankim/chaos-utils/pkg/core/orchestrator"
 	"github.com/jihwankim/chaos-utils/pkg/reporting"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
@@ -46,19 +47,19 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Override enclave if specified - must be done before Prometheus discovery
-	enclaveOverridden := false
+	// Override enclave if specified
 	if enclaveName != "" {
 		cfg.Kurtosis.EnclaveName = enclaveName
-		enclaveOverridden = true
 	}
 
-	// Re-discover Prometheus if enclave was overridden and Prometheus URL is not explicitly set via env var
-	if enclaveOverridden && os.Getenv("PROMETHEUS_URL") == "" {
-		// Attempt to auto-discover with the correct enclave name
-		if err := rediscoverPrometheus(cfg); err != nil {
-			// Not a fatal error, just log a warning
-			fmt.Printf("⚠️  Auto-discovery with enclave '%s' failed: %v\n", cfg.Kurtosis.EnclaveName, err)
+	// Auto-discover Prometheus if not explicitly configured via env var
+	if os.Getenv("PROMETHEUS_URL") == "" {
+		fmt.Println("⚙️  Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
+		if endpoint, err := config.DiscoverPrometheusEndpoint(cfg.Kurtosis.EnclaveName); err == nil {
+			cfg.Prometheus.URL = endpoint
+			fmt.Printf("✓ Discovered Prometheus endpoint: %s\n", endpoint)
+		} else {
+			fmt.Printf("⚠️  Auto-discovery failed: %v\n", err)
 			fmt.Printf("   Using: %s\n", cfg.Prometheus.URL)
 		}
 	}

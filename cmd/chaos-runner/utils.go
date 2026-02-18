@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/jihwankim/chaos-utils/pkg/config"
 )
@@ -46,44 +44,3 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
-// rediscoverPrometheus attempts to re-discover Prometheus endpoint for the configured enclave
-func rediscoverPrometheus(cfg *config.Config) error {
-	if cfg.Kurtosis.EnclaveName == "" {
-		return fmt.Errorf("enclave name is empty")
-	}
-
-	// Try multiple Prometheus service name patterns
-	serviceNames := []string{
-		"prometheus-001", // kurtosis-cdk uses prometheus-001
-		"prometheus",     // kurtosis-pos uses prometheus
-	}
-
-	var lastErr error
-	for _, serviceName := range serviceNames {
-		cmd := exec.Command("kurtosis", "port", "print", cfg.Kurtosis.EnclaveName, serviceName, "http")
-		output, err := cmd.Output()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		endpoint := strings.TrimSpace(string(output))
-		if endpoint == "" {
-			continue
-		}
-
-		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-			continue
-		}
-
-		// Success! Update config and return
-		cfg.Prometheus.URL = endpoint
-		fmt.Printf("✓ Discovered Prometheus endpoint for enclave '%s': %s\n", cfg.Kurtosis.EnclaveName, endpoint)
-		return nil
-	}
-
-	if lastErr != nil {
-		return fmt.Errorf("failed to discover Prometheus endpoint (tried: %v): %w", serviceNames, lastErr)
-	}
-	return fmt.Errorf("failed to discover Prometheus endpoint (tried: %v)", serviceNames)
-}
