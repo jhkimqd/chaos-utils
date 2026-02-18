@@ -160,11 +160,8 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 	}
 
 	// Save report
-	reportPath, saveErr := storage.SaveReport(report)
-	if saveErr != nil {
+	if _, saveErr := storage.SaveReport(report); saveErr != nil {
 		logger.Warn("Failed to save report", "error", saveErr)
-	} else {
-		logger.Info("Report saved", "path", reportPath)
 	}
 
 	// Display final summary
