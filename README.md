@@ -5,7 +5,7 @@ A comprehensive chaos engineering framework for testing the resilience of networ
 ## What is Chaos Runner?
 
 Chaos Runner helps you systematically test your Polygon Chain network by:
-- Injecting network faults (latency, packet loss, partitions) into specific services
+- Injecting faults (network degradation, container restarts, CPU/memory stress, disk I/O) into specific services
 - Monitoring system behavior via Prometheus metrics
 - Evaluating success criteria automatically
 - Generating detailed test reports
@@ -43,13 +43,13 @@ make build-runner
 
 ```bash
 # First run auto-generates config.yaml with defaults
-./bin/chaos-runner run --scenario scenarios/polygon-chain/quick-test.yaml
+./bin/chaos-runner run --scenario scenarios/polygon-chain/network/validator-partition.yaml
 
 # Edit config.yaml to customize (enclave name, Prometheus URL, etc.)
 vim config.yaml
 
-# Run validator partition test (5 minutes)
-./bin/chaos-runner run --scenario scenarios/polygon-chain/validator-partition.yaml
+# Run bandwidth throttle test (6 minutes)
+./bin/chaos-runner run --scenario scenarios/polygon-chain/network/bandwidth-throttle.yaml
 ```
 
 **Note**: Config is auto-generated on first run. You'll see:
@@ -68,12 +68,12 @@ chaos-utils/
 ├── pkg/
 │   ├── core/orchestrator/     # State machine (12 states: PARSE → COMPLETED)
 │   ├── discovery/             # Kurtosis & Docker service discovery
-│   ├── injection/             # Sidecar management & fault injection (comcast)
+│   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration & metrics collection
 │   ├── scenario/              # YAML parser & validator
 │   ├── reporting/             # Test results & logging
 │   └── emergency/             # Emergency stop & cleanup
-├── scenarios/polygon-chain/   # Built-in test scenarios
+├── scenarios/polygon-chain/   # Built-in test scenarios (network/, applications/, cpu-memory/, filesystem/)
 └── reports/                   # Test execution reports (auto-generated)
 ```
 
@@ -81,7 +81,7 @@ chaos-utils/
 
 1. **Service Discovery**: Finds target containers in Kurtosis enclave by pattern matching
 2. **Sidecar Creation**: Attaches chaos-utils sidecar to target's network namespace
-3. **Fault Injection**: Executes comcast in sidecar to apply network faults (L3/L4)
+3. **Fault Injection**: Injects faults via sidecar (comcast/tc for network, Docker API for container lifecycle, stress for resources)
 4. **Monitoring**: Collects Prometheus metrics during test execution
 5. **Evaluation**: Checks success criteria (e.g., "other validators continue producing blocks")
 6. **Cleanup**: Removes faults and destroys sidecars automatically
@@ -117,7 +117,7 @@ Chaos Runner provides a simplified single-command interface:
 export PROMETHEUS_URL="http://127.0.0.1:32906"
 
 ./bin/chaos-runner run \
-  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --enclave pos
 ```
 
@@ -185,27 +185,41 @@ spec:
 
 ### Fault Parameters
 
-**Network Faults** (via comcast):
+**Network Faults** (`type: network`, via comcast/tc):
 - `latency`: Delay in milliseconds (e.g., 500)
 - `packet_loss`: Percentage 0-100 (e.g., 50.0)
 - `bandwidth`: Limit in kbit/s (e.g., 1000)
 - `target_ports`: Comma-separated ports (e.g., "26656,26657")
 - `target_proto`: Protocol(s) - tcp, udp, or "tcp,udp"
-- `target_ips`: Specific IPs to affect
-- `target_cidr`: CIDR block (e.g., "10.0.0.0/8")
+- `reorder`: Packet reorder percentage (via tc)
+
+**Container Lifecycle** (`type: container_restart`, `container_kill`, `container_pause`):
+- `grace_period`: Seconds before forced stop
+- `stagger`: Delay between targets (0 = simultaneous)
+- `restart_delay`: Seconds to wait before restart
+
+**Resource Stress** (`type: cpu_stress`, `memory_stress`):
+- `cpu_percent`: CPU load percentage (e.g., 60)
+- `cores`: Number of CPU cores to stress
+- `memory_mb`: Memory to consume in MB
+
+**Disk I/O** (`type: disk_io`):
+- `delay_ms`: I/O delay in milliseconds
 
 ## Built-in Scenarios
 
 Located in `scenarios/polygon-chain/`:
 
-| Scenario | Duration | Fault Type | Purpose |
-|----------|----------|------------|---------|
-| `quick-test.yaml` | 1m | 50% packet loss | Quick validation |
-| `validator-partition.yaml` | 5m | 100% packet loss | Test BFT tolerance |
-| `latency-spike-l1-rpc.yaml` | 10m | 500ms latency | L1 dependency resilience |
-| `rabbitmq-failure.yaml` | 3m | 100% packet loss | Messaging failure |
-| `bandwidth-throttle.yaml` | 5m | 1 Mbps limit | Bandwidth constraint |
-| `checkpoint-delay-cascade.yaml` | 18m | Progressive delays | Cascading failure detection |
+| Category | Scenario | Duration | Purpose |
+|----------|----------|----------|---------|
+| `network/` | `validator-partition.yaml` | 5m | Test BFT tolerance (100% packet loss) |
+| `network/` | `latency-spike-l1-rpc.yaml` | 10m | L1 dependency resilience (500ms latency) |
+| `network/` | `bandwidth-throttle.yaml` | 6m | Bandwidth constraint (1 Mbps limit) |
+| `network/` | `checkpoint-delay-cascade.yaml` | 8m | Cascading checkpoint delays |
+| `applications/` | `simultaneous-validator-restart.yaml` | 5m | All validators restart at once |
+| `applications/` | `rabbitmq-failure.yaml` | 3m | Messaging failure (100% packet loss) |
+| `cpu-memory/` | `cpu-starved-validator.yaml` | 8m | Validator under CPU stress |
+| `filesystem/` | `slow-disk-io-validator.yaml` | 8m | Disk I/O latency injection |
 
 ## Prometheus Metrics
 
@@ -347,11 +361,14 @@ docker rm -f $(docker ps -aq --filter "name=chaos-sidecar")
 ### View Available Scenarios
 
 ```bash
+# List scenario categories
+ls scenarios/polygon-chain/
+
 # List all scenario files
-ls -la scenarios/polygon-chain/
+find scenarios/polygon-chain/ -name "*.yaml" | sort
 
 # View scenario details
-cat scenarios/polygon-chain/validator-partition.yaml
+cat scenarios/polygon-chain/network/validator-partition.yaml
 ```
 
 ## Advanced Usage
@@ -361,7 +378,7 @@ cat scenarios/polygon-chain/validator-partition.yaml
 ```bash
 # Override duration and warmup period
 ./bin/chaos-runner run \
-  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --set duration=10m \
   --set warmup=1m
 ```
@@ -371,7 +388,7 @@ cat scenarios/polygon-chain/validator-partition.yaml
 ```bash
 # Use a different Kurtosis enclave
 ./bin/chaos-runner run \
-  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --enclave my-custom-enclave
 ```
 
@@ -380,7 +397,7 @@ cat scenarios/polygon-chain/validator-partition.yaml
 ```bash
 # Change output format
 ./bin/chaos-runner run \
-  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --format json  # Options: text, json, tui
 ```
 
@@ -389,7 +406,7 @@ cat scenarios/polygon-chain/validator-partition.yaml
 ```bash
 # Enable debug logging
 ./bin/chaos-runner run \
-  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --verbose
 ```
 
@@ -398,7 +415,7 @@ cat scenarios/polygon-chain/validator-partition.yaml
 ```bash
 # Use a different config file
 ./bin/chaos-runner run \
-  --scenario scenarios/polygon-chain/validator-partition.yaml \
+  --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --config /path/to/custom-config.yaml
 ```
 
@@ -412,13 +429,13 @@ chaos-utils/
 ├── pkg/
 │   ├── core/orchestrator/     # State machine & test execution
 │   ├── discovery/             # Kurtosis & Docker service discovery
-│   ├── injection/             # Sidecar management & fault injection
+│   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration
 │   ├── scenario/              # YAML parser & validator
 │   ├── reporting/             # Test results & logging
 │   ├── emergency/             # Emergency stop & cleanup
 │   └── config/                # Configuration management
-├── scenarios/polygon-chain/   # Built-in test scenarios
+├── scenarios/polygon-chain/   # Built-in test scenarios (network/, applications/, cpu-memory/, filesystem/)
 └── reports/                   # Test execution reports (auto-generated)
 ```
 
