@@ -28,6 +28,7 @@ func init() {
 
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(fuzzCmd)
 }
 
 // Commands are defined in separate files:

@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -527,7 +528,8 @@ func (o *Orchestrator) executeWarmup(ctx context.Context) error {
 	return nil
 }
 
-// executeInject injects faults on all targets
+// executeInject injects all faults simultaneously using goroutines.
+// Each fault targets a different set of containers so concurrent injection is safe.
 func (o *Orchestrator) executeInject(ctx context.Context) error {
 	fmt.Println("Injecting faults...")
 
@@ -536,46 +538,69 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 		return nil
 	}
 
-	// Inject each fault
-	for i, fault := range o.scenario.Spec.Faults {
-		fmt.Printf("  [%d/%d] Injecting fault: %s\n", i+1, len(o.scenario.Spec.Faults), fault.Phase)
+	// faultJob pairs a fault with its resolved targets.
+	type faultJob struct {
+		index   int
+		fault   scenario.Fault
+		targets []TargetInfo
+	}
 
-		// Find targets matching this fault
+	// Resolve targets for every fault (sequential, cheap).
+	var jobs []faultJob
+	for i, fault := range o.scenario.Spec.Faults {
 		var targets []TargetInfo
-		for _, target := range o.targets {
-			if target.Alias == fault.Target {
-				targets = append(targets, target)
+		for _, t := range o.targets {
+			if t.Alias == fault.Target {
+				targets = append(targets, t)
 			}
 		}
-
 		if len(targets) == 0 {
-			fmt.Printf("    ⚠ No targets found with alias: %s\n", fault.Target)
+			fmt.Printf("  ⚠ No targets found for fault %q (alias: %s)\n", fault.Phase, fault.Target)
 			continue
 		}
+		jobs = append(jobs, faultJob{index: i, fault: fault, targets: targets})
+	}
 
-		// Convert TargetInfo to injection.Target
-		injectionTargets := make([]injection.Target, len(targets))
-		for i, t := range targets {
-			injectionTargets[i] = injection.Target{
-				Name:        t.Name,
-				ContainerID: t.ContainerID,
+	// injectResult carries the outcome of one goroutine.
+	type injectResult struct {
+		job faultJob
+		err error
+	}
+
+	// Fire all injections concurrently so every fault starts at the same instant.
+	results := make([]injectResult, len(jobs))
+	var wg sync.WaitGroup
+	for i, job := range jobs {
+		i, job := i, job
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			injTargets := make([]injection.Target, len(job.targets))
+			for j, t := range job.targets {
+				injTargets[j] = injection.Target{Name: t.Name, ContainerID: t.ContainerID}
 			}
-		}
+			fmt.Printf("  → injecting %s on %d container(s)...\n", job.fault.Phase, len(injTargets))
+			results[i] = injectResult{
+				job: job,
+				err: o.injector.InjectFault(ctx, &job.fault, injTargets),
+			}
+		}()
+	}
+	wg.Wait()
 
-		// Inject fault using unified injector
-		fmt.Printf("    Injecting %s fault on %d target(s)...\n", fault.Type, len(targets))
-		if err := o.injector.InjectFault(ctx, &fault, injectionTargets); err != nil {
-			return fmt.Errorf("failed to inject fault: %w", err)
+	// Collect outcomes (all goroutines finished — no races on injectedFaults map).
+	for _, r := range results {
+		if r.err != nil {
+			return fmt.Errorf("inject %q: %w", r.job.fault.Phase, r.err)
 		}
-
-		// Track injected faults for cleanup
-		for _, target := range targets {
-			o.injectedFaults[target.ContainerID] = fault.Type
-			fmt.Printf("      ✓ Fault injected on %s (%s)\n", target.Name, target.ContainerID[:12])
+		for _, t := range r.job.targets {
+			o.injectedFaults[t.ContainerID] = r.job.fault.Type
+			fmt.Printf("  ✓ %s on %s (%s)\n", r.job.fault.Phase, t.Name, t.ContainerID[:12])
 		}
 	}
 
-	fmt.Printf("✓ Injected faults on %d target(s)\n", len(o.injectedFaults))
+	fmt.Printf("✓ %d fault(s) injected simultaneously on %d target(s)\n",
+		len(jobs), len(o.injectedFaults))
 	return nil
 }
 
