@@ -119,9 +119,7 @@ func ValidateIODelayParams(params IODelayParams) error {
 		return fmt.Errorf("io_latency_ms cannot be negative")
 	}
 
-	if params.TargetPath == "" {
-		return fmt.Errorf("target_path must be specified")
-	}
+	// TargetPath is optional — empty path falls back to PID 1 (main container process).
 
 	if params.Operation != "read" && params.Operation != "write" && params.Operation != "all" {
 		return fmt.Errorf("operation must be 'read', 'write', or 'all'")

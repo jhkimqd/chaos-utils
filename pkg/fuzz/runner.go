@@ -77,7 +77,7 @@ type SessionSummary struct {
 	Completed   int           `json:"rounds_completed"`
 	Passed      int           `json:"passed"`
 	Failed      int           `json:"failed"`
-	StopReason  string        `json:"stop_reason"` // "completed" | "critical_failure" | "interrupted"
+	StopReason  string        `json:"stop_reason"` // "completed" | "pre_check_failed" | "critical_failure" | "interrupted"
 	StartTime   string        `json:"start_time"`
 	EndTime     string        `json:"end_time"`
 	Results     []RoundResult `json:"results"`
@@ -208,6 +208,19 @@ func (r *Runner) Run(ctx context.Context) error {
 			errMsg = runErr.Error()
 		}
 
+		// Pre-check failure: chain was not in steady state before injection.
+		// This is distinct from a fault-induced failure — the experiment never ran.
+		// Stop the session: if the chain is broken now, subsequent rounds will also fail.
+		if runErr != nil && strings.Contains(errMsg, "system not in steady state") {
+			failed++
+			r.appendLog(sessionID, seed, round, name, specs, "pre_check_failed", errMsg, elapsed)
+			fmt.Printf("\n  → PRE-CHECK FAILED  (%.0fs)\n", elapsed)
+			fmt.Printf("  ✗ %s\n", errMsg)
+			fmt.Println("\n⚠  Chain was not healthy before fault injection — stopping fuzz session.")
+			stopReason = "pre_check_failed"
+			break
+		}
+
 		// A critical success criterion failure (e.g. block production stopped)
 		// means the chain is broken — further fuzzing is meaningless.
 		if runErr != nil && strings.Contains(errMsg, "critical success criteria") {
@@ -247,6 +260,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	fmt.Println("\n" + strings.Repeat("─", 72))
 	switch stopReason {
+	case "pre_check_failed":
+		fmt.Printf("Stopped (chain unhealthy before injection).  %d passed  %d failed  (seed=%d)\n", passed, failed, seed)
 	case "critical_failure":
 		fmt.Printf("Stopped (critical failure).  %d passed  %d failed  (seed=%d)\n", passed, failed, seed)
 	case "interrupted":

@@ -145,7 +145,11 @@ func (l *Logger) addFields(event *zerolog.Event, fields ...interface{}) {
 		}
 
 		value := fields[i+1]
-		event.Interface(key, value)
+		if err, ok := value.(error); ok {
+			event.Str(key, err.Error())
+		} else {
+			event.Interface(key, value)
+		}
 	}
 }
 
