@@ -172,8 +172,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		fmt.Printf("Warning: Failed to create Prometheus client: %v\n", err)
 	}
 
-	// Create failure detector
-	det := detector.New(promClient)
+	// Create failure detector (with optional EVM RPC client for rpc-type criteria)
+	det := detector.NewWithRPC(promClient, cfg.EVMRPC.URL)
 
 	// Create metrics collector (will be reconfigured per-scenario)
 	col := collector.New(collector.Config{
@@ -563,8 +563,15 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 	if len(o.scenario.Spec.SuccessCriteria) == 0 {
 		return nil
 	}
-	if o.detector == nil || o.promClient == nil {
-		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
+	needsPrometheus := false
+	for _, c := range o.scenario.Spec.SuccessCriteria {
+		if c.Type == "prometheus" {
+			needsPrometheus = true
+			break
+		}
+	}
+	if needsPrometheus && (o.detector == nil || o.promClient == nil) {
+		return fmt.Errorf("Prometheus is not configured but prometheus success criteria are defined — cannot validate experiment")
 	}
 
 	fmt.Println("Pre-fault health check: verifying steady state before injection...")
@@ -713,8 +720,15 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 		return nil
 	}
 
-	if o.detector == nil || o.promClient == nil {
-		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
+	needsPrometheus := false
+	for _, c := range o.scenario.Spec.SuccessCriteria {
+		if c.Type == "prometheus" {
+			needsPrometheus = true
+			break
+		}
+	}
+	if needsPrometheus && (o.detector == nil || o.promClient == nil) {
+		return fmt.Errorf("Prometheus is not configured but prometheus success criteria are defined — cannot validate experiment")
 	}
 
 	// Evaluate each criterion

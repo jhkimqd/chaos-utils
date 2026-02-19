@@ -114,7 +114,7 @@ type SuccessCriterion struct {
 	// Description of what this checks
 	Description string `yaml:"description,omitempty"`
 
-	// Type: prometheus, health_check, custom
+	// Type: prometheus, health_check, rpc
 	Type string `yaml:"type"`
 
 	// Query for Prometheus-based criteria
@@ -134,6 +134,18 @@ type SuccessCriterion struct {
 
 	// Critical marks this as a critical criterion (test fails if this fails)
 	Critical bool `yaml:"critical,omitempty"`
+
+	// RPCMethod is the JSON-RPC method for rpc-type criteria (e.g., "eth_call")
+	RPCMethod string `yaml:"rpc_method,omitempty"`
+
+	// RPCCallData is the hex-encoded data field passed to eth_call
+	RPCCallData string `yaml:"rpc_call_data,omitempty"`
+
+	// RPCExpected is the expected hex return value for rpc_check "exact"
+	RPCExpected string `yaml:"rpc_expected,omitempty"`
+
+	// RPCCheck is the validation mode: "exact", "non_empty", or "empty"
+	RPCCheck string `yaml:"rpc_check,omitempty"`
 }
 
 // NetworkFaultParams defines parameters for network faults

@@ -16,10 +16,18 @@ type Config struct {
 	Kurtosis   KurtosisConfig   `yaml:"kurtosis"`
 	Docker     DockerConfig     `yaml:"docker"`
 	Prometheus PrometheusConfig `yaml:"prometheus"`
+	EVMRPC     EVMRPCConfig     `yaml:"evm_rpc"`
 	Reporting  ReportingConfig  `yaml:"reporting"`
 	Emergency  EmergencyConfig  `yaml:"emergency"`
 	Execution  ExecutionConfig  `yaml:"execution"`
 	Safety     SafetyConfig     `yaml:"safety"`
+}
+
+// EVMRPCConfig contains EVM JSON-RPC endpoint settings used for precompile checks.
+type EVMRPCConfig struct {
+	// URL is the EVM JSON-RPC endpoint (e.g. "http://127.0.0.1:8545").
+	// Auto-discovered from the Kurtosis enclave if empty.
+	URL string `yaml:"url"`
 }
 
 // FrameworkConfig contains general framework settings
@@ -158,6 +166,42 @@ func DiscoverPrometheusEndpoint(enclaveName string) (string, error) {
 		return "", fmt.Errorf("failed to discover Prometheus endpoint (tried: %v): %w", serviceNames, lastErr)
 	}
 	return "", fmt.Errorf("failed to discover Prometheus endpoint (tried: %v)", serviceNames)
+}
+
+// DiscoverEVMRPCEndpoint attempts to discover the Bor EVM JSON-RPC endpoint from a Kurtosis enclave.
+func DiscoverEVMRPCEndpoint(enclaveName string) (string, error) {
+	if enclaveName == "" {
+		return "", fmt.Errorf("enclave name is empty")
+	}
+
+	// Try EVM RPC service names in order: dedicated RPC node first, then first validator.
+	serviceNames := []string{
+		"l2-el-1-bor-heimdall-v2-rpc",       // dedicated RPC-only node
+		"l2-el-1-bor-heimdall-v2-validator",  // fallback: validator 1
+	}
+
+	var lastErr error
+	for _, serviceName := range serviceNames {
+		cmd := exec.Command("kurtosis", "port", "print", enclaveName, serviceName, "rpc")
+		output, err := cmd.Output()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		endpoint := strings.TrimSpace(string(output))
+		if endpoint == "" {
+			continue
+		}
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			continue
+		}
+		return endpoint, nil
+	}
+
+	if lastErr != nil {
+		return "", fmt.Errorf("failed to discover EVM RPC endpoint (tried: %v): %w", serviceNames, lastErr)
+	}
+	return "", fmt.Errorf("failed to discover EVM RPC endpoint (tried: %v)", serviceNames)
 }
 
 // Load loads configuration from a YAML file

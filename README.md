@@ -15,6 +15,7 @@ Chaos Runner helps you systematically test your Polygon Chain network by:
 - **Two execution modes**: `run` for declarative YAML scenarios, `fuzz` for randomized fault generation
 - **Steady-state hypothesis**: Pre-fault health check verifies the system is healthy before injection; post-fault evaluation confirms recovery after faults are removed
 - **Prometheus-safe**: Prometheus is enforced as observability-only — any selector that resolves to a monitoring container is rejected at runtime
+- **EVM precompile invariant testing**: Every fuzz round automatically verifies that known EVM precompiles (0x01–0x09) return correct outputs and that non-precompile addresses return empty — detecting silent regressions caused by hard-fork upgrades
 - **Auto-Configuration**: Config auto-generated on first run
 - **Declarative Scenarios**: Define tests in YAML
 - **Safe by Default**: Automatic cleanup and emergency stop
@@ -70,6 +71,7 @@ chaos-utils/
 ├── pkg/
 │   ├── core/orchestrator/     # State machine (PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT)
 │   ├── fuzz/                  # Randomized scenario generation and execution
+│   │   └── precompile/        # EVM precompile registry and invariant checks
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration & metrics collection
@@ -98,6 +100,7 @@ chaos-utils/
 - Cleanup verification ensures no tc/iptables rules remain
 - Prometheus is never a fault target — enforced at container resolution time for both `run` and `fuzz` modes
 - Prometheus misconfiguration is a hard failure — if success criteria are defined but Prometheus is unreachable, the experiment fails rather than silently passing
+- RPC node unavailability is a soft failure — EVM precompile criteria log a warning but never abort an experiment (the RPC node may itself be under fault injection)
 
 ## Usage
 
@@ -164,6 +167,7 @@ chaos-utils/
 **Session behaviour:**
 
 - Each round applies the same steady-state hypothesis as `run`: pre-fault health check → inject → monitor → teardown → post-fault evaluation
+- Every round automatically includes two EVM precompile checks (see [EVM Precompile Invariant Testing](#evm-precompile-invariant-testing) below)
 - If a **critical** success criterion fails (e.g. block production stops), the session halts immediately and prints a reproduction command
 - Ctrl+C (SIGINT) cleanly stops the session after the current round completes cleanup
 - A session summary is written to `reports/fuzz_summary_<timestamp>.json` with per-round results, pass/fail counts, and a `--seed` reproduce command if any round failed
@@ -187,6 +191,65 @@ chaos-utils/
 [TEST SUMMARY] PASSED
   Targets: 1, Faults: 1, Cleanup: 5 succeeded
 ```
+
+## EVM Precompile Invariant Testing
+
+Every fuzz round automatically appends two non-critical `rpc`-type success criteria to the generated scenario:
+
+1. **Known precompile check** — a randomly selected precompile from the registry (addresses 0x01–0x09 plus any Polygon-specific entries) is called with a fixed test vector; the return value is verified against the expected output.
+2. **Unknown address check** — a randomly generated address in the range `[0x0a, 0xffff]` is called; the result must be empty (`"0x"`), confirming no contract or system precompile was silently deployed there.
+
+These checks are evaluated in the DETECT phase (after fault teardown), the same as all other success criteria. They are marked `critical: false` so a failure logs a warning but does not abort the experiment — the RPC node may itself be under fault injection.
+
+### Why This Matters
+
+A new Polygon PoS EVM precompile may be introduced in a hard fork. Precompile invariant testing detects:
+- **Regression**: a precompile that previously worked now returns wrong data
+- **Silent activation**: a new precompile deployed at an address that was previously empty
+- **Missing activation**: a precompile that should be active post-fork but returns empty
+
+The EVM RPC endpoint is auto-discovered from the Kurtosis enclave (same mechanism as Prometheus). If discovery fails or the RPC node is unreachable, the checks are skipped gracefully.
+
+### Adding New Polygon Precompiles
+
+Edit `pkg/fuzz/precompile/registry.go` and add an entry to `PolygonPrecompiles`:
+
+```go
+var PolygonPrecompiles = []Entry{
+    {
+        Address:  "0x0000000000000000000000000000000000001000",
+        Name:     "bor-validator-set",
+        Input:    "0x",
+        Check:    "non_empty",   // use "exact" if you know the expected return value
+        Critical: true,
+    },
+}
+```
+
+### `rpc` Success Criterion Type
+
+You can also write `rpc`-type criteria in hand-authored YAML scenarios:
+
+```yaml
+success_criteria:
+  - name: sha256-precompile-intact
+    description: SHA-256 precompile returns correct digest after fault removal
+    type: rpc
+    url: "0x0000000000000000000000000000000000000002"
+    rpc_method: eth_call
+    rpc_call_data: "0x61"       # ASCII "a"
+    rpc_check: exact
+    rpc_expected: "0xca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+    critical: false
+```
+
+**`rpc_check` values:**
+
+| Value | Meaning |
+|-------|---------|
+| `exact` | Return value must equal `rpc_expected` byte-for-byte |
+| `non_empty` | Return value must be non-empty (not `""` or `"0x"`) |
+| `empty` | Return value must be empty (`""` or `"0x"`) |
 
 ## Scenario Definition
 
@@ -351,6 +414,10 @@ prometheus:
   url: http://localhost:9090  # Auto-discovered if available
   timeout: 30s
 
+evm_rpc:
+  url: ""                # Auto-discovered from Kurtosis enclave if empty
+                         # e.g. "http://127.0.0.1:8545"
+
 docker:
   sidecar_image: "jhkimqd/chaos-utils:latest"  # Fault injection sidecar
 
@@ -493,6 +560,7 @@ chaos-utils/
 ├── pkg/
 │   ├── core/orchestrator/     # State machine: PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT
 │   ├── fuzz/                  # Randomized fault generation (sampler, generator, runner)
+│   │   └── precompile/        # EVM precompile registry (0x01–0x09 + Polygon-specific)
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration

@@ -14,6 +14,7 @@ import (
 // FailureDetector evaluates success criteria during chaos tests
 type FailureDetector struct {
 	promClient *prometheus.Client
+	rpcCli     *rpcClient
 	results    map[string]*CriterionResult
 }
 
@@ -28,12 +29,22 @@ type CriterionResult struct {
 	Message      string
 }
 
-// New creates a new failure detector
+// New creates a new failure detector.
 func New(promClient *prometheus.Client) *FailureDetector {
 	return &FailureDetector{
 		promClient: promClient,
 		results:    make(map[string]*CriterionResult),
 	}
+}
+
+// NewWithRPC creates a failure detector that can evaluate both Prometheus and rpc criteria.
+// rpcURL is the EVM JSON-RPC endpoint; pass "" to disable rpc criterion evaluation.
+func NewWithRPC(promClient *prometheus.Client, rpcURL string) *FailureDetector {
+	fd := New(promClient)
+	if rpcURL != "" {
+		fd.rpcCli = newRPCClient(rpcURL)
+	}
+	return fd
 }
 
 // Evaluate evaluates a single success criterion
@@ -60,6 +71,9 @@ func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.Succ
 
 	case "health_check":
 		return fd.evaluateHealthCheck(ctx, criterion, result)
+
+	case "rpc":
+		return fd.evaluateRPC(ctx, criterion, result)
 
 	default:
 		result.Passed = false
@@ -119,11 +133,73 @@ func (fd *FailureDetector) evaluatePrometheus(ctx context.Context, criterion sce
 }
 
 // evaluateHealthCheck evaluates an HTTP health check criterion
-func (fd *FailureDetector) evaluateHealthCheck(ctx context.Context, criterion scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
+func (fd *FailureDetector) evaluateHealthCheck(_ context.Context, _ scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
 	// TODO: Implement HTTP health check
 	result.Passed = false
 	result.Message = "health check not yet implemented"
 	return result, fmt.Errorf("health check not yet implemented")
+}
+
+// evaluateRPC evaluates an rpc-type criterion by calling eth_call and checking the result.
+func (fd *FailureDetector) evaluateRPC(ctx context.Context, criterion scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
+	if fd.rpcCli == nil {
+		result.Passed = false
+		result.Message = "EVM RPC client not configured but rpc criterion is defined"
+		return result, fmt.Errorf("EVM RPC endpoint not configured — cannot evaluate rpc criterion %q", criterion.Name)
+	}
+
+	// Only eth_call is supported for now; RPCMethod is validated but defaults to eth_call.
+	callData := criterion.RPCCallData
+	if callData == "" {
+		callData = "0x"
+	}
+
+	got, err := fd.rpcCli.EthCall(ctx, criterion.URL, callData)
+	if err != nil {
+		result.Passed = false
+		result.Failures++
+		// Return nil error — the RPC endpoint may be under fault injection and
+		// temporarily unavailable. This is a non-fatal soft-fail so the experiment
+		// continues; only the criterion is marked as failed.
+		result.Message = fmt.Sprintf("eth_call unavailable (RPC node may be under fault): %v", err)
+		return result, nil
+	}
+
+	switch criterion.RPCCheck {
+	case "exact":
+		result.Passed = (got == criterion.RPCExpected)
+		if result.Passed {
+			result.Message = fmt.Sprintf("eth_call returned expected value %s", got)
+		} else {
+			result.Message = fmt.Sprintf("eth_call returned %s; expected %s", got, criterion.RPCExpected)
+			result.Failures++
+		}
+
+	case "non_empty":
+		result.Passed = (got != "" && got != "0x")
+		if result.Passed {
+			result.Message = fmt.Sprintf("eth_call returned non-empty value %s", got)
+		} else {
+			result.Message = "eth_call returned empty result — precompile not active or address has no code"
+			result.Failures++
+		}
+
+	case "empty":
+		result.Passed = (got == "" || got == "0x")
+		if result.Passed {
+			result.Message = fmt.Sprintf("eth_call correctly returned empty for address %s", criterion.URL)
+		} else {
+			result.Message = fmt.Sprintf("eth_call returned unexpected non-empty value %s", got)
+			result.Failures++
+		}
+
+	default:
+		result.Passed = false
+		result.Message = fmt.Sprintf("unknown rpc_check mode: %s", criterion.RPCCheck)
+		return result, fmt.Errorf("unknown rpc_check mode: %s", criterion.RPCCheck)
+	}
+
+	return result, nil
 }
 
 // evaluateThreshold parses and evaluates a threshold expression

@@ -362,6 +362,28 @@ func (v *Validator) validateSuccessCriteria(s *scenario.Scenario) {
 			if criterion.URL == "" {
 				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].url is required for health_check type", i))
 			}
+
+		case "rpc":
+			if criterion.RPCMethod == "" {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].rpc_method is required for rpc type", i))
+			}
+			validChecks := []string{"exact", "non_empty", "empty"}
+			validCheck := false
+			for _, vc := range validChecks {
+				if criterion.RPCCheck == vc {
+					validCheck = true
+					break
+				}
+			}
+			if !validCheck {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].rpc_check must be 'exact', 'non_empty', or 'empty'", i))
+			}
+			if criterion.RPCCheck == "exact" && criterion.RPCExpected == "" {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].rpc_expected is required when rpc_check is 'exact'", i))
+			}
+			if criterion.URL == "" {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].url must be the target contract/precompile address for rpc type", i))
+			}
 		}
 	}
 }

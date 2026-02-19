@@ -61,7 +61,7 @@ type RoundResult struct {
 	Name      string      `json:"name"`
 	Faults    []FaultSpec `json:"faults"`
 	Trigger   string      `json:"trigger"`
-	Result    string      `json:"result"` // "passed" | "failed" | "critical_failure" | "interrupted" | "dry-run"
+	Result    string      `json:"result"` // "passed" | "failed" | "critical_failure" | "interrupted" | "dry-run" | "pre_check_failed"
 	Error     string      `json:"error,omitempty"`
 	ElapsedS  float64     `json:"elapsed_s"`
 	Timestamp string      `json:"timestamp"`
@@ -107,8 +107,8 @@ type Runner struct {
 	rounds        []RoundResult // accumulated for session summary
 }
 
-// NewRunner builds a Runner and auto-discovers Prometheus so every round's
-// orchestrator gets the real URL (not the localhost:9090 default).
+// NewRunner builds a Runner, auto-discovers Prometheus and the EVM RPC endpoint
+// so every round's orchestrator gets the real URLs.
 func NewRunner(cfg *Config, appCfg *config.Config, logger *reporting.Logger) *Runner {
 	r := &Runner{cfg: cfg, appCfg: appCfg, logger: logger}
 
@@ -127,6 +127,17 @@ func NewRunner(cfg *Config, appCfg *config.Config, logger *reporting.Logger) *Ru
 		logger.Info("Auto-discovered Prometheus", "url", u)
 	} else {
 		logger.Warn("Could not discover Prometheus — metrics and triggers will be skipped", "error", err)
+	}
+
+	// Resolve the EVM RPC URL for precompile invariant checks.
+	// Auto-discovered from the Kurtosis enclave if not explicitly configured.
+	if appCfg.EVMRPC.URL == "" || appCfg.EVMRPC.URL == "http://localhost:8545" {
+		if u, err := config.DiscoverEVMRPCEndpoint(cfg.Enclave); err == nil {
+			appCfg.EVMRPC.URL = u
+			logger.Info("Auto-discovered EVM RPC endpoint", "url", u)
+		} else {
+			logger.Info("EVM RPC endpoint not discovered — precompile criteria will be skipped", "error", err)
+		}
 	}
 
 	return r
@@ -171,6 +182,14 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		specs := sampler.Sample(bias, maxFaults)
 		sc, name := BuildScenario(specs, r.cfg.Enclave)
+
+		// Append precompile invariant criteria if the EVM RPC endpoint is available.
+		// These use rpc-type success criteria evaluated after teardown — they are non-critical
+		// so fault-induced RPC unavailability does not abort the experiment.
+		if r.appCfg.EVMRPC.URL != "" {
+			pcCriteria := sampler.SamplePrecompileCriteria(r.appCfg.EVMRPC.URL)
+			sc.Spec.SuccessCriteria = append(sc.Spec.SuccessCriteria, pcCriteria...)
+		}
 
 		kind := "single "
 		if len(specs) > 1 {

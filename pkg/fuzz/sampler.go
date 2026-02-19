@@ -7,6 +7,9 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+
+	"github.com/jihwankim/chaos-utils/pkg/fuzz/precompile"
+	"github.com/jihwankim/chaos-utils/pkg/scenario"
 )
 
 // FaultSpec is a fully-resolved fault: parameters and a human-readable slug.
@@ -334,4 +337,51 @@ func (s *Sampler) Sample(compoundBias float64, maxFaults int) []FaultSpec {
 	// Pick n ∈ [2, maxFaults] — varies pressure round to round.
 	n := 2 + s.rng.Intn(maxFaults-1)
 	return s.SampleMulti(n)
+}
+
+// SamplePrecompileCriteria returns two rpc-type success criteria per round:
+//  1. A randomly sampled known precompile from the registry (exact/non_empty check)
+//  2. A randomly generated address in [0x0a, 0xffff] that must return empty
+//
+// Both criteria are non-critical so they never abort an experiment — the RPC node
+// may itself be under fault injection. The caller provides rpcURL which is embedded
+// as the evaluator endpoint in each criterion's URL field for the address, but the
+// endpoint itself is stored on the detector's rpcClient.
+//
+// The criterion URL field holds the *target contract address* (the "to" in eth_call).
+func (s *Sampler) SamplePrecompileCriteria(rpcURL string) []scenario.SuccessCriterion {
+	all := precompile.All()
+	if len(all) == 0 || rpcURL == "" {
+		return nil
+	}
+
+	entry := all[s.rng.Intn(len(all))]
+	randomAddr := precompile.SampleRandomInvalidAddress(s.rng)
+
+	// Shorten the random address for the criterion name (last 4 hex chars).
+	shortAddr := randomAddr[len(randomAddr)-4:]
+
+	return []scenario.SuccessCriterion{
+		{
+			Name:        fmt.Sprintf("precompile-%s-invariant", entry.Name),
+			Description: fmt.Sprintf("EVM precompile %s (%s) returns correct output after fault removal", entry.Name, entry.Address),
+			Type:        "rpc",
+			URL:         entry.Address,
+			RPCMethod:   "eth_call",
+			RPCCallData: entry.Input,
+			RPCExpected: entry.Expected,
+			RPCCheck:    entry.Check,
+			Critical:    false, // non-critical: RPC node may be under fault
+		},
+		{
+			Name:        fmt.Sprintf("random-addr-0x%s-empty", shortAddr),
+			Description: fmt.Sprintf("Address %s has no deployed code (not a precompile or system contract)", randomAddr),
+			Type:        "rpc",
+			URL:         randomAddr,
+			RPCMethod:   "eth_call",
+			RPCCallData: "0x",
+			RPCCheck:    "empty",
+			Critical:    false,
+		},
+	}
 }
