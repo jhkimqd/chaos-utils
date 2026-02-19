@@ -29,7 +29,8 @@ import (
 type TestState int
 
 const (
-	StateParse TestState = iota
+	StateInit TestState = iota // zero value — orchestrator not yet executing
+	StateParse
 	StateDiscover
 	StatePrepare
 	StateWarmup
@@ -45,6 +46,8 @@ const (
 
 func (s TestState) String() string {
 	switch s {
+	case StateInit:
+		return "INIT"
 	case StateParse:
 		return "PARSE"
 	case StateDiscover:
@@ -182,9 +185,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	injector := injection.New(sidecarMgr, dockerClient)
 
 	return &Orchestrator{
-		cfg:              cfg,
-		currentState:     StateParse,
-		sidecarMgr:       sidecarMgr,
+		cfg:        cfg,
+		sidecarMgr: sidecarMgr,
 		verifier:         verifier,
 		cleanupCoord:     cleanupCoord,
 		emergencyCtrl:    emergencyCtrl,

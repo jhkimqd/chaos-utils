@@ -175,9 +175,7 @@ func ValidateConnectionDropParams(params ConnectionDropParams) error {
 		return fmt.Errorf("probability must be between 0.0 and 1.0")
 	}
 
-	if params.TargetPorts == "" {
-		return fmt.Errorf("target_ports must be specified")
-	}
+	// TargetPorts is optional — empty means all ports.
 
 	return nil
 }
