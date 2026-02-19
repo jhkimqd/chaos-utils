@@ -12,7 +12,7 @@ Chaos Runner helps you systematically test your Polygon Chain network by:
 
 ### Key Features
 
-- **Simple CLI**: Single `run` command interface
+- **Two execution modes**: `run` for declarative YAML scenarios, `fuzz` for randomized fault generation
 - **Auto-Configuration**: Config auto-generated on first run
 - **Declarative Scenarios**: Define tests in YAML
 - **Safe by Default**: Automatic cleanup and emergency stop
@@ -64,9 +64,10 @@ vim config.yaml
 
 ```
 chaos-utils/
-├── cmd/chaos-runner/          # CLI entry point
+├── cmd/chaos-runner/          # CLI entry point (run + fuzz subcommands)
 ├── pkg/
-│   ├── core/orchestrator/     # State machine (12 states: PARSE → COMPLETED)
+│   ├── core/orchestrator/     # State machine (PARSE → INJECT → MONITOR → CLEANUP)
+│   ├── fuzz/                  # Randomized scenario generation and execution
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration & metrics collection
@@ -94,28 +95,69 @@ chaos-utils/
 
 ## Usage
 
-### Single Command Interface
-
-Chaos Runner provides a simplified single-command interface:
+### `run` — Execute a YAML scenario
 
 ```bash
-# Run a chaos test
+# Run a pre-written chaos scenario
 ./bin/chaos-runner run --scenario <path-to-yaml>
 
-# Validate scenario without executing (dry-run)
+# Dry-run: validate without executing
 ./bin/chaos-runner run --scenario <path> --dry-run
 
-# Override configuration values
+# Override enclave or duration
 ./bin/chaos-runner run --scenario <path> --enclave <name> --set duration=10m
 
-# Emergency stop: Press Ctrl+C in the running terminal
+# Emergency stop: Ctrl+C
 ```
+
+### `fuzz` — Randomized fault injection
+
+```bash
+# Run 10 random fault rounds (default)
+./bin/chaos-runner fuzz --enclave pos
+
+# Compound mode: 2 simultaneous faults per round
+./bin/chaos-runner fuzz --enclave pos --compound-only
+
+# Up to 3 simultaneous faults
+./bin/chaos-runner fuzz --enclave pos --compound-only --max-faults 3
+
+# Inject only during active checkpoint signing
+./bin/chaos-runner fuzz --enclave pos --trigger checkpoint
+
+# Reproduce a specific run
+./bin/chaos-runner fuzz --enclave pos --seed 42 --rounds 5
+
+# Preview without executing
+./bin/chaos-runner fuzz --enclave pos --dry-run
+```
+
+**Fuzz flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enclave` | — | Kurtosis enclave name (required) |
+| `--rounds` | 10 | Number of fuzz rounds |
+| `--compound-only` | false | Only generate multi-fault scenarios |
+| `--single-only` | false | Only generate single-fault scenarios |
+| `--max-faults` | 2 | Max simultaneous faults in compound mode |
+| `--trigger` | `any` | Prometheus condition before injecting |
+| `--seed` | 0 (auto) | Seed for reproducibility |
+| `--dry-run` | false | Print without executing |
+| `--log` | `reports/fuzz_log.jsonl` | JSONL run log path |
+
+**Available triggers:**
+
+| Trigger | Description |
+|---------|-------------|
+| `any` | Inject immediately (default) |
+| `checkpoint` | Wait for active Heimdall checkpoint signing |
+| `post_restart` | Wait until just after a service restart |
+| `high_load` | Wait for sustained Bor block production |
 
 ### Example: Validator Partition Test
 
 ```bash
-export PROMETHEUS_URL="http://127.0.0.1:32906"
-
 ./bin/chaos-runner run \
   --scenario scenarios/polygon-chain/network/validator-partition.yaml \
   --enclave pos
@@ -425,9 +467,10 @@ cat scenarios/polygon-chain/network/validator-partition.yaml
 
 ```
 chaos-utils/
-├── cmd/chaos-runner/          # CLI entry point (single `run` command)
+├── cmd/chaos-runner/          # CLI entry point (run + fuzz subcommands)
 ├── pkg/
 │   ├── core/orchestrator/     # State machine & test execution
+│   ├── fuzz/                  # Randomized fault generation (sampler, generator, runner)
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration
