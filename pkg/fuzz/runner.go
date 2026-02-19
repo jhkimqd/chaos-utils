@@ -88,19 +88,26 @@ type Runner struct {
 	prometheusURL string
 }
 
-// NewRunner builds a Runner, discovering Prometheus when a trigger condition is set.
+// NewRunner builds a Runner and auto-discovers Prometheus so every round's
+// orchestrator gets the real URL (not the localhost:9090 default).
 func NewRunner(cfg *Config, appCfg *config.Config, logger *reporting.Logger) *Runner {
 	r := &Runner{cfg: cfg, appCfg: appCfg, logger: logger}
 
-	if cfg.Trigger != "any" && !cfg.DryRun {
-		if appCfg.Prometheus.URL != "" && appCfg.Prometheus.URL != "http://localhost:9090" {
-			r.prometheusURL = appCfg.Prometheus.URL
-		} else if u, err := config.DiscoverPrometheusEndpoint(cfg.Enclave); err == nil {
-			r.prometheusURL = u
-			logger.Info("Auto-discovered Prometheus", "url", u)
-		} else {
-			logger.Warn("Could not discover Prometheus — trigger will be skipped", "error", err)
-		}
+	if cfg.DryRun {
+		return r
+	}
+
+	// Resolve the Prometheus URL once for all rounds.
+	// Prefer an explicitly configured URL; fall back to Kurtosis auto-discovery.
+	if appCfg.Prometheus.URL != "" && appCfg.Prometheus.URL != "http://localhost:9090" {
+		r.prometheusURL = appCfg.Prometheus.URL
+	} else if u, err := config.DiscoverPrometheusEndpoint(cfg.Enclave); err == nil {
+		r.prometheusURL = u
+		// Update appCfg so every orchestrator.New(appCfg) call uses the real URL.
+		appCfg.Prometheus.URL = u
+		logger.Info("Auto-discovered Prometheus", "url", u)
+	} else {
+		logger.Warn("Could not discover Prometheus — metrics and triggers will be skipped", "error", err)
 	}
 
 	return r
