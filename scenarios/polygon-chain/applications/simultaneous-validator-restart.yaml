@@ -70,10 +70,10 @@ spec:
 
     # Critical: All validators must come back online
     - name: all_validators_online
-      description: All 4 validators return to service
+      description: All validators return to service (topology-safe ratio check)
       type: prometheus
-      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1)
-      threshold: "== 4"
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+      threshold: ">= 1"
       window: 5m
       critical: true
 

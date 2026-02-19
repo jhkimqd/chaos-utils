@@ -13,13 +13,13 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
       alias: test_validator_heimdall
 
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
       alias: test_validator_bor
 
   duration: 3m
@@ -60,7 +60,7 @@ spec:
     - name: validator_recovers
       description: BASELINE - Heimdall validator comes back online quickly
       type: prometheus
-      query: up{job="l2-cl-4-heimdall-v2-bor-validator"}
+      query: up{job="l2-cl-2-heimdall-v2-bor-validator"}
       threshold: "== 1"
       window: 3m
       critical: false
@@ -68,7 +68,7 @@ spec:
     - name: bor_validator_recovers
       description: BASELINE - Bor validator comes back online quickly
       type: prometheus
-      query: up{job="l2-el-4-bor-heimdall-v2-validator"}
+      query: up{job="l2-el-2-bor-heimdall-v2-validator"}
       threshold: "== 1"
       window: 3m
       critical: false
@@ -78,7 +78,7 @@ spec:
     - name: missed_proposals_minimal
       description: Missed proposals under 3 (quick restart minimizes impact)
       type: prometheus
-      query: sum(increase(panoptichain_heimdall_missed_block_proposal{job="l2-cl-4-heimdall-v2-bor-validator"}[3m]))
+      query: sum(increase(panoptichain_heimdall_missed_block_proposal{job="l2-cl-2-heimdall-v2-bor-validator"}[3m]))
       threshold: "< 3"
       window: 3m
       critical: false
@@ -86,23 +86,23 @@ spec:
     - name: late_votes_during_recovery
       description: Late votes under 500 total (brief spike during restart)
       type: prometheus
-      query: sum(increase(cometbft_consensus_late_votes{job="l2-cl-4-heimdall-v2-bor-validator"}[3m]))
+      query: sum(increase(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[3m]))
       threshold: "< 500"
       window: 3m
       critical: false
 
     - name: peer_reconnection_fast
-      description: P2P peers reconnect quickly (back to 3+ within window)
+      description: P2P peers reconnect quickly (at least 1 peer, topology-safe)
       type: prometheus
-      query: min_over_time(cometbft_p2p_peers{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
-      threshold: ">= 3"
+      query: min_over_time(cometbft_p2p_peers{job="l2-cl-2-heimdall-v2-bor-validator"}[1m])
+      threshold: ">= 1"
       window: 3m
       critical: false
 
     - name: consensus_height_resumes
       description: Validator resumes consensus participation after restart
       type: prometheus
-      query: increase(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
+      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
       window: 3m
       critical: false
@@ -110,7 +110,7 @@ spec:
     - name: bor_block_production_resumes
       description: Bor resumes block production after restart
       type: prometheus
-      query: increase(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      query: increase(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
       window: 3m
       critical: false
