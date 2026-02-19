@@ -1,0 +1,73 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: gen-bandwidth-throttle-10mbps-validator1-both
+  description: 10 Mbps cap on validator 1 — Heimdall + Bor (both layers of one validator).
+    Bandwidth throttle — simulates underpowered or constrained uplinks.
+  tags:
+  - generated
+  - bandwidth-throttle
+  - 10mbps
+  - validator1_both
+  author: scripts/generate_scenarios.py
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: l2-cl-1-heimdall-v2-bor-validator
+    alias: target_heimdall
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: l2-el-1-bor-heimdall-v2-validator
+    alias: target_bor
+  duration: 3m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: bandwidth-throttle-target_heimdall
+    description: 10 Mbps cap applied to target_heimdall
+    target: target_heimdall
+    type: network
+    params:
+      bandwidth: 10000
+      target_proto: tcp,udp
+      device: eth0
+  - phase: bandwidth-throttle-target_bor
+    description: 10 Mbps cap applied to target_bor
+    target: target_bor
+    type: network
+    params:
+      bandwidth: 10000
+      target_proto: tcp,udp
+      device: eth0
+  success_criteria:
+  - name: block_production_continues
+    description: Network continues producing Bor blocks during the fault
+    type: prometheus
+    query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 3m
+  - name: consensus_height_advances
+    description: Heimdall consensus height continues to increase
+    type: prometheus
+    query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 3m
+  - name: bft_quorum_maintained
+    description: At least 2/3 of validators remain online (topology-safe BFT quorum
+      ratio)
+    type: prometheus
+    query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+    threshold: '>= 0.67'
+    critical: true
+    window: 3m
+  metrics:
+  - chain_head_block
+  - cometbft_consensus_height
+  - cometbft_consensus_validators
+  - up

@@ -1,0 +1,58 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: gen-memory-pressure-512mb-rpc-nodes
+  description: 512 MB pressure on Bor RPC-only nodes (non-validator full nodes). Memory
+    pressure — simulates memory-constrained environment / memory leak.
+  tags:
+  - generated
+  - memory-pressure
+  - 512mb
+  - rpc_nodes
+  author: scripts/generate_scenarios.py
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: l2-el-.*-bor-heimdall-v2-rpc
+    alias: target_rpc
+  duration: 5m
+  warmup: 60s
+  cooldown: 60s
+  faults:
+  - phase: memory-pressure-target_rpc
+    description: 512 MB pressure applied to target_rpc
+    target: target_rpc
+    type: memory_stress
+    params:
+      memory_mb: 512
+  success_criteria:
+  - name: block_production_continues
+    description: Network continues producing Bor blocks during the fault
+    type: prometheus
+    query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 5m
+  - name: consensus_height_advances
+    description: Heimdall consensus height continues to increase
+    type: prometheus
+    query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 5m
+  - name: bft_quorum_maintained
+    description: At least 2/3 of validators remain online (topology-safe BFT quorum
+      ratio)
+    type: prometheus
+    query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+    threshold: '>= 0.67'
+    critical: true
+    window: 5m
+  metrics:
+  - chain_head_block
+  - cometbft_consensus_height
+  - cometbft_consensus_validators
+  - up

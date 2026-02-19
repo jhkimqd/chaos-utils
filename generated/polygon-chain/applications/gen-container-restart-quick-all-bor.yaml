@@ -1,0 +1,58 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: gen-container-restart-quick-all-bor
+  description: fast (5 s grace) on all validators — Bor execution layer (wildcard).
+    Container restart — simulates process crash and recovery.
+  tags:
+  - generated
+  - container-restart
+  - quick
+  - all_bor
+  author: scripts/generate_scenarios.py
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: l2-el-.*-bor-heimdall-v2-validator
+    alias: target_bor
+  duration: 5m
+  warmup: 60s
+  cooldown: 60s
+  faults:
+  - phase: container-restart-target_bor
+    description: fast (5 s grace) applied to target_bor
+    target: target_bor
+    type: container_restart
+    params:
+      grace_period: 5
+  success_criteria:
+  - name: block_production_continues
+    description: Network continues producing Bor blocks during the fault
+    type: prometheus
+    query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 5m
+  - name: consensus_height_advances
+    description: Heimdall consensus height continues to increase
+    type: prometheus
+    query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 5m
+  - name: bft_quorum_maintained
+    description: At least 2/3 of validators remain online (topology-safe BFT quorum
+      ratio)
+    type: prometheus
+    query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+    threshold: '>= 0.67'
+    critical: true
+    window: 5m
+  metrics:
+  - chain_head_block
+  - cometbft_consensus_height
+  - cometbft_consensus_validators
+  - up
