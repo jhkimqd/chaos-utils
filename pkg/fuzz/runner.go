@@ -61,9 +61,27 @@ type RoundResult struct {
 	Name      string      `json:"name"`
 	Faults    []FaultSpec `json:"faults"`
 	Trigger   string      `json:"trigger"`
-	Result    string      `json:"result"` // "passed" | "failed" | "dry-run"
+	Result    string      `json:"result"` // "passed" | "failed" | "critical_failure" | "interrupted" | "dry-run"
+	Error     string      `json:"error,omitempty"`
 	ElapsedS  float64     `json:"elapsed_s"`
 	Timestamp string      `json:"timestamp"`
+}
+
+// SessionSummary is written as a JSON file at the end of every fuzz session.
+type SessionSummary struct {
+	Session     string        `json:"session"`
+	Seed        int64         `json:"seed"`
+	Enclave     string        `json:"enclave"`
+	Trigger     string        `json:"trigger"`
+	TotalRounds int           `json:"total_rounds"`
+	Completed   int           `json:"rounds_completed"`
+	Passed      int           `json:"passed"`
+	Failed      int           `json:"failed"`
+	StopReason  string        `json:"stop_reason"` // "completed" | "critical_failure" | "interrupted"
+	StartTime   string        `json:"start_time"`
+	EndTime     string        `json:"end_time"`
+	Results     []RoundResult `json:"results"`
+	ReproCmd    string        `json:"reproduce_cmd,omitempty"`
 }
 
 // Config holds all settings for a fuzz session.
@@ -86,6 +104,7 @@ type Runner struct {
 	appCfg        *config.Config
 	logger        *reporting.Logger
 	prometheusURL string
+	rounds        []RoundResult // accumulated for session summary
 }
 
 // NewRunner builds a Runner and auto-discovers Prometheus so every round's
@@ -135,18 +154,18 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	sessionID := time.Now().Format(time.RFC3339)
+	startTime := time.Now()
 	fmt.Printf("Seed: %d  (pass --seed %d to reproduce)\n\n", seed, seed)
 	fmt.Printf("Starting %d fuzz rounds  (compound_bias=%.0f%%, trigger=%s)\n",
 		r.cfg.Rounds, bias*100, r.cfg.Trigger)
 	fmt.Println(strings.Repeat("─", 72))
 
 	passed, failed := 0, 0
-
-	interrupted := false
+	stopReason := "completed"
 
 	for round := 1; round <= r.cfg.Rounds; round++ {
 		if ctx.Err() != nil {
-			interrupted = true
+			stopReason = "interrupted"
 			break
 		}
 
@@ -164,7 +183,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		if r.cfg.DryRun {
 			fmt.Println("  (dry-run)")
-			r.appendLog(sessionID, seed, round, name, specs, "dry-run", 0)
+			r.appendLog(sessionID, seed, round, name, specs, "dry-run", "", 0)
 			continue
 		}
 
@@ -179,8 +198,25 @@ func (r *Runner) Run(ctx context.Context) error {
 		// If the context was cancelled mid-round, the orchestrator already ran
 		// cleanup via its emergency controller. Log the round and stop the loop.
 		if ctx.Err() != nil {
-			r.appendLog(sessionID, seed, round, name, specs, "interrupted", elapsed)
-			interrupted = true
+			r.appendLog(sessionID, seed, round, name, specs, "interrupted", "", elapsed)
+			stopReason = "interrupted"
+			break
+		}
+
+		errMsg := ""
+		if runErr != nil {
+			errMsg = runErr.Error()
+		}
+
+		// A critical success criterion failure (e.g. block production stopped)
+		// means the chain is broken — further fuzzing is meaningless.
+		if runErr != nil && strings.Contains(errMsg, "critical success criteria") {
+			failed++
+			r.appendLog(sessionID, seed, round, name, specs, "critical_failure", errMsg, elapsed)
+			fmt.Printf("\n  → CRITICAL FAILURE  (%.0fs)\n", elapsed)
+			fmt.Printf("  ✗ %s\n", errMsg)
+			fmt.Println("\n⚠  Chain health criterion failed — stopping fuzz session.")
+			stopReason = "critical_failure"
 			break
 		}
 
@@ -199,20 +235,48 @@ func (r *Runner) Run(ctx context.Context) error {
 			failed++
 		}
 
-		r.appendLog(sessionID, seed, round, name, specs, status, elapsed)
+		r.appendLog(sessionID, seed, round, name, specs, status, errMsg, elapsed)
+	}
+
+	endTime := time.Now()
+	reproCmd := ""
+	if failed > 0 {
+		reproCmd = fmt.Sprintf("chaos-runner fuzz --enclave %s --seed %d --rounds %d",
+			r.cfg.Enclave, seed, r.cfg.Rounds)
 	}
 
 	fmt.Println("\n" + strings.Repeat("─", 72))
-	if interrupted {
+	switch stopReason {
+	case "critical_failure":
+		fmt.Printf("Stopped (critical failure).  %d passed  %d failed  (seed=%d)\n", passed, failed, seed)
+	case "interrupted":
 		fmt.Printf("Interrupted.  %d passed  %d failed  (seed=%d)\n", passed, failed, seed)
-	} else {
+	default:
 		fmt.Printf("Done.  %d passed  %d failed  (seed=%d)\n", passed, failed, seed)
 	}
-	if failed > 0 {
-		fmt.Printf("\nReproduce: chaos-runner fuzz --enclave %s --seed %d --rounds %d\n",
-			r.cfg.Enclave, seed, r.cfg.Rounds)
+	if reproCmd != "" {
+		fmt.Printf("\nReproduce: %s\n", reproCmd)
 	}
 	fmt.Printf("Log: %s\n", r.cfg.LogPath)
+
+	// Write session summary JSON alongside the JSONL log.
+	summary := SessionSummary{
+		Session:     sessionID,
+		Seed:        seed,
+		Enclave:     r.cfg.Enclave,
+		Trigger:     r.cfg.Trigger,
+		TotalRounds: r.cfg.Rounds,
+		Completed:   len(r.rounds),
+		Passed:      passed,
+		Failed:      failed,
+		StopReason:  stopReason,
+		StartTime:   startTime.Format(time.RFC3339),
+		EndTime:     endTime.Format(time.RFC3339),
+		Results:     r.rounds,
+		ReproCmd:    reproCmd,
+	}
+	r.writeSummary(summary)
+
 	return nil
 }
 
@@ -312,8 +376,8 @@ func (r *Runner) queryPrometheus(query string) (float64, error) {
 	return val, nil
 }
 
-// appendLog appends a RoundResult entry to the JSONL log file.
-func (r *Runner) appendLog(session string, seed int64, round int, name string, specs []FaultSpec, result string, elapsed float64) {
+// appendLog appends a RoundResult to the in-memory slice and the JSONL log file.
+func (r *Runner) appendLog(session string, seed int64, round int, name string, specs []FaultSpec, result, errMsg string, elapsed float64) {
 	entry := RoundResult{
 		Session:   session,
 		Seed:      seed,
@@ -322,9 +386,12 @@ func (r *Runner) appendLog(session string, seed int64, round int, name string, s
 		Faults:    specs,
 		Trigger:   r.cfg.Trigger,
 		Result:    result,
+		Error:     errMsg,
 		ElapsedS:  math.Round(elapsed*10) / 10,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
+
+	r.rounds = append(r.rounds, entry)
 
 	if err := os.MkdirAll(filepath.Dir(r.cfg.LogPath), 0755); err != nil {
 		r.logger.Warn("Failed to create log dir", "error", err)
@@ -343,4 +410,28 @@ func (r *Runner) appendLog(session string, seed int64, round int, name string, s
 		return
 	}
 	_, _ = f.WriteString(string(data) + "\n")
+}
+
+// writeSummary writes the session summary as a JSON file next to the JSONL log.
+func (r *Runner) writeSummary(summary SessionSummary) {
+	dir := filepath.Dir(r.cfg.LogPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		r.logger.Warn("Failed to create report dir", "error", err)
+		return
+	}
+
+	// Use a filename-safe timestamp derived from the session RFC3339 string.
+	ts := strings.NewReplacer(":", "-", "+", "", "T", "_").Replace(summary.StartTime)
+	summaryPath := filepath.Join(dir, "fuzz_summary_"+ts+".json")
+
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		r.logger.Warn("Failed to marshal summary", "error", err)
+		return
+	}
+	if err := os.WriteFile(summaryPath, data, 0644); err != nil {
+		r.logger.Warn("Failed to write summary", "error", err)
+		return
+	}
+	fmt.Printf("Summary: %s\n", summaryPath)
 }
