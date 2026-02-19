@@ -17,6 +17,7 @@ import (
 
 var runCmd = &cobra.Command{
 	Use:   "run",
+	Args:  cobra.NoArgs,
 	Short: "Execute a chaos test scenario",
 	Long:  `Loads a scenario YAML file and executes the chaos test.`,
 	RunE:  runChaosTest,

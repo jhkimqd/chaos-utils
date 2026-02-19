@@ -492,9 +492,10 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 		// For now, just return nil - priority will reset on process restart
 		return nil
 	case "disk_io":
-		// For disk I/O, we need the params to know the target path
-		// For now, just return nil - ionice will reset on process restart
-		return nil
+		// Restore I/O priority to best-effort (class 2) on the container's
+		// main process. No target_path needed — RemoveFault falls back to PID 1
+		// when lsof finds nothing, which is the same fallback used during injection.
+		return i.diskInjector.RemoveFault(ctx, containerID, disk.IODelayParams{Operation: "all"})
 	default:
 		return fmt.Errorf("unknown fault type for removal: %s", faultType)
 	}
