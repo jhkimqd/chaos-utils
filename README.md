@@ -13,6 +13,8 @@ Chaos Runner helps you systematically test your Polygon Chain network by:
 ### Key Features
 
 - **Two execution modes**: `run` for declarative YAML scenarios, `fuzz` for randomized fault generation
+- **Steady-state hypothesis**: Pre-fault health check verifies the system is healthy before injection; post-fault evaluation confirms recovery after faults are removed
+- **Prometheus-safe**: Prometheus is enforced as observability-only — any selector that resolves to a monitoring container is rejected at runtime
 - **Auto-Configuration**: Config auto-generated on first run
 - **Declarative Scenarios**: Define tests in YAML
 - **Safe by Default**: Automatic cleanup and emergency stop
@@ -66,7 +68,7 @@ vim config.yaml
 chaos-utils/
 ├── cmd/chaos-runner/          # CLI entry point (run + fuzz subcommands)
 ├── pkg/
-│   ├── core/orchestrator/     # State machine (PARSE → INJECT → MONITOR → CLEANUP)
+│   ├── core/orchestrator/     # State machine (PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT)
 │   ├── fuzz/                  # Randomized scenario generation and execution
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
@@ -80,18 +82,22 @@ chaos-utils/
 
 ### How It Works
 
-1. **Service Discovery**: Finds target containers in Kurtosis enclave by pattern matching
+1. **Service Discovery**: Finds target containers in Kurtosis enclave by pattern matching. Any selector that resolves to `prometheus` or `grafana` is rejected — monitoring infrastructure is never a fault target.
 2. **Sidecar Creation**: Attaches chaos-utils sidecar to target's network namespace
-3. **Fault Injection**: Injects faults via sidecar (comcast/tc for network, Docker API for container lifecycle, stress for resources)
-4. **Monitoring**: Collects Prometheus metrics during test execution
-5. **Evaluation**: Checks success criteria (e.g., "other validators continue producing blocks")
-6. **Cleanup**: Removes faults and destroys sidecars automatically
+3. **Pre-fault health check**: Evaluates all success criteria before injection. If any critical criterion fails the experiment aborts — the system must be in steady state before faults are applied.
+4. **Fault Injection**: Injects faults via sidecar (comcast/tc for network, Docker API for container lifecycle, stress for resources)
+5. **Monitoring**: Collects Prometheus metrics during test execution
+6. **Teardown**: Removes all faults and sidecars *before* evaluating criteria, ensuring Prometheus can scrape cleanly without network faults on the scrape path
+7. **Post-fault evaluation**: Checks success criteria after recovery (e.g., "validators resumed block production")
+8. **Cleanup**: Destroys sidecars and verifies no tc/iptables rules remain
 
 **Safety Features**:
 - Pre-flight cleanup removes remnants from previous tests
 - Automatic `comcast --stop` before each fault injection
 - Emergency stop via Ctrl+C (SIGINT/SIGTERM handling)
 - Cleanup verification ensures no tc/iptables rules remain
+- Prometheus is never a fault target — enforced at container resolution time for both `run` and `fuzz` modes
+- Prometheus misconfiguration is a hard failure — if success criteria are defined but Prometheus is unreachable, the experiment fails rather than silently passing
 
 ## Usage
 
@@ -154,6 +160,13 @@ chaos-utils/
 | `checkpoint` | Wait for active Heimdall checkpoint signing |
 | `post_restart` | Wait until just after a service restart |
 | `high_load` | Wait for sustained Bor block production |
+
+**Session behaviour:**
+
+- Each round applies the same steady-state hypothesis as `run`: pre-fault health check → inject → monitor → teardown → post-fault evaluation
+- If a **critical** success criterion fails (e.g. block production stops), the session halts immediately and prints a reproduction command
+- Ctrl+C (SIGINT) cleanly stops the session after the current round completes cleanup
+- A session summary is written to `reports/fuzz_summary_<timestamp>.json` with per-round results, pass/fail counts, and a `--seed` reproduce command if any round failed
 
 ### Example: Validator Partition Test
 
@@ -297,18 +310,27 @@ rate(cometbft_consensus_block_interval_seconds_count[5m])
 
 ## Test Reports
 
-Reports are auto-generated in `reports/` directory:
+Reports are auto-generated in `reports/`:
 
 ```bash
-# JSON report
+# Single-run JSON report
 reports/test-20260128-154326-test-1769582606.json
+# Contains: test metadata, targets, faults injected, success criteria results, cleanup summary
 
-# Contains:
-# - Test metadata (ID, scenario name, duration)
-# - Targets and faults injected
-# - Success criteria results
-# - Cleanup summary
-# - Errors (if any)
+# Fuzz per-round JSONL log (one line per round, appended live)
+reports/fuzz_log.jsonl
+
+# Fuzz session summary (written at end of each fuzz session)
+reports/fuzz_summary_2026-02-19_16-13-09+09-00.json
+# Contains: seed, enclave, total/passed/failed rounds, per-round results, stop reason,
+#           reproduce command (if any round failed)
+```
+
+To reproduce a failed fuzz session exactly:
+
+```bash
+# Printed at end of session and included in fuzz_summary_*.json
+chaos-runner fuzz --enclave pos --seed 42 --rounds 10
 ```
 
 ## Configuration
@@ -469,7 +491,7 @@ cat scenarios/polygon-chain/network/validator-partition.yaml
 chaos-utils/
 ├── cmd/chaos-runner/          # CLI entry point (run + fuzz subcommands)
 ├── pkg/
-│   ├── core/orchestrator/     # State machine & test execution
+│   ├── core/orchestrator/     # State machine: PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT
 │   ├── fuzz/                  # Randomized fault generation (sampler, generator, runner)
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
