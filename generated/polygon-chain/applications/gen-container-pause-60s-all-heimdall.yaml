@@ -1,0 +1,59 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: gen-container-pause-60s-all-heimdall
+  description: 60 s pause on all validators — Heimdall consensus layer (wildcard).
+    Container pause (SIGSTOP) — simulates frozen process / GC pause / OOM stall.
+  tags:
+  - generated
+  - container-pause
+  - 60s
+  - all_heimdall
+  author: scripts/generate_scenarios.py
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: l2-cl-.*-heimdall-v2-bor-validator
+    alias: target_heimdall
+  duration: 5m
+  warmup: 60s
+  cooldown: 60s
+  faults:
+  - phase: container-pause-target_heimdall
+    description: 60 s pause applied to target_heimdall
+    target: target_heimdall
+    type: container_pause
+    params:
+      duration: 60s
+      unpause: true
+  success_criteria:
+  - name: block_production_continues
+    description: Network continues producing Bor blocks during the fault
+    type: prometheus
+    query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 5m
+  - name: consensus_height_advances
+    description: Heimdall consensus height continues to increase
+    type: prometheus
+    query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+    threshold: '> 0'
+    critical: true
+    window: 5m
+  - name: bft_quorum_maintained
+    description: At least 2/3 of validators remain online (topology-safe BFT quorum
+      ratio)
+    type: prometheus
+    query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+    threshold: '>= 0.67'
+    critical: true
+    window: 5m
+  metrics:
+  - chain_head_block
+  - cometbft_consensus_height
+  - cometbft_consensus_validators
+  - up
