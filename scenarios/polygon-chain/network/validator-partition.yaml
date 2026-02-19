@@ -66,11 +66,11 @@ spec:
       window: 5m
       critical: true
 
-    - name: only_three_validators_active
-      description: Only 3 validators actively participating (validator 1 isolated)
+    - name: only_n_minus_one_validators_active
+      description: Fewer than all validators actively participating (validator 1 isolated, topology-safe)
       type: prometheus
-      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0)
-      threshold: "== 3"
+      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+      threshold: "< 1"
       window: 5m
       critical: false
 

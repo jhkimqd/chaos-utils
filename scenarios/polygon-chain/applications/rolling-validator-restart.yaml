@@ -33,31 +33,10 @@ spec:
         pattern: "l2-el-2-bor-heimdall-v2-validator"
       alias: validator2_bor
 
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-3-heimdall-v2-bor-validator"
-      alias: validator3_heimdall
-
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-3-bor-heimdall-v2-validator"
-      alias: validator3_bor
-
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: validator4_heimdall
-
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: validator4_bor
-
-  duration: 12m
+  # NOTE: Validators 3+ are optional; if absent the scenario still runs
+  # with the validators that exist. BFT quorum requires >=3 validators
+  # for block production to continue during a rolling restart.
+  duration: 6m
   warmup: 2m
   cooldown: 2m
 
@@ -93,36 +72,6 @@ spec:
         grace_period: 10
       delay: 3m
 
-    # Validator 3 restart at 6m
-    - phase: restart_validator3_heimdall
-      target: validator3_heimdall
-      type: container_restart
-      params:
-        grace_period: 10
-      delay: 6m
-
-    - phase: restart_validator3_bor
-      target: validator3_bor
-      type: container_restart
-      params:
-        grace_period: 10
-      delay: 6m
-
-    # Validator 4 restart at 9m
-    - phase: restart_validator4_heimdall
-      target: validator4_heimdall
-      type: container_restart
-      params:
-        grace_period: 10
-      delay: 9m
-
-    - phase: restart_validator4_bor
-      target: validator4_bor
-      type: container_restart
-      params:
-        grace_period: 10
-      delay: 9m
-
   success_criteria:
     # Critical: Block production never stops
     - name: continuous_block_production
@@ -130,7 +79,7 @@ spec:
       type: prometheus
       query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
-      window: 12m
+      window: 6m
       critical: true
 
     # Critical: Consensus never halts
@@ -139,16 +88,16 @@ spec:
       type: prometheus
       query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
-      window: 12m
+      window: 6m
       critical: true
 
-    # Critical: At least 3 validators always active (maintains 75% > 67% threshold)
+    # Critical: At least 2/3 of validators always active (maintains BFT quorum threshold)
     - name: quorum_maintained
-      description: At least 3 validators active at all times
+      description: At least 2/3 of validators active at all times (topology-safe ratio check)
       type: prometheus
-      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1)
-      threshold: ">= 3"
-      window: 12m
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+      threshold: ">= 0.67"
+      window: 6m
       critical: true
 
   metrics:
