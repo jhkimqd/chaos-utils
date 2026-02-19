@@ -305,6 +305,12 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 		return o.failTest(result, fmt.Errorf("stopped before inject"))
 	}
 
+	// Pre-fault health check: verify steady state before injection.
+	// Aborts if any critical criterion fails — system must be healthy before we break it.
+	if err = o.executePreCheck(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
 	// INJECT state
 	o.transitionState(StateInject)
 	if err = o.executeInject(ctx); err != nil {
@@ -407,6 +413,14 @@ func (o *Orchestrator) executeParse(ctx context.Context, scenarioPath string) er
 	return nil
 }
 
+// observabilityBlocklist contains container name substrings that must never be
+// fault targets. Prometheus and Grafana are observability infrastructure — they
+// must remain reachable throughout every experiment.
+var observabilityBlocklist = []string{
+	"prometheus",
+	"grafana",
+}
+
 // executeDiscover discovers target containers matching scenario selectors
 func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 	fmt.Println("Discovering target containers...")
@@ -431,10 +445,20 @@ func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 		for _, container := range containers {
 			// Match against container name
 			if matchPattern(container.Names, targetSpec.Selector.Pattern) {
+				name := getContainerName(container.Names)
+				// Observability infrastructure must never be a fault target.
+				for _, blocked := range observabilityBlocklist {
+					if contains(name, blocked) {
+						return fmt.Errorf(
+							"selector pattern %q resolved to observability container %q — refusing to inject faults into monitoring infrastructure",
+							targetSpec.Selector.Pattern, name,
+						)
+					}
+				}
 				target := TargetInfo{
 					Alias:       targetSpec.Alias,
 					ContainerID: container.ID,
-					Name:        getContainerName(container.Names),
+					Name:        name,
 					IP:          getContainerIP(container),
 				}
 				o.targets = append(o.targets, target)
@@ -527,6 +551,41 @@ func (o *Orchestrator) executeWarmup(ctx context.Context) error {
 		return err
 	}
 	fmt.Println("✓ Warmup complete")
+	return nil
+}
+
+// executePreCheck evaluates success criteria before fault injection to verify the system
+// is in steady state. Any critical criterion failure aborts the experiment early,
+// implementing the steady-state hypothesis (pre-check + post-check pattern).
+func (o *Orchestrator) executePreCheck(ctx context.Context) error {
+	if len(o.scenario.Spec.SuccessCriteria) == 0 {
+		return nil
+	}
+	if o.detector == nil || o.promClient == nil {
+		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
+	}
+
+	fmt.Println("Pre-fault health check: verifying steady state before injection...")
+
+	for i, criterion := range o.scenario.Spec.SuccessCriteria {
+		fmt.Printf("  [%d/%d] Checking: %s\n", i+1, len(o.scenario.Spec.SuccessCriteria), criterion.Name)
+
+		result, err := o.detector.Evaluate(ctx, criterion)
+		if err != nil {
+			return fmt.Errorf("pre-check query failed for %q: %w", criterion.Name, err)
+		}
+
+		if result.Passed {
+			fmt.Printf("    ✓ %s\n", result.Message)
+		} else if criterion.Critical {
+			fmt.Printf("    ✗ FAILED (CRITICAL): %s\n", result.Message)
+			return fmt.Errorf("pre-fault health check failed: system not in steady state — aborting experiment")
+		} else {
+			fmt.Printf("    ⚠ FAILED (non-critical): %s\n", result.Message)
+		}
+	}
+
+	fmt.Println("✓ System in steady state — proceeding with fault injection")
 	return nil
 }
 
@@ -653,8 +712,7 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 	}
 
 	if o.detector == nil || o.promClient == nil {
-		fmt.Println("  ⚠ Prometheus not available, skipping criteria evaluation")
-		return nil
+		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
 	}
 
 	// Evaluate each criterion
@@ -666,8 +724,7 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 
 		result, err := o.detector.Evaluate(ctx, criterion)
 		if err != nil {
-			fmt.Printf("    ⚠ Evaluation error: %v\n", err)
-			continue
+			return fmt.Errorf("criteria query failed for %q: %w", criterion.Name, err)
 		}
 
 		if result.Passed {
