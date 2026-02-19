@@ -324,21 +324,10 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 
 	// Check for stop
 	if o.stopRequested {
-		return o.failTest(result, fmt.Errorf("stopped before detect"))
-	}
-
-	// DETECT state
-	o.transitionState(StateDetect)
-	if err = o.executeDetect(ctx); err != nil {
-		return o.failTest(result, err)
-	}
-
-	// Check for stop
-	if o.stopRequested {
 		return o.failTest(result, fmt.Errorf("stopped before cooldown"))
 	}
 
-	// COOLDOWN state
+	// COOLDOWN state — wait for the system to stabilise before removing faults
 	o.transitionState(StateCooldown)
 	if err = o.executeCooldown(ctx); err != nil {
 		return o.failTest(result, err)
@@ -349,9 +338,22 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 		return o.failTest(result, fmt.Errorf("stopped before teardown"))
 	}
 
-	// TEARDOWN state
+	// TEARDOWN state — remove faults and sidecars before evaluating criteria.
+	// This ensures Prometheus can scrape cleanly and criteria are not affected
+	// by network faults blocking the scrape path.
 	o.transitionState(StateTeardown)
 	if err = o.executeTeardown(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
+	// Check for stop
+	if o.stopRequested {
+		return o.failTest(result, fmt.Errorf("stopped before detect"))
+	}
+
+	// DETECT state — evaluate success criteria now that faults are removed
+	o.transitionState(StateDetect)
+	if err = o.executeDetect(ctx); err != nil {
 		return o.failTest(result, err)
 	}
 
