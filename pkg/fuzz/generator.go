@@ -13,17 +13,22 @@ import (
 var invariantCriteria = []scenario.SuccessCriterion{
 	{
 		Name:        "block_production_continues",
-		Description: "Network continues producing Bor blocks during the fault",
+		Description: "Network continues producing Bor blocks after the fault is removed",
 		Type:        "prometheus",
-		Query:       `increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])`,
-		Threshold:   "> 0",
-		Critical:    true,
+		// sum() aggregates across all validators so a single missed scrape doesn't
+		// empty the vector. or vector(0) converts a fully-empty result (all scrapes
+		// missing) to 0 so the threshold comparison fires instead of "no results".
+		// 5m window captures post-teardown recovery; evaluated after TEARDOWN so
+		// network faults no longer block Prometheus scraping.
+		Query:     `sum(increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)`,
+		Threshold: "> 0",
+		Critical:  true,
 	},
 	{
 		Name:        "consensus_height_advances",
-		Description: "Heimdall consensus height continues to increase",
+		Description: "Heimdall consensus height continues to increase after the fault is removed",
 		Type:        "prometheus",
-		Query:       `increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])`,
+		Query:       `sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[5m])) or vector(0)`,
 		Threshold:   "> 0",
 		Critical:    true,
 	},
