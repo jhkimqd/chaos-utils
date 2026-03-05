@@ -156,18 +156,19 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 
 	// Generate report regardless of success/failure
 	report := &reporting.TestReport{
-		TestID:         result.TestID,
-		ScenarioName:   scenario.Metadata.Name,
-		StartTime:      result.StartTime,
-		EndTime:        result.EndTime,
-		Duration:       result.Duration.String(),
-		Status:         convertStatus(result.State),
-		Success:        result.Success,
-		Message:        result.Message,
-		Targets:        convertTargets(result.Targets),
-		Faults:         convertFaults(scenario, result),
-		CleanupSummary: orch.GetCleanupSummary(),
-		Errors:         convertErrors(result.Errors),
+		TestID:          result.TestID,
+		ScenarioName:    scenario.Metadata.Name,
+		StartTime:       result.StartTime,
+		EndTime:         result.EndTime,
+		Duration:        result.Duration.String(),
+		Status:          convertStatus(result.State),
+		Success:         result.Success,
+		Message:         result.Message,
+		Targets:         convertTargets(result.Targets),
+		Faults:          convertFaults(scenario, result),
+		SuccessCriteria: convertCriteria(result.CriteriaResults),
+		CleanupSummary:  orch.GetCleanupSummary(),
+		Errors:          convertErrors(result.Errors),
 	}
 
 	// Save report
@@ -236,6 +237,25 @@ func convertTargets(targets []orchestrator.TargetInfo) []reporting.TargetInfo {
 		}
 	}
 	return result
+}
+
+// convertCriteria converts orchestrator criteria results to reporting format
+func convertCriteria(criteria []orchestrator.CriterionOutcome) []reporting.CriterionResult {
+	results := make([]reporting.CriterionResult, len(criteria))
+	for i, c := range criteria {
+		results[i] = reporting.CriterionResult{
+			Name:        c.Name,
+			Description: c.Description,
+			Type:        c.Type,
+			Query:       c.Query,
+			Threshold:   c.Threshold,
+			Passed:      c.Passed,
+			Value:       c.Value,
+			Message:     c.Message,
+			Critical:    c.Critical,
+		}
+	}
+	return results
 }
 
 // convertFaults converts scenario faults to reporting.FaultInfo

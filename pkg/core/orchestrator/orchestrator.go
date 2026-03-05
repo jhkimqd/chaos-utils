@@ -117,22 +117,37 @@ type Orchestrator struct {
 	scenarioPath  string
 	testID        string
 	injectTime    time.Time         // set at INJECT start; used to scope log capture to fault window
-	injectedFaults map[string]string // track which targets have faults injected (containerID -> faultType)
+	injectedFaults  map[string]string       // track which targets have faults injected (containerID -> faultType)
+	criteriaResults []CriterionOutcome      // populated during DETECT phase
+}
+
+// CriterionOutcome captures the result of a single success criterion evaluation.
+type CriterionOutcome struct {
+	Name        string
+	Description string
+	Type        string
+	Query       string
+	Threshold   string
+	Passed      bool
+	Value       float64
+	Message     string
+	Critical    bool
 }
 
 // TestResult represents the result of a chaos test execution
 type TestResult struct {
-	TestID       string
-	ScenarioName string
-	StartTime    time.Time
-	EndTime      time.Time
-	Duration     time.Duration
-	State        TestState
-	Success      bool
-	Message      string
-	Errors       []error
-	Targets      []TargetInfo
-	FaultCount   int
+	TestID           string
+	ScenarioName     string
+	StartTime        time.Time
+	EndTime          time.Time
+	Duration         time.Duration
+	State            TestState
+	Success          bool
+	Message          string
+	Errors           []error
+	Targets          []TargetInfo
+	FaultCount       int
+	CriteriaResults  []CriterionOutcome
 }
 
 // New creates a new Orchestrator instance
@@ -388,6 +403,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	result.Message = "Test completed successfully"
 	result.Targets = o.targets
 	result.FaultCount = len(o.injectedFaults)
+	result.CriteriaResults = o.criteriaResults
 
 	return result, nil
 }
@@ -601,15 +617,18 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
 	}
 
-	// Collect only critical criteria — the pre-flight gate.
+	// Collect only critical criteria that verify steady-state health.
+	// Skip criteria marked post_fault_only — they verify fault effectiveness
+	// and are expected to fail before injection.
 	var critical []int
 	for i, c := range o.scenario.Spec.SuccessCriteria {
-		if c.Critical {
-			critical = append(critical, i)
+		if !c.Critical || c.PostFaultOnly {
+			continue
 		}
+		critical = append(critical, i)
 	}
 	if len(critical) == 0 {
-		fmt.Println("Pre-fault health check: no critical criteria defined, skipping")
+		fmt.Println("Pre-fault health check: no steady-state criteria to check, skipping")
 		return nil
 	}
 
@@ -864,6 +883,19 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 			return fmt.Errorf("criteria query failed for %q: %w", criterion.Name, err)
 		}
 
+		// Store for the final report
+		o.criteriaResults = append(o.criteriaResults, CriterionOutcome{
+			Name:        criterion.Name,
+			Description: criterion.Description,
+			Type:        criterion.Type,
+			Query:       criterion.Query,
+			Threshold:   criterion.Threshold,
+			Passed:      result.Passed,
+			Value:       result.LastValue,
+			Message:     result.Message,
+			Critical:    criterion.Critical,
+		})
+
 		if result.Passed {
 			fmt.Printf("    ✓ PASSED: %s\n", result.Message)
 		} else {
@@ -1114,6 +1146,7 @@ func (o *Orchestrator) failTest(result *TestResult, err error) (*TestResult, err
 	result.Errors = append(result.Errors, err)
 	result.Targets = o.targets
 	result.FaultCount = len(o.injectedFaults)
+	result.CriteriaResults = o.criteriaResults
 	return result, err
 }
 

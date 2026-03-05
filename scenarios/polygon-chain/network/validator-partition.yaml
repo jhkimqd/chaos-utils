@@ -77,6 +77,7 @@ spec:
       threshold: "== 0"
       window: 5m
       critical: true
+      post_fault_only: true
 
     # Non-critical: Peer count for victim drops to zero
     - name: partitioned_validator_loses_peers

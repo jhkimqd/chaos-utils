@@ -254,147 +254,107 @@ func (pr *ProgressReporter) reportTUI(state LiveTestState) {
 
 // printTestSummary prints a test summary in TUI format
 func (pr *ProgressReporter) printTestSummary(report *TestReport) {
-	fmt.Println()
-	fmt.Println(strings.Repeat("=", 80))
-	fmt.Println("   TEST SUMMARY")
-	fmt.Println(strings.Repeat("=", 80))
-	fmt.Println()
-
-	// Status
-	statusIcon := "✅"
-	statusText := "PASSED"
-	if !report.Success {
-		statusIcon = "❌"
-		statusText = "FAILED"
-	}
-	if report.Status == StatusStopped {
-		statusIcon = "🛑"
-		statusText = "STOPPED"
-	}
-
-	fmt.Printf("%s Test %s\n", statusIcon, statusText)
-	fmt.Printf("   Scenario: %s\n", report.ScenarioName)
-	fmt.Printf("   Test ID: %s\n", report.TestID)
-	fmt.Printf("   Duration: %s\n", report.Duration)
-	fmt.Println()
-
-	// Targets
-	if len(report.Targets) > 0 {
-		fmt.Printf("🎯 Targets (%d):\n", len(report.Targets))
-		for _, target := range report.Targets {
-			fmt.Printf("   • %s (%s)\n", target.Alias, target.ServiceName)
-		}
-		fmt.Println()
-	}
-
-	// Faults
-	if len(report.Faults) > 0 {
-		fmt.Printf("⚡ Faults Injected (%d):\n", len(report.Faults))
-		for _, fault := range report.Faults {
-			fmt.Printf("   • %s: %s on %s\n", fault.Phase, fault.Type, fault.Target)
-		}
-		fmt.Println()
-	}
-
-	// Success criteria
-	if len(report.SuccessCriteria) > 0 {
-		passed := 0
-		failedCritical := 0
-		failedNonCritical := 0
-		for _, criterion := range report.SuccessCriteria {
-			if criterion.Passed {
-				passed++
-			} else {
-				if criterion.Critical {
-					failedCritical++
-				} else {
-					failedNonCritical++
-				}
-			}
-		}
-
-		statusIcon := "✅"
-		statusText := fmt.Sprintf("%d passed", passed)
-		if failedCritical > 0 {
-			statusIcon = "🔴"
-			statusText += fmt.Sprintf(", %d critical failed", failedCritical)
-		}
-		if failedNonCritical > 0 {
-			if failedCritical == 0 {
-				statusIcon = "⚠️"
-			}
-			statusText += fmt.Sprintf(", %d non-critical failed", failedNonCritical)
-		}
-		fmt.Printf("%s Success Criteria: %s\n", statusIcon, statusText)
-		for _, criterion := range report.SuccessCriteria {
-			status := "✅"
-			if !criterion.Passed {
-				status = "❌"
-				if criterion.Critical {
-					status = "🔴"
-				}
-			}
-			fmt.Printf("   %s %s: %s\n", status, criterion.Name, criterion.Message)
-		}
-		fmt.Println()
-	}
-
-	// Cleanup
-	fmt.Printf("🧹 Cleanup: %d succeeded, %d failed\n",
-		report.CleanupSummary.Succeeded,
-		report.CleanupSummary.Failed,
-	)
-	fmt.Println()
-
-	fmt.Println(strings.Repeat("=", 80))
+	pr.printSummaryCommon(report)
 }
 
 // printTextSummary prints a test summary in plain text format
 func (pr *ProgressReporter) printTextSummary(report *TestReport) {
-	status := "PASSED"
-	if !report.Success {
-		status = "FAILED"
-	}
+	pr.printSummaryCommon(report)
+}
+
+// printSummaryCommon is the shared implementation for both text and TUI summaries.
+func (pr *ProgressReporter) printSummaryCommon(report *TestReport) {
+	w := 72
+
+	fmt.Println()
+	fmt.Println(strings.Repeat("═", w))
+
+	// Overall verdict banner
 	if report.Status == StatusStopped {
-		status = "STOPPED"
+		fmt.Printf("  STOPPED  %s\n", report.ScenarioName)
+	} else if report.Success {
+		fmt.Printf("  ✓ PASSED  %s\n", report.ScenarioName)
+	} else {
+		fmt.Printf("  ✗ FAILED  %s\n", report.ScenarioName)
 	}
 
-	fmt.Printf("\n[TEST SUMMARY] %s\n", status)
-	fmt.Printf("  Scenario: %s\n", report.ScenarioName)
-	fmt.Printf("  Test ID: %s\n", report.TestID)
-	fmt.Printf("  Duration: %s\n", report.Duration)
-	fmt.Printf("  Targets: %d\n", len(report.Targets))
-	fmt.Printf("  Faults: %d\n", len(report.Faults))
+	fmt.Println(strings.Repeat("═", w))
+	fmt.Printf("  Test ID:   %s\n", report.TestID)
+	fmt.Printf("  Duration:  %s\n", report.Duration)
+	fmt.Printf("  Targets:   %d\n", len(report.Targets))
+	fmt.Printf("  Faults:    %d\n", len(report.Faults))
+	fmt.Println(strings.Repeat("─", w))
 
+	// Success criteria results
 	if len(report.SuccessCriteria) > 0 {
 		passed := 0
-		failedCritical := 0
-		failedNonCritical := 0
-		for _, criterion := range report.SuccessCriteria {
-			if criterion.Passed {
+		var failedCriteria []CriterionResult
+		for _, c := range report.SuccessCriteria {
+			if c.Passed {
 				passed++
 			} else {
-				if criterion.Critical {
-					failedCritical++
-				} else {
-					failedNonCritical++
+				failedCriteria = append(failedCriteria, c)
+			}
+		}
+
+		fmt.Printf("  Success Criteria: %d/%d passed\n", passed, len(report.SuccessCriteria))
+		fmt.Println()
+
+		for _, c := range report.SuccessCriteria {
+			if c.Passed {
+				fmt.Printf("    ✓  %s\n", c.Name)
+			} else if c.Critical {
+				fmt.Printf("    ✗  %s  (CRITICAL)\n", c.Name)
+			} else {
+				fmt.Printf("    ✗  %s  (non-critical)\n", c.Name)
+			}
+		}
+
+		// Detailed failure section
+		if len(failedCriteria) > 0 {
+			fmt.Println()
+			fmt.Println(strings.Repeat("─", w))
+			fmt.Println("  FAILED CRITERIA DETAILS")
+			fmt.Println(strings.Repeat("─", w))
+			for _, c := range failedCriteria {
+				severity := "non-critical"
+				if c.Critical {
+					severity = "CRITICAL"
+				}
+				fmt.Printf("\n    ✗ %s [%s]\n", c.Name, severity)
+				if c.Description != "" {
+					fmt.Printf("      %s\n", c.Description)
+				}
+				fmt.Printf("      got %.4g, expected %s\n", c.Value, c.Threshold)
+				if c.Query != "" {
+					fmt.Printf("      query: %s\n", c.Query)
 				}
 			}
 		}
-		fmt.Printf("  Success Criteria: %d/%d passed", passed, len(report.SuccessCriteria))
-		if failedCritical > 0 {
-			fmt.Printf(", %d critical failed", failedCritical)
-		}
-		if failedNonCritical > 0 {
-			fmt.Printf(", %d non-critical failed", failedNonCritical)
-		}
-		fmt.Println()
+	} else {
+		fmt.Println("  No success criteria defined")
 	}
 
+	// Cleanup
+	fmt.Println()
+	fmt.Println(strings.Repeat("─", w))
 	fmt.Printf("  Cleanup: %d succeeded, %d failed\n",
 		report.CleanupSummary.Succeeded,
 		report.CleanupSummary.Failed,
 	)
+
+	// Errors
+	if len(report.Errors) > 0 {
+		fmt.Println()
+		fmt.Println(strings.Repeat("─", w))
+		fmt.Println("  ERRORS")
+		fmt.Println(strings.Repeat("─", w))
+		for _, e := range report.Errors {
+			fmt.Printf("    • %s\n", e)
+		}
+	}
+
+	fmt.Println(strings.Repeat("═", w))
 	fmt.Println()
 }
 
