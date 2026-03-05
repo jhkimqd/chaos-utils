@@ -115,6 +115,7 @@ spec:
       threshold: "== 0"
       window: 5m
       critical: true
+      post_fault_only: true
 
     # Non-critical: BFT quorum maintained — with 2 of 4 partitioned,
     # remaining 2 may or may not have quorum depending on voting power.

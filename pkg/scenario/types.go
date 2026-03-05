@@ -134,6 +134,11 @@ type SuccessCriterion struct {
 
 	// Critical marks this as a critical criterion (test fails if this fails)
 	Critical bool `yaml:"critical,omitempty"`
+
+	// PostFaultOnly skips this criterion during the pre-fault health check.
+	// Use for criteria that verify fault effectiveness (e.g., "partitioned
+	// validator stops advancing") — these are expected to fail before injection.
+	PostFaultOnly bool `yaml:"post_fault_only,omitempty"`
 }
 
 // NetworkFaultParams defines parameters for network faults
