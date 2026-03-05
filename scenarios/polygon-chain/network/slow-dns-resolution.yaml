@@ -46,17 +46,17 @@ spec:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
     - name: block_production_continues
-      description: CRITICAL - Block production continues via cached peer IPs
+      description: CRITICAL - Block production continues via cached peer IPs - no mid-test stalls
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-validator"}[1m])[8m:4m])) > 0
       threshold: "> 0"
       window: 8m
       critical: true
 
     - name: consensus_continues
-      description: CRITICAL - Consensus operates normally with cached peer connections
+      description: CRITICAL - Consensus operates normally with cached peer connections - no mid-test stalls
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-validator"}[1m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-validator"}[1m])[8m:4m])) > 0
       threshold: "> 0"
       window: 8m
       critical: true

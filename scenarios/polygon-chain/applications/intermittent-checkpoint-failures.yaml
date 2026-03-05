@@ -60,29 +60,38 @@ spec:
       delay: 8m
 
   success_criteria:
-    # Critical: Block production continues
+    # Critical: Block production continues — gap detection catches mid-test stalls
     - name: block_production_continues
-      description: Block production continues despite checkpoint issues
+      description: Block production continues without any 2-minute gap despite checkpoint issues
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[12m:4m]))
       threshold: "> 0"
       window: 12m
       critical: true
 
-    # Critical: Consensus continues
+    # Critical: Consensus continues — gap detection
     - name: consensus_continues
-      description: Consensus continues despite intermittent failures
+      description: Consensus continues without any 2-minute gap despite intermittent failures
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])[12m:4m]))
       threshold: "> 0"
       window: 12m
       critical: true
 
-    # Non-critical: Some checkpoints still succeed
+    # Non-critical: Some checkpoints still succeed — rate bound instead of bare > 0
     - name: checkpoint_retry_succeeds
-      description: Checkpoint submission retries eventually succeed
+      description: Checkpoint submission retries eventually succeed at a meaningful rate
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_success_total[5m])
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_success_total[5m])[12m:4m]))
+      threshold: "> 0.1"
+      window: 12m
+      critical: false
+
+    # Fault effectiveness: packet loss causes measurable checkpoint failure increase
+    - name: checkpoint_failures_from_packet_loss
+      description: Packet loss on checkpoint ports causes measurable checkpoint API failures
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[12m]) - increase(heimdallv2_checkpoint_api_calls_success_total[12m])
       threshold: "> 0"
       window: 12m
       critical: false

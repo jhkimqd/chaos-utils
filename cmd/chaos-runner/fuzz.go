@@ -111,6 +111,9 @@ func runFuzz(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runner := fuzz.NewRunner(fuzzCfg, appCfg, logger)
+	runner, err := fuzz.NewRunner(fuzzCfg, appCfg, logger)
+	if err != nil {
+		return err
+	}
 	return runner.Run(ctx)
 }

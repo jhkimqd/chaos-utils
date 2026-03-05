@@ -46,28 +46,44 @@ func (v *Verifier) VerifyNamespaceClean(ctx context.Context, containerID string)
 	}
 
 	// Check tc (traffic control) rules
-	if hasTC, details := v.checkTCRules(ctx, containerID, pid); hasTC {
+	hasTC, details, err := v.checkTCRules(ctx, containerID, pid)
+	if err != nil {
+		result.Clean = false
+		result.Details = append(result.Details, fmt.Sprintf("WARN: %v", err))
+	} else if hasTC {
 		result.TCRulesFound = true
 		result.Clean = false
 		result.Details = append(result.Details, details...)
 	}
 
 	// Check iptables rules
-	if hasIPTables, details := v.checkIPTablesRules(ctx, containerID, pid); hasIPTables {
+	hasIPTables, details, err := v.checkIPTablesRules(ctx, containerID, pid)
+	if err != nil {
+		result.Clean = false
+		result.Details = append(result.Details, fmt.Sprintf("WARN: %v", err))
+	} else if hasIPTables {
 		result.IPTablesFound = true
 		result.Clean = false
 		result.Details = append(result.Details, details...)
 	}
 
 	// Check nftables rules
-	if hasNFTables, details := v.checkNFTablesRules(ctx, containerID, pid); hasNFTables {
+	hasNFTables, details, err := v.checkNFTablesRules(ctx, containerID, pid)
+	if err != nil {
+		result.Clean = false
+		result.Details = append(result.Details, fmt.Sprintf("WARN: %v", err))
+	} else if hasNFTables {
 		result.NFTablesFound = true
 		result.Clean = false
 		result.Details = append(result.Details, details...)
 	}
 
 	// Check for Envoy processes (if L7 faults were used)
-	if hasEnvoy, details := v.checkEnvoyProcesses(ctx, containerID); hasEnvoy {
+	hasEnvoy, details, err := v.checkEnvoyProcesses(ctx, containerID)
+	if err != nil {
+		result.Clean = false
+		result.Details = append(result.Details, fmt.Sprintf("WARN: %v", err))
+	} else if hasEnvoy {
 		result.EnvoyFound = true
 		result.Clean = false
 		result.Details = append(result.Details, details...)
@@ -77,79 +93,77 @@ func (v *Verifier) VerifyNamespaceClean(ctx context.Context, containerID string)
 }
 
 // checkTCRules checks for traffic control rules using tc command
-func (v *Verifier) checkTCRules(ctx context.Context, containerID string, pid int) (bool, []string) {
+func (v *Verifier) checkTCRules(ctx context.Context, containerID string, pid int) (bool, []string, error) {
 	// Use nsenter to check tc rules in the container's network namespace
 	cmd := []string{"nsenter", "-t", fmt.Sprintf("%d", pid), "-n", "tc", "qdisc", "show"}
 
 	output, err := v.dockerClient.ExecCommand(ctx, containerID, cmd)
 	if err != nil {
-		// If command fails, assume no rules
-		return false, nil
+		return false, nil, fmt.Errorf("tc check failed (cannot verify clean state): %w", err)
 	}
 
 	// Check if output contains netem or tbf (traffic shaping) qdiscs
 	if strings.Contains(output, "netem") || strings.Contains(output, "tbf") {
-		return true, []string{fmt.Sprintf("TC rules found: %s", output)}
+		return true, []string{fmt.Sprintf("TC rules found: %s", output)}, nil
 	}
 
-	return false, nil
+	return false, nil, nil
 }
 
 // checkIPTablesRules checks for iptables rules
-func (v *Verifier) checkIPTablesRules(ctx context.Context, containerID string, pid int) (bool, []string) {
+func (v *Verifier) checkIPTablesRules(ctx context.Context, containerID string, pid int) (bool, []string, error) {
 	// Use nsenter to check iptables rules
 	cmd := []string{"nsenter", "-t", fmt.Sprintf("%d", pid), "-n", "iptables", "-L", "-n"}
 
 	output, err := v.dockerClient.ExecCommand(ctx, containerID, cmd)
 	if err != nil {
-		// If command fails, assume no rules
-		return false, nil
+		return false, nil, fmt.Errorf("iptables check failed (cannot verify clean state): %w", err)
 	}
 
 	// Check if output contains chaos_utils chains or rules
 	if strings.Contains(output, "chaos_utils") || strings.Contains(output, "CHAOS") {
-		return true, []string{fmt.Sprintf("iptables rules found: %s", output)}
+		return true, []string{fmt.Sprintf("iptables rules found: %s", output)}, nil
 	}
 
-	return false, nil
+	return false, nil, nil
 }
 
 // checkNFTablesRules checks for nftables rules
-func (v *Verifier) checkNFTablesRules(ctx context.Context, containerID string, pid int) (bool, []string) {
+func (v *Verifier) checkNFTablesRules(ctx context.Context, containerID string, pid int) (bool, []string, error) {
 	// Use nsenter to check nftables rules
 	cmd := []string{"nsenter", "-t", fmt.Sprintf("%d", pid), "-n", "nft", "list", "tables"}
 
 	output, err := v.dockerClient.ExecCommand(ctx, containerID, cmd)
 	if err != nil {
-		// If command fails, assume no rules (nft may not be available)
-		return false, nil
+		// nft may not be installed — this is expected in many containers,
+		// so treat as "no nftables rules" rather than a verification failure
+		return false, nil, nil
 	}
 
 	// Check if output contains chaos_utils table
 	if strings.Contains(output, "chaos_utils") {
-		return true, []string{fmt.Sprintf("nftables rules found: %s", output)}
+		return true, []string{fmt.Sprintf("nftables rules found: %s", output)}, nil
 	}
 
-	return false, nil
+	return false, nil, nil
 }
 
 // checkEnvoyProcesses checks for running Envoy processes
-func (v *Verifier) checkEnvoyProcesses(ctx context.Context, containerID string) (bool, []string) {
+func (v *Verifier) checkEnvoyProcesses(ctx context.Context, containerID string) (bool, []string, error) {
 	// Check if any Envoy processes are running in the container
 	cmd := []string{"ps", "aux"}
 
 	output, err := v.dockerClient.ExecCommand(ctx, containerID, cmd)
 	if err != nil {
-		// If command fails, assume no processes
-		return false, nil
+		return false, nil, fmt.Errorf("ps check failed (cannot verify clean state): %w", err)
 	}
 
 	// Check if output contains envoy processes
 	if strings.Contains(output, "envoy") {
-		return true, []string{fmt.Sprintf("Envoy process found: %s", output)}
+		return true, []string{fmt.Sprintf("Envoy process found: %s", output)}, nil
 	}
 
-	return false, nil
+	return false, nil, nil
 }
 
 // CleanupArtifacts attempts to clean up any remaining chaos artifacts

@@ -45,30 +45,48 @@ spec:
         target_proto: tcp,udp
 
   success_criteria:
-    # Critical: Block production must continue
+    # Critical: Block production must continue (gap detection)
     - name: block_production_continues
-      description: Network continues producing blocks
+      description: Network continues producing blocks - no mid-test stalls
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[6m:3m])) > 0
       threshold: "> 0"
       window: 6m
       critical: true
 
-    # Critical: Consensus continues
+    # Critical: Consensus continues (gap detection)
     - name: consensus_continues
-      description: Consensus layer continues operating
+      description: Consensus layer continues operating - no mid-test stalls
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])[6m:3m])) > 0
       threshold: "> 0"
       window: 6m
       critical: true
 
-    # Non-critical: Checkpoint API accessible
+    # Non-critical: Checkpoint API accessible (gap detection)
     - name: checkpoint_api_accessible
-      description: Checkpoint API continues to respond
+      description: Checkpoint API continues to respond throughout test
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_total[2m])
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_total[2m])[6m:3m]))
       threshold: "> 0"
+      window: 6m
+      critical: false
+
+    # Fault effectiveness: Throttled validator's consensus rate degrades
+    - name: throttled_validator_rate_degrades
+      description: Throttled validator 1 shows lower consensus rate than healthy validators
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[2m]) / clamp_min(avg(rate(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "< 0.9"
+      window: 6m
+      critical: false
+
+    # Peer count stays stable for healthy validators
+    - name: healthy_peers_stable
+      description: Healthy validators maintain peer connections
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"})
+      threshold: ">= 2"
       window: 6m
       critical: false
 
@@ -76,3 +94,4 @@ spec:
     - chain_head_block
     - cometbft_consensus_height
     - heimdallv2_checkpoint_api_calls_total
+    - cometbft_p2p_peers

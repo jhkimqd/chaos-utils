@@ -50,9 +50,9 @@ spec:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
     - name: network_continues
-      description: CRITICAL - Network continues during validator restart
+      description: CRITICAL - Healthy validators continue producing blocks without any 1-minute gap during restart
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m])[3m:1m]))
       threshold: "> 0"
       window: 3m
       critical: true
@@ -111,6 +111,15 @@ spec:
       description: Bor resumes block production after restart
       type: prometheus
       query: increase(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 3m
+      critical: false
+
+    # Fault effectiveness: healthy validators maintain uninterrupted consensus
+    - name: healthy_validators_uninterrupted
+      description: Validators 1,3,4 maintain consensus without any gap during v2 restart
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[134]-heimdall-v2-bor-validator"}[1m])[3m:1m]))
       threshold: "> 0"
       window: 3m
       critical: false

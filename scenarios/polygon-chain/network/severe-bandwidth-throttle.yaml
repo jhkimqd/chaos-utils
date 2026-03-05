@@ -47,10 +47,11 @@ spec:
   success_criteria:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
+    # Gap detection: healthy validators must never stall
     - name: network_continues_producing
-      description: CRITICAL - Other validators maintain block production
+      description: CRITICAL - Other validators maintain block production without gaps
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-[134]-.*-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[134]-.*-validator"}[1m])[10m:3m]))
       threshold: "> 0"
       window: 10m
       critical: true
@@ -60,6 +61,15 @@ spec:
       type: prometheus
       query: up{job="l2-cl-2-heimdall-v2-bor-validator"}
       threshold: "== 1"
+      window: 10m
+      critical: true
+
+    # Gap detection: healthy consensus never stalls
+    - name: healthy_consensus_no_gaps
+      description: CRITICAL - Healthy validators maintain consensus without gaps
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[134]-heimdall-v2-bor-validator"}[1m])[10m:3m]))
+      threshold: "> 0"
       window: 10m
       critical: true
 
@@ -97,11 +107,21 @@ spec:
       window: 10m
       critical: false
 
-    - name: throttled_validator_falls_behind
-      description: Throttled validator continues (but may be slower than others)
+    # Fault effectiveness: throttled validator's consensus rate degrades vs healthy
+    - name: throttled_validator_rate_degrades
+      description: Throttled validator's consensus rate is lower than healthy validators
       type: prometheus
-      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[3m])
-      threshold: "> 0"
+      query: rate(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[2m]) / clamp_min(avg(rate(cometbft_consensus_height{job=~"l2-cl-[134]-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "< 0.8"
+      window: 10m
+      critical: false
+
+    # Bounded degradation: throttled validator still makes some progress
+    - name: throttled_validator_falls_behind
+      description: Throttled validator continues at reduced rate (but not zero)
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[3m])
+      threshold: "> 0.1"
       window: 10m
       critical: false
 

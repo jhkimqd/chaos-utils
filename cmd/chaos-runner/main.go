@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -19,7 +20,9 @@ var rootCmd = &cobra.Command{
 	Long: `Chaos Runner is a comprehensive chaos engineering platform for Kurtosis-managed
 Polygon PoS networks. It provides declarative scenario definitions, automated
 orchestration, integrated observability, and emergency stop mechanisms.`,
-	Version: version,
+	Version:       version,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {
@@ -36,6 +39,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
 }

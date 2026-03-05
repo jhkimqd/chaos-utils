@@ -36,17 +36,17 @@ spec:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
     - name: all_validators_produce_blocks
-      description: CRITICAL - All validators continue producing blocks
+      description: CRITICAL - All validators continue producing blocks - no mid-test stalls
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-validator"}[1m])[10m:5m])) > 0
       threshold: "> 0"
       window: 10m
       critical: true
 
     - name: consensus_survives_reordering
-      description: CRITICAL - Consensus progresses despite packet chaos
+      description: CRITICAL - Consensus progresses throughout despite packet chaos
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-validator"}[1m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-validator"}[1m])[10m:5m])) > 0
       threshold: "> 0"
       window: 10m
       critical: true

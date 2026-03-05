@@ -8,6 +8,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/errdefs"
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 )
 
@@ -29,9 +30,10 @@ func New(dockerClient *docker.Client, sidecarImage string) *Manager {
 
 // CreateSidecar creates and attaches a sidecar to a target container's network namespace
 func (m *Manager) CreateSidecar(ctx context.Context, targetContainerID string) (string, error) {
-	// Check if sidecar already exists for this target
+	// Reuse existing sidecar if one is already running for this target
 	if sidecarID, exists := m.createdSidecars[targetContainerID]; exists {
-		return sidecarID, fmt.Errorf("sidecar already exists: %s", sidecarID)
+		fmt.Printf("Reusing existing sidecar %s for target %s\n", sidecarID[:12], targetContainerID[:12])
+		return sidecarID, nil
 	}
 
 	// Pull sidecar image if needed
@@ -93,9 +95,8 @@ func (m *Manager) DestroySidecar(ctx context.Context, targetContainerID string) 
 	// Stop the container (will auto-remove due to AutoRemove flag)
 	timeout := 10
 	if err := m.dockerClient.ContainerStop(ctx, sidecarID, &timeout); err != nil {
-		// If container is already stopped, that's fine
-		if !strings.Contains(err.Error(), "is already stopped") &&
-			!strings.Contains(err.Error(), "No such container") {
+		// NotFound or NotModified (already stopped) are expected during cleanup
+		if !errdefs.IsNotFound(err) && !errdefs.IsNotModified(err) {
 			return fmt.Errorf("failed to stop sidecar: %w", err)
 		}
 	}
@@ -104,10 +105,8 @@ func (m *Manager) DestroySidecar(ctx context.Context, targetContainerID string) 
 	if err := m.dockerClient.ContainerRemove(ctx, sidecarID, types.ContainerRemoveOptions{
 		Force: true,
 	}); err != nil {
-		// If container is already gone or removal is in progress, that's fine
-		if !strings.Contains(err.Error(), "No such container") &&
-		   !strings.Contains(err.Error(), "removal of container") &&
-		   !strings.Contains(err.Error(), "is already in progress") {
+		// NotFound (already gone) or Conflict (removal in progress) are expected
+		if !errdefs.IsNotFound(err) && !errdefs.IsConflict(err) {
 			return fmt.Errorf("failed to remove sidecar: %w", err)
 		}
 	}

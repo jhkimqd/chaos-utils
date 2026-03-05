@@ -1,16 +1,20 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/jihwankim/chaos-utils/pkg/discovery"
 )
@@ -224,6 +228,56 @@ func (c *Client) ContainerRemove(ctx context.Context, containerID string, option
 // ContainerList lists all containers
 func (c *Client) ContainerList(ctx context.Context, options types.ContainerListOptions) ([]types.Container, error) {
 	return c.cli.ContainerList(ctx, options)
+}
+
+// ContainerLogs fetches the last tailN log lines from a container since the given
+// time, merging stdout and stderr. Returns an empty slice on any error — callers
+// should treat log collection as best-effort and never fail on it.
+func (c *Client) ContainerLogs(ctx context.Context, containerID string, tailN int, since time.Time) ([]string, error) {
+	opts := types.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       strconv.Itoa(tailN),
+		Since:      since.UTC().Format(time.RFC3339),
+	}
+	reader, err := c.cli.ContainerLogs(ctx, containerID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("container logs: %w", err)
+	}
+	defer reader.Close()
+
+	// Docker container log streams are multiplexed (8-byte header per chunk).
+	// stdcopy.StdCopy demultiplexes stdout and stderr into separate buffers.
+	var buf bytes.Buffer
+	if _, err := stdcopy.StdCopy(&buf, &buf, reader); err != nil {
+		return nil, fmt.Errorf("demux container logs: %w", err)
+	}
+
+	var lines []string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if l = strings.TrimRight(l, "\r"); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, nil
+}
+
+// ContainerLogsFollow returns a streaming reader that follows container logs in
+// real-time starting from the given time. The caller must close the returned
+// ReadCloser when done. The stream is multiplexed (8-byte Docker header per
+// chunk) — use stdcopy.StdCopy to demultiplex.
+func (c *Client) ContainerLogsFollow(ctx context.Context, containerID string, since time.Time) (io.ReadCloser, error) {
+	opts := types.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Since:      since.UTC().Format(time.RFC3339),
+	}
+	reader, err := c.cli.ContainerLogs(ctx, containerID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("container logs follow: %w", err)
+	}
+	return reader, nil
 }
 
 // ContainerInspect returns detailed information about a container

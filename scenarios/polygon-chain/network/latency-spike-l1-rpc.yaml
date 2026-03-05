@@ -33,32 +33,55 @@ spec:
         target_proto: tcp
 
   success_criteria:
-    - name: bor_continues_producing
-      description: Bor (L2 execution) continues producing blocks
+    # Critical: Bor block production never stalls (gap detection)
+    - name: bor_no_production_gaps
+      description: Bor block rate never drops to zero during L1 latency
       type: prometheus
-      query: increase(chain_head_block[2m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[10m:1m]))
       threshold: "> 0"
       window: 10m
       critical: true
 
-    - name: heimdall_continues
-      description: Heimdall (L2 consensus) continues operating
+    # Critical: Heimdall consensus never stalls
+    - name: heimdall_no_consensus_gaps
+      description: Heimdall consensus rate never drops to zero
       type: prometheus
-      query: increase(cometbft_consensus_height[2m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])[10m:1m]))
       threshold: "> 0"
       window: 10m
       critical: true
 
+    # Critical: L2 block interval stays bounded — 500ms L1 latency should
+    # degrade L2 but not catastrophically.
+    - name: block_interval_bounded
+      description: L2 block production rate stays above 0.1 blocks/sec (10s interval max)
+      type: prometheus
+      query: avg(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m]))
+      threshold: "> 0.1"
+      window: 10m
+      critical: true
+
+    # Non-critical: Checkpoint calls continue (L1 dependency under stress)
     - name: checkpoint_api_accessible
-      description: Checkpoint API continues to respond
+      description: Checkpoint API calls still occurring despite L1 latency
       type: prometheus
       query: increase(heimdallv2_checkpoint_api_calls_total[5m])
       threshold: "> 0"
       window: 10m
       critical: false
 
+    # Non-critical: Peer connections remain stable
+    - name: peer_connections_stable
+      description: Validators maintain healthy peer counts under L1 stress
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: ">= 2"
+      window: 10m
+      critical: false
+
   metrics:
     - chain_head_block
     - cometbft_consensus_height
+    - cometbft_p2p_peers
     - heimdallv2_checkpoint_api_calls_total
     - rpc_duration_eth_blockNumber_success

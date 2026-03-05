@@ -101,34 +101,54 @@ spec:
       delay: 6m
 
   success_criteria:
-    # Critical: Network resilience - other validators must continue
+    # Gap detection: healthy validators must never stall
     - name: network_continues_producing_blocks
-      description: Overall network continues block production
+      description: Overall network continues block production without mid-test stalls
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[2m])[12m:4m]))
       threshold: "> 0"
       window: 12m
       critical: true
 
-    # Critical: Consensus must progress
+    # Gap detection: consensus must never stall
     - name: consensus_progresses
-      description: Heimdall consensus continues
+      description: Heimdall consensus continues without gaps
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[134]-heimdall-v2-bor-validator"}[2m])[12m:4m]))
       threshold: "> 0"
       window: 12m
       critical: true
 
-    # Non-critical: Checkpoint API continues responding
+    # Bounded degradation: checkpoint API rate stays above minimum
     - name: checkpoint_api_accessible
-      description: Checkpoint API continues to respond
+      description: Checkpoint API continues to respond at a reasonable rate
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      query: rate(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: "> 0.1"
+      window: 12m
+      critical: false
+
+    # Fault effectiveness: late votes increase under progressive latency
+    - name: late_votes_from_progressive_degradation
+      description: Late votes appear as latency increases progressively
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
       threshold: "> 0"
+      window: 12m
+      critical: false
+
+    # Fault effectiveness: degraded validator's consensus rate drops
+    - name: degraded_validator_rate_decreases
+      description: Degraded validator's consensus rate is lower than healthy peers
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[2m]) / clamp_min(avg(rate(cometbft_consensus_height{job=~"l2-cl-[134]-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "< 0.8"
       window: 12m
       critical: false
 
   metrics:
     - chain_head_block
     - cometbft_consensus_height
+    - cometbft_consensus_late_votes
+    - cometbft_p2p_peers
     - heimdallv2_checkpoint_api_calls_total

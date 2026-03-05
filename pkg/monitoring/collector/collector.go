@@ -26,6 +26,14 @@ type Collector struct {
 	running         bool
 	stopCh          chan struct{}
 	metricNames     []string
+	errors          []CollectionError // tracked errors for reporting
+}
+
+// CollectionError records a metric collection failure
+type CollectionError struct {
+	MetricName string
+	Timestamp  time.Time
+	Err        error
 }
 
 // Config contains collector configuration
@@ -47,6 +55,7 @@ func New(config Config) *Collector {
 		interval:    config.Interval,
 		stopCh:      make(chan struct{}),
 		metricNames: config.MetricNames,
+		errors:      make([]CollectionError, 0),
 	}
 }
 
@@ -101,6 +110,13 @@ func (c *Collector) collectMetrics(ctx context.Context) {
 	for _, metricName := range c.metricNames {
 		if err := c.collectMetric(ctx, metricName); err != nil {
 			fmt.Printf("Warning: failed to collect metric %s: %v\n", metricName, err)
+			c.mutex.Lock()
+			c.errors = append(c.errors, CollectionError{
+				MetricName: metricName,
+				Timestamp:  time.Now(),
+				Err:        err,
+			})
+			c.mutex.Unlock()
 		}
 	}
 }
@@ -262,15 +278,37 @@ func (c *Collector) GetSummary() string {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
+	total := 0
+	for _, samples := range c.samples {
+		total += len(samples)
+	}
+
 	return fmt.Sprintf("Metrics Collector Summary:\n"+
 		"  Metrics: %d\n"+
 		"  Total Samples: %d\n"+
 		"  Running: %v\n"+
 		"  Interval: %v\n",
 		len(c.metricNames),
-		c.GetTotalSamples(),
+		total,
 		c.running,
 		c.interval)
+}
+
+// GetErrors returns all collection errors recorded during the run
+func (c *Collector) GetErrors() []CollectionError {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	result := make([]CollectionError, len(c.errors))
+	copy(result, c.errors)
+	return result
+}
+
+// HasErrors returns true if any collection errors were recorded
+func (c *Collector) HasErrors() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return len(c.errors) > 0
 }
 
 // ExportToTimeSeries exports samples to a time-series format

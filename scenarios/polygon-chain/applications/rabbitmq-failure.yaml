@@ -34,17 +34,17 @@ spec:
 
   success_criteria:
     - name: bor_resilient
-      description: Bor continues producing blocks despite messaging issues
+      description: Bor continues producing blocks without any 1-minute gap despite messaging issues
       type: prometheus
-      query: increase(chain_head_block[1m])
+      query: min(min_over_time(rate(chain_head_block[1m])[3m:1m]))
       threshold: "> 0"
       window: 3m
       critical: true
 
     - name: heimdall_resilient
-      description: Heimdall consensus continues despite messaging issues
+      description: Heimdall consensus continues without any 1-minute gap despite messaging issues
       type: prometheus
-      query: increase(cometbft_consensus_height[1m])
+      query: min(min_over_time(rate(cometbft_consensus_height[1m])[3m:1m]))
       threshold: "> 0"
       window: 3m
       critical: true
@@ -52,7 +52,7 @@ spec:
     - name: checkpoint_api_working
       description: Checkpoint API may be affected but should still respond
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_total[3m])
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_total[3m])[3m:1m]))
       threshold: "> 0"
       window: 3m
       critical: false

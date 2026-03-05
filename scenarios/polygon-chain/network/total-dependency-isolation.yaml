@@ -48,25 +48,25 @@ spec:
         target_proto: tcp,udp
 
   success_criteria:
-    # Critical: L2 continues operating independently
+    # Gap detection: L2 block production must never stall during isolation
     - name: l2_operates_independently
-      description: L2 block production continues without external dependencies
+      description: L2 block production continues without gaps during L1 isolation
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[10m:3m]))
       threshold: "> 0"
       window: 10m
       critical: true
 
-    # Critical: Internal consensus unaffected
+    # Gap detection: L2 consensus must never stall
     - name: internal_consensus_independent
-      description: L2 consensus continues without external dependencies
+      description: L2 consensus continues without gaps during isolation
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])[10m:3m]))
       threshold: "> 0"
       window: 10m
       critical: true
 
-    # Expected: Checkpoint submission will fail
+    # Fault effectiveness (expected failure): checkpoint submission must fail
     - name: checkpoint_submission_fails
       description: Checkpoint submission expected to fail without L1
       type: prometheus
@@ -75,17 +75,27 @@ spec:
       window: 10m
       critical: false
 
-    # Expected: API call attempts continue (retries)
+    # Bounded degradation: checkpoint retries at a reasonable rate
     - name: checkpoint_retries_continue
       description: System continues attempting checkpoint submissions
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
-      threshold: "> 0"
+      query: rate(heimdallv2_checkpoint_api_calls_total[5m])
+      threshold: "> 0.1"
+      window: 10m
+      critical: false
+
+    # L2 peers remain stable despite L1 isolation
+    - name: l2_peer_connections_stable
+      description: L2 validator peer connections remain stable during isolation
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: ">= 3"
       window: 10m
       critical: false
 
   metrics:
     - chain_head_block
     - cometbft_consensus_height
+    - cometbft_p2p_peers
     - heimdallv2_checkpoint_api_calls_total
     - heimdallv2_checkpoint_api_calls_success_total

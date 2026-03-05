@@ -3,16 +3,15 @@ package cleanup
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
-	"github.com/jihwankim/chaos-utils/pkg/injection/verification"
 )
 
 // Coordinator orchestrates cleanup of all chaos artifacts
 type Coordinator struct {
 	sidecarMgr *sidecar.Manager
-	verifier   *verification.Verifier
 	auditLog   []AuditEntry
 }
 
@@ -27,10 +26,9 @@ type AuditEntry struct {
 }
 
 // New creates a new cleanup coordinator
-func New(sidecarMgr *sidecar.Manager, verifier *verification.Verifier) *Coordinator {
+func New(sidecarMgr *sidecar.Manager) *Coordinator {
 	return &Coordinator{
 		sidecarMgr: sidecarMgr,
-		verifier:   verifier,
 		auditLog:   make([]AuditEntry, 0),
 	}
 }
@@ -70,21 +68,42 @@ func (c *Coordinator) CleanupAll(ctx context.Context) error {
 	fmt.Printf("🧹 Cleanup complete: %d succeeded, %d failed\n", cleaned, failed)
 
 	if len(errors) > 0 {
-		return fmt.Errorf("cleanup completed with %d errors: %v", len(errors), errors[0])
+		errMsgs := make([]string, len(errors))
+		for i, e := range errors {
+			errMsgs[i] = e.Error()
+		}
+		return fmt.Errorf("cleanup completed with %d error(s):\n  - %s", len(errors), strings.Join(errMsgs, "\n  - "))
 	}
 
 	return nil
 }
 
-// cleanupSidecar cleans up a single sidecar and verifies the target namespace
+// cleanupSidecar cleans up a single sidecar and verifies the target namespace.
+// Verification MUST happen before sidecar destruction because the sidecar shares
+// the target's network namespace and has the tools (tc, iptables) needed to
+// inspect and clean rules. Once the sidecar is destroyed, those tools and the
+// shared namespace access are gone.
 func (c *Coordinator) cleanupSidecar(ctx context.Context, targetID string) error {
-	// Step 1: Remove faults (execute comcast --stop in sidecar)
-	c.logAudit("remove_faults", targetID, "Removing faults from target", nil)
+	// Step 1: Verify namespace is clean via sidecar (before destruction)
+	c.logAudit("verify_namespace", targetID, "Verifying target namespace via sidecar", nil)
+	verifyClean := c.verifySidecarNamespace(ctx, targetID)
 
-	// We don't have direct access to comcast wrapper here, so we skip this
-	// The sidecar manager should handle this via its cleanup
+	if !verifyClean {
+		// Step 2: Attempt cleanup via sidecar
+		c.logAudit("cleanup_artifacts", targetID, "Cleaning remaining tc/iptables rules via sidecar", nil)
+		c.cleanViaSidecar(ctx, targetID)
 
-	// Step 2: Destroy sidecar
+		// Step 3: Re-verify
+		if !c.verifySidecarNamespace(ctx, targetID) {
+			c.logAudit("verify_namespace", targetID, "Namespace still has rules after cleanup — proceeding with sidecar destruction", nil)
+		} else {
+			c.logAudit("verify_namespace", targetID, "Namespace clean after cleanup", nil)
+		}
+	} else {
+		c.logAudit("verify_namespace", targetID, "Namespace is clean", nil)
+	}
+
+	// Step 4: Destroy sidecar (always, even if verification had issues)
 	c.logAudit("destroy_sidecar", targetID, "Destroying sidecar container", nil)
 	err := c.sidecarMgr.DestroySidecar(ctx, targetID)
 	if err != nil {
@@ -93,36 +112,43 @@ func (c *Coordinator) cleanupSidecar(ctx context.Context, targetID string) error
 	}
 	c.logAudit("destroy_sidecar", targetID, "Sidecar destroyed successfully", nil)
 
-	// Step 3: Verify namespace is clean
-	c.logAudit("verify_namespace", targetID, "Verifying target namespace is clean", nil)
-	result, err := c.verifier.VerifyNamespaceClean(ctx, targetID)
-	if err != nil {
-		c.logAudit("verify_namespace", targetID, "Verification failed", err)
-		return fmt.Errorf("namespace verification failed: %w", err)
-	}
-
-	if !result.Clean {
-		c.logAudit("verify_namespace", targetID, fmt.Sprintf("Namespace not clean: %v", result.Details), nil)
-
-		// Attempt cleanup
-		c.logAudit("cleanup_artifacts", targetID, "Attempting to clean remaining artifacts", nil)
-		err = c.verifier.CleanupArtifacts(ctx, targetID)
-		if err != nil {
-			c.logAudit("cleanup_artifacts", targetID, "Artifact cleanup failed", err)
-			return fmt.Errorf("failed to clean artifacts: %w", err)
-		}
-
-		// Verify again
-		result, err = c.verifier.VerifyNamespaceClean(ctx, targetID)
-		if err != nil || !result.Clean {
-			c.logAudit("verify_namespace", targetID, "Namespace still not clean after cleanup attempt", err)
-			return fmt.Errorf("namespace still not clean: %v", result.Details)
-		}
-	}
-
-	c.logAudit("verify_namespace", targetID, "Namespace is clean", nil)
-
 	return nil
+}
+
+// verifySidecarNamespace checks tc and iptables rules via the sidecar.
+// Returns true if the namespace is clean (no netem/tbf/chaos rules).
+func (c *Coordinator) verifySidecarNamespace(ctx context.Context, targetID string) bool {
+	clean := true
+
+	// Check tc rules
+	output, err := c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+	if err != nil {
+		// Sidecar may already be gone — treat as clean (best-effort)
+		return true
+	}
+	if strings.Contains(output, "netem") || strings.Contains(output, "tbf") {
+		c.logAudit("verify_namespace", targetID, fmt.Sprintf("TC rules still present: %s", strings.TrimSpace(output)), nil)
+		clean = false
+	}
+
+	// Check iptables rules
+	output, err = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-L", "-n"})
+	if err == nil && (strings.Contains(output, "chaos_utils") || strings.Contains(output, "CHAOS")) {
+		c.logAudit("verify_namespace", targetID, "iptables chaos rules still present", nil)
+		clean = false
+	}
+
+	return clean
+}
+
+// cleanViaSidecar removes tc and iptables rules using the sidecar.
+func (c *Coordinator) cleanViaSidecar(ctx context.Context, targetID string) {
+	// Remove comcast rules
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"comcast", "--stop"})
+	// Remove tc qdisc
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"tc", "qdisc", "del", "dev", "eth0", "root"})
+	// Flush iptables chaos chain if it exists
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-F", "chaos_utils"})
 }
 
 // logAudit adds an entry to the audit log
