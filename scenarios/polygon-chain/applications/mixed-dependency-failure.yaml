@@ -51,29 +51,38 @@ spec:
         target_proto: tcp
 
   success_criteria:
-    # Critical: L2 block production continues
+    # Critical: L2 block production continues — gap detection
     - name: l2_resilient_to_mixed_failures
-      description: L2 continues producing blocks despite mixed dependency failures
+      description: L2 continues producing blocks without any 2-minute gap despite mixed dependency failures
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[10m:3m]))
       threshold: "> 0"
       window: 10m
       critical: true
 
-    # Critical: Consensus continues
+    # Critical: Consensus continues — gap detection
     - name: consensus_resilient
-      description: Heimdall consensus continues despite dependency issues
+      description: Heimdall consensus continues without any 2-minute gap despite dependency issues
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])[10m:3m]))
       threshold: "> 0"
       window: 10m
       critical: true
 
-    # Non-critical: Checkpoint API may be degraded but accessible
+    # Non-critical: Checkpoint API may be degraded but accessible — rate bound
     - name: checkpoint_api_degraded
-      description: Checkpoint API still accessible despite L1 issues
+      description: Checkpoint API still accessible at a meaningful rate despite L1 issues
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_total[5m])
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_total[5m])[10m:3m]))
+      threshold: "> 0.1"
+      window: 10m
+      critical: false
+
+    # Fault effectiveness: L1 failure causes measurable checkpoint success degradation
+    - name: checkpoint_success_rate_degrades
+      description: L1 packet loss causes checkpoint success rate to drop below 100%
+      type: prometheus
+      query: increase(heimdallv2_checkpoint_api_calls_total[10m]) - increase(heimdallv2_checkpoint_api_calls_success_total[10m])
       threshold: "> 0"
       window: 10m
       critical: false

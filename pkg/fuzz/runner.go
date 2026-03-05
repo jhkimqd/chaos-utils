@@ -109,11 +109,11 @@ type Runner struct {
 
 // NewRunner builds a Runner and auto-discovers Prometheus so every round's
 // orchestrator gets the real URL (not the localhost:9090 default).
-func NewRunner(cfg *Config, appCfg *config.Config, logger *reporting.Logger) *Runner {
+func NewRunner(cfg *Config, appCfg *config.Config, logger *reporting.Logger) (*Runner, error) {
 	r := &Runner{cfg: cfg, appCfg: appCfg, logger: logger}
 
 	if cfg.DryRun {
-		return r
+		return r, nil
 	}
 
 	// Resolve the Prometheus URL once for all rounds.
@@ -126,10 +126,10 @@ func NewRunner(cfg *Config, appCfg *config.Config, logger *reporting.Logger) *Ru
 		appCfg.Prometheus.URL = u
 		logger.Info("Auto-discovered Prometheus", "url", u)
 	} else {
-		logger.Warn("Could not discover Prometheus — metrics and triggers will be skipped", "error", err)
+		return nil, fmt.Errorf("Prometheus is required but not reachable: auto-discovery failed: %w", err)
 	}
 
-	return r
+	return r, nil
 }
 
 // Run executes cfg.Rounds fuzz rounds sequentially, logging each to cfg.LogPath.

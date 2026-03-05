@@ -1,0 +1,114 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-heimdall-link-latency
+  description: >
+    Sustained 8s latency on the Bor→Heimdall REST API link (port 1317).
+    SCOPE: Tests that Bor handles slow Heimdall responses gracefully. 8s latency
+    exceeds Bor's 5s retry interval and approaches the 30s HTTP timeout, so any
+    span-fetch or milestone-fetch attempt that fires during the window will stall.
+    LIMITATION: Within a standard span window (~6400 blocks, ~3.5h), Bor reads
+    spans from its local LRU cache and does not make outgoing REST calls — so 8s
+    latency has no effect on block production. This test SHOULD PASS on a standard
+    devnet. The block_production_uninterrupted criterion catches any 2-minute
+    gap, which would surface if a span rotation or milestone verification fires.
+    For span-rotation testing, use a short-span devnet (bor.span-override=200)
+    or run span-rotation-heimdall-stall.yaml.
+  tags: [network, latency, bor-heimdall, span, sync]
+  author: DevTools
+  version: "0.0.2"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: validator1_bor
+
+  duration: 8m
+  warmup: 90s
+  cooldown: 60s
+
+  faults:
+    - phase: bor_heimdall_rest_latency
+      description: Inject 8s latency on outgoing Bor requests to port 1317 — Bor span-fetch calls cross the 5s retry threshold and approach the 30s HTTP timeout
+      target: validator1_bor
+      type: network
+      params:
+        latency: 8000
+        target_ports: "1317"
+        target_proto: tcp
+        device: eth0
+
+  success_criteria:
+    # ========== CRITICAL: Chain must survive ==========
+
+    - name: bor_block_production_survives
+      description: CRITICAL — Bor execution layer continues producing blocks despite degraded Heimdall link. Expected to PASS on standard devnet (no span rotation in 8m window).
+      type: prometheus
+      query: sum(increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: block_production_uninterrupted
+      description: CRITICAL — Block rate must not drop to zero in any 2-minute window. On a short-span devnet this FAILS if Bor hits span rotation while the 8s latency is active — waitForNewSpan fires and each retry costs 8s, stalling block production.
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[7m:1m]))
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: heimdall_consensus_survives
+      description: CRITICAL — Heimdall consensus height continues to advance (8s latency on Bor's outgoing port should not affect Heimdall P2P)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[5m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # ========== NON-CRITICAL: Degradation and recovery indicators ==========
+
+    - name: span_proposals_continue
+      description: Heimdall continues processing span proposals — rate bound ensures sustained activity
+      type: prometheus
+      query: min(min_over_time(rate(heimdallv2_bor_api_calls_total[5m])[8m:2m]))
+      threshold: "> 0.1"
+      window: 8m
+      critical: false
+
+    - name: checkpoint_activity_not_permanently_halted
+      description: Checkpoint submission activity continues at a meaningful rate throughout the test window
+      type: prometheus
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_total[5m])[8m:2m]))
+      threshold: "> 0.1"
+      window: 8m
+      critical: false
+
+    - name: validator_not_jailed
+      description: Validator 1 retains voting power — a slow Heimdall link must not cause jailing
+      type: prometheus
+      query: cometbft_consensus_validator_power{job="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "> 0"
+      window: 8m
+      critical: false
+
+    # Fault effectiveness: 8s latency causes late votes on the affected validator
+    - name: late_votes_from_latency
+      description: 8s Bor-Heimdall latency causes measurable late votes on validator 1
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-1-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "> 0"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - heimdallv2_checkpoint_api_calls_total
+    - cometbft_consensus_validator_power
+    - cometbft_consensus_late_votes
+    - up

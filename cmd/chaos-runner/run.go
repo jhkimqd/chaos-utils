@@ -20,7 +20,18 @@ var runCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Short: "Execute a chaos test scenario",
 	Long:  `Loads a scenario YAML file and executes the chaos test.`,
-	RunE:  runChaosTest,
+	Example: `  # Run a network latency scenario
+  chaos-runner run --scenario scenarios/polygon-chain/network/cascading-latency-spike.yaml
+
+  # Run against a specific Kurtosis enclave
+  chaos-runner run --scenario scenarios/polygon-chain/network/validator-partition.yaml --enclave my-enclave
+
+  # Override scenario duration and warmup
+  chaos-runner run --scenario scenarios/polygon-chain/cpu-memory/cpu-stress.yaml --set duration=5m --set warmup=30s
+
+  # Validate a scenario without executing
+  chaos-runner run --scenario scenarios/polygon-chain/applications/bor-heimdall-link-isolation.yaml --dry-run`,
+	RunE: runChaosTest,
 }
 
 func init() {
@@ -55,13 +66,12 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 
 	// Auto-discover Prometheus if not explicitly configured via env var
 	if os.Getenv("PROMETHEUS_URL") == "" {
-		fmt.Println("⚙️  Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
+		fmt.Println("Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
 		if endpoint, err := config.DiscoverPrometheusEndpoint(cfg.Kurtosis.EnclaveName); err == nil {
 			cfg.Prometheus.URL = endpoint
-			fmt.Printf("✓ Discovered Prometheus endpoint: %s\n", endpoint)
+			fmt.Printf("Discovered Prometheus endpoint: %s\n", endpoint)
 		} else {
-			fmt.Printf("⚠️  Auto-discovery failed: %v\n", err)
-			fmt.Printf("   Using: %s\n", cfg.Prometheus.URL)
+			return fmt.Errorf("Prometheus is required but not reachable: auto-discovery failed: %w", err)
 		}
 	}
 

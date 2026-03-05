@@ -3,6 +3,7 @@ package disk
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // IODelayParams defines parameters for disk I/O delay injection
@@ -53,10 +54,11 @@ func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID s
 
 	pidOutput, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, findProcCmd)
 	if err != nil {
-		// If lsof not available or path not found, try to find main process
-		fmt.Printf("  Warning: Could not find processes via lsof: %v\n", err)
-		fmt.Printf("  Falling back to pid 1 (main container process)\n")
-		pidOutput = "1"
+		return fmt.Errorf("failed to find processes accessing %s via lsof: %w (ensure lsof is available in the target container)", params.TargetPath, err)
+	}
+
+	if strings.TrimSpace(pidOutput) == "" {
+		return fmt.Errorf("no processes found accessing %s — target path may not be in use", params.TargetPath)
 	}
 
 	// Set I/O priority to idle class (lowest)
@@ -93,8 +95,10 @@ func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID str
 	)}
 
 	pidOutput, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, findProcCmd)
-	if err != nil {
-		pidOutput = "1" // Fallback to pid 1
+	if err != nil || strings.TrimSpace(pidOutput) == "" {
+		// During removal, best-effort is acceptable — log and continue
+		fmt.Printf("  Warning: Could not find processes via lsof during removal: %v\n", err)
+		return nil
 	}
 
 	// Restore to normal I/O priority (best-effort class)

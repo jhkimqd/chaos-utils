@@ -45,7 +45,8 @@ var invariantCriteria = []scenario.SuccessCriterion{
 // faultRunnerType maps logical fault names to the type strings the injector understands.
 func faultRunnerType(faultType string) string {
 	switch faultType {
-	case "packet_loss", "latency", "bandwidth_throttle", "packet_reorder":
+	case "packet_loss", "latency", "bandwidth_throttle", "packet_reorder",
+		"heimdall_api_disruption":
 		return "network"
 	case "connection_drop":
 		return "connection_drop"
@@ -66,7 +67,8 @@ func timingForFaults(specs []FaultSpec) (duration, warmup, cooldown time.Duratio
 		return 10 * time.Minute, 2 * time.Minute, 2 * time.Minute
 	}
 	switch specs[0].FaultType {
-	case "latency", "packet_loss", "packet_reorder", "connection_drop":
+	case "latency", "packet_loss", "packet_reorder", "connection_drop",
+		"heimdall_api_disruption":
 		return 7 * time.Minute, 90 * time.Second, 60 * time.Second
 	case "cpu_stress", "memory_pressure", "disk_io":
 		return 8 * time.Minute, 2 * time.Minute, 2 * time.Minute
@@ -179,6 +181,8 @@ func BuildScenario(specs []FaultSpec, enclave string) (*scenario.Scenario, strin
 				"chain_head_block",
 				"cometbft_consensus_height",
 				"cometbft_consensus_validators",
+				"heimdallv2_bor_api_calls_total",
+				"heimdallv2_checkpoint_api_calls_total",
 				"up",
 			},
 		},

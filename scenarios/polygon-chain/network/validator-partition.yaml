@@ -48,35 +48,57 @@ spec:
         packet_loss: 100
         target_proto: tcp,udp
 
-  # Success criteria: network should continue operating
+  # Success criteria: remaining validators MUST continue, partitioned one MUST stop
   success_criteria:
-    - name: other_validators_continue
-      description: Other validators (2,3,4) continue producing consensus blocks
+    # Critical: Healthy validators never stall (gap detection, not just sum > 0)
+    - name: healthy_validators_no_gaps
+      description: Validators 2-4 consensus height advances in every 1m window
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[1m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[1m])[5m:30s]))
       threshold: "> 0"
       window: 5m
       critical: true
 
-    - name: bor_chain_continues
-      description: Bor execution layer continues producing blocks
+    # Critical: Bor blocks never stall
+    - name: bor_chain_no_gaps
+      description: Bor block production rate never drops to zero
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:30s]))
       threshold: "> 0"
       window: 5m
       critical: true
 
-    - name: only_n_minus_one_validators_active
-      description: Fewer than all validators actively participating (validator 1 isolated, topology-safe)
+    # Critical: Partitioned validator STOPS progressing — proves the fault works.
+    # If this passes (height still advancing), the partition is not effective.
+    - name: partitioned_validator_stalls
+      description: Validator 1 consensus height stops advancing (proves partition is effective)
       type: prometheus
-      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
-      threshold: "< 1"
+      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[3m])
+      threshold: "== 0"
+      window: 5m
+      critical: true
+
+    # Non-critical: Peer count for victim drops to zero
+    - name: partitioned_validator_loses_peers
+      description: Partitioned validator loses all peer connections
+      type: prometheus
+      query: cometbft_p2p_peers{job="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "== 0"
       window: 5m
       critical: false
 
-  # Metrics to collect
+    # Non-critical: Healthy validators maintain peers
+    - name: healthy_peers_stable
+      description: Healthy validators maintain at least 2 peer connections
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"})
+      threshold: ">= 2"
+      window: 5m
+      critical: false
+
   metrics:
     - cometbft_consensus_height
     - chain_head_block
+    - cometbft_p2p_peers
     - cometbft_consensus_validators
     - chain_checkpoint_latest

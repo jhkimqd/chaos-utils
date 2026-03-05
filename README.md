@@ -273,6 +273,9 @@ Located in `scenarios/polygon-chain/`:
 | `network/` | `checkpoint-delay-cascade.yaml` | 8m | Cascading checkpoint delays |
 | `applications/` | `simultaneous-validator-restart.yaml` | 5m | All validators restart at once |
 | `applications/` | `rabbitmq-failure.yaml` | 3m | Messaging failure (100% packet loss) |
+| `applications/` | `bor-heimdall-link-latency.yaml` | 8m | Bor→Heimdall REST API latency (8s on port 1317) |
+| `applications/` | `bor-heimdall-link-isolation.yaml` | 7m | Complete Bor→Heimdall REST isolation (100% loss on port 1317) |
+| `applications/` | `span-rotation-heimdall-stall.yaml` | 10m | Heimdall P2P partition preventing span commitment |
 | `cpu-memory/` | `cpu-starved-validator.yaml` | 8m | Validator under CPU stress |
 | `filesystem/` | `slow-disk-io-validator.yaml` | 8m | Disk I/O latency injection |
 

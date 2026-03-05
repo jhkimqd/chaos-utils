@@ -3,6 +3,7 @@ package detector
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -135,26 +136,36 @@ func (fd *FailureDetector) evaluateThreshold(value float64, threshold string) (b
 	var operator string
 	var thresholdValue float64
 
+	var valueStr string
 	if strings.HasPrefix(threshold, ">=") {
 		operator = ">="
-		thresholdValue, _ = strconv.ParseFloat(strings.TrimSpace(threshold[2:]), 64)
+		valueStr = strings.TrimSpace(threshold[2:])
 	} else if strings.HasPrefix(threshold, "<=") {
 		operator = "<="
-		thresholdValue, _ = strconv.ParseFloat(strings.TrimSpace(threshold[2:]), 64)
+		valueStr = strings.TrimSpace(threshold[2:])
 	} else if strings.HasPrefix(threshold, "!=") {
 		operator = "!="
-		thresholdValue, _ = strconv.ParseFloat(strings.TrimSpace(threshold[2:]), 64)
+		valueStr = strings.TrimSpace(threshold[2:])
 	} else if strings.HasPrefix(threshold, "==") {
 		operator = "=="
-		thresholdValue, _ = strconv.ParseFloat(strings.TrimSpace(threshold[2:]), 64)
+		valueStr = strings.TrimSpace(threshold[2:])
 	} else if strings.HasPrefix(threshold, ">") {
 		operator = ">"
-		thresholdValue, _ = strconv.ParseFloat(strings.TrimSpace(threshold[1:]), 64)
+		valueStr = strings.TrimSpace(threshold[1:])
 	} else if strings.HasPrefix(threshold, "<") {
 		operator = "<"
-		thresholdValue, _ = strconv.ParseFloat(strings.TrimSpace(threshold[1:]), 64)
+		valueStr = strings.TrimSpace(threshold[1:])
 	} else {
 		return false, fmt.Errorf("invalid threshold format: %s (expected: >, <, >=, <=, ==, !=)", threshold)
+	}
+
+	var err error
+	thresholdValue, err = strconv.ParseFloat(valueStr, 64)
+	if err != nil {
+		return false, fmt.Errorf("invalid threshold value %q in expression %q: %w", valueStr, threshold, err)
+	}
+	if math.IsNaN(thresholdValue) || math.IsInf(thresholdValue, 0) {
+		return false, fmt.Errorf("invalid threshold value %q in expression %q: NaN and Inf are not allowed", valueStr, threshold)
 	}
 
 	// Evaluate

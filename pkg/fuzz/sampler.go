@@ -98,6 +98,7 @@ var faultTypes = []string{
 	"cpu_stress",
 	"memory_pressure",
 	"disk_io",
+	"heimdall_api_disruption",
 }
 
 // tierNames is a sorted, stable slice of tier map keys for deterministic sampling.
@@ -246,6 +247,19 @@ func (s *Sampler) SampleFault(faultType string) (map[string]interface{}, string)
 			"io_latency_ms": v,
 			"operation":     "all",
 		}, fmt.Sprintf("%dms-disk", v)
+
+	case "heimdall_api_disruption":
+		// Triangular biased toward 75% packet loss on port 1317 (Heimdall REST API).
+		// Most span-fetch requests from Bor fail, triggering the 5-second retry loop.
+		// Some requests get through, exercising partial degradation handling.
+		// Bor's hard timeout is 30s; at ~75% loss the retry loop fires repeatedly.
+		v := int(s.triangular(40, 95, 75))
+		return map[string]interface{}{
+			"packet_loss":  v,
+			"target_ports": "1317",
+			"target_proto": "tcp",
+			"device":       "eth0",
+		}, fmt.Sprintf("%dpct-heimdall-api", v)
 
 	default:
 		return map[string]interface{}{}, "unknown"

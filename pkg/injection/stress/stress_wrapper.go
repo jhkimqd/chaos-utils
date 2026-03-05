@@ -3,6 +3,7 @@ package stress
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -106,7 +107,19 @@ func (sw *StressWrapper) injectActiveCPUStress(ctx context.Context, targetContai
 		return fmt.Errorf("failed to inject active CPU stress: %w", err)
 	}
 
-	fmt.Printf("Active CPU stress injected successfully on target %s\n", targetContainerID[:12])
+	// Verify stress processes are actually running
+	verifyCmd := []string{"sh", "-c", "pgrep -c yes"}
+	countOutput, err := sw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
+	if err != nil {
+		return fmt.Errorf("CPU stress injection failed: background 'yes' processes are not running")
+	}
+
+	count := strings.TrimSpace(countOutput)
+	if count == "" || count == "0" {
+		return fmt.Errorf("CPU stress injection failed: expected %d 'yes' processes but found %s", cores, count)
+	}
+
+	fmt.Printf("Active CPU stress injected and verified on target %s (%s processes running)\n", targetContainerID[:12], count)
 
 	return nil
 }

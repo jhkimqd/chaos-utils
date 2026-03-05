@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/jihwankim/chaos-utils/pkg/config"
 	"github.com/jihwankim/chaos-utils/pkg/core/cleanup"
+	"github.com/jihwankim/chaos-utils/pkg/core/logcollector"
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 	"github.com/jihwankim/chaos-utils/pkg/emergency"
 	"github.com/jihwankim/chaos-utils/pkg/injection"
@@ -90,7 +93,7 @@ type Orchestrator struct {
 	cfg              *config.Config
 	currentState     TestState
 	startTime        time.Time
-	stopRequested    bool
+	stopRequested    atomic.Bool
 	sidecarMgr       *sidecar.Manager
 	verifier         *verification.Verifier
 	cleanupCoord     *cleanup.Coordinator
@@ -105,6 +108,7 @@ type Orchestrator struct {
 	promClient   *prometheus.Client
 	detector     *detector.FailureDetector
 	collector    *collector.Collector
+	logCollector *logcollector.Collector
 	injector     *injection.Injector
 
 	// Test data
@@ -112,6 +116,7 @@ type Orchestrator struct {
 	targets       []TargetInfo
 	scenarioPath  string
 	testID        string
+	injectTime    time.Time         // set at INJECT start; used to scope log capture to fault window
 	injectedFaults map[string]string // track which targets have faults injected (containerID -> faultType)
 }
 
@@ -145,7 +150,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	verifier := verification.New(dockerClient)
 
 	// Create cleanup coordinator
-	cleanupCoord := cleanup.New(sidecarMgr, verifier)
+	cleanupCoord := cleanup.New(sidecarMgr)
 
 	// Create emergency controller
 	emergencyCtrl := emergency.New(emergency.Config{
@@ -161,15 +166,14 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	p := parser.New(nil)
 	v := validator.New()
 
-	// Create Prometheus client
+	// Create Prometheus client — required for metrics collection and success criteria evaluation.
 	promClient, err := prometheus.New(prometheus.Config{
 		URL:             cfg.Prometheus.URL,
 		Timeout:         cfg.Prometheus.Timeout,
 		RefreshInterval: cfg.Prometheus.RefreshInterval,
 	})
 	if err != nil {
-		// Non-fatal - some scenarios may not need Prometheus
-		fmt.Printf("Warning: Failed to create Prometheus client: %v\n", err)
+		return nil, fmt.Errorf("failed to create Prometheus client (url=%s): %w", cfg.Prometheus.URL, err)
 	}
 
 	// Create failure detector
@@ -183,6 +187,9 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 
 	// Create unified fault injector
 	injector := injection.New(sidecarMgr, dockerClient)
+
+	// Create log collector for post-failure diagnosis
+	logCol := logcollector.New(dockerClient)
 
 	return &Orchestrator{
 		cfg:        cfg,
@@ -198,6 +205,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		promClient:       promClient,
 		detector:         det,
 		collector:        col,
+		logCollector:     logCol,
 		injector:         injector,
 		injectedFaults:   make(map[string]string),
 	}, nil
@@ -222,7 +230,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	// Register cleanup callback with emergency controller
 	o.emergencyCtrl.OnStop(func() {
 		fmt.Println("🛑 Emergency stop triggered, running cleanup...")
-		o.stopRequested = true
+		o.stopRequested.Store(true)
 		if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
 			fmt.Printf("Emergency cleanup errors: %v\n", err)
 		}
@@ -270,7 +278,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	result.ScenarioName = o.scenario.Metadata.Name
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before discovery"))
 	}
 
@@ -281,7 +289,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before prepare"))
 	}
 
@@ -292,7 +300,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before warmup"))
 	}
 
@@ -303,7 +311,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before inject"))
 	}
 
@@ -320,7 +328,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before monitor"))
 	}
 
@@ -331,7 +339,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before cooldown"))
 	}
 
@@ -342,7 +350,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before teardown"))
 	}
 
@@ -355,7 +363,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	}
 
 	// Check for stop
-	if o.stopRequested {
+	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before detect"))
 	}
 
@@ -429,6 +437,28 @@ func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 
 	if len(o.scenario.Spec.Targets) == 0 {
 		return fmt.Errorf("no targets defined in scenario")
+	}
+
+	// For Kurtosis selectors, validate the enclave exists before listing containers.
+	// Kurtosis container names are "<service>--<uuid>" with no enclave prefix, so
+	// pattern matching alone cannot distinguish containers across different enclaves.
+	// Fail fast here with a clear error rather than silently injecting faults into
+	// the wrong enclave's services.
+	//
+	// We validate o.cfg.Kurtosis.EnclaveName (the value from --enclave flag) rather
+	// than targetSpec.Selector.Enclave, because the YAML field may still contain the
+	// unexpanded template literal "${ENCLAVE_NAME}" at this point in the lifecycle.
+	hasKurtosisTarget := false
+	for _, targetSpec := range o.scenario.Spec.Targets {
+		if targetSpec.Selector.Type == "kurtosis_service" {
+			hasKurtosisTarget = true
+			break
+		}
+	}
+	if hasKurtosisTarget && o.cfg.Kurtosis.EnclaveName != "" {
+		if err := validateKurtosisEnclave(o.cfg.Kurtosis.EnclaveName); err != nil {
+			return err
+		}
 	}
 
 	o.targets = []TargetInfo{}
@@ -556,9 +586,13 @@ func (o *Orchestrator) executeWarmup(ctx context.Context) error {
 	return nil
 }
 
-// executePreCheck evaluates success criteria before fault injection to verify the system
-// is in steady state. Any critical criterion failure aborts the experiment early,
-// implementing the steady-state hypothesis (pre-check + post-check pattern).
+// executePreCheck evaluates only the CRITICAL success criteria before fault injection
+// to verify the system is in steady state. Non-critical criteria are intentionally
+// skipped because:
+//   - They cannot abort the experiment regardless of their result.
+//   - Many measure rare events (e.g. span rotation every ~3.5h) or post-fault recovery
+//     conditions that will always return 0 in a healthy pre-fault window, producing
+//     misleading noise without actionable information.
 func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 	if len(o.scenario.Spec.SuccessCriteria) == 0 {
 		return nil
@@ -567,10 +601,24 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
 	}
 
-	fmt.Println("Pre-fault health check: verifying steady state before injection...")
+	// Collect only critical criteria — the pre-flight gate.
+	var critical []int
+	for i, c := range o.scenario.Spec.SuccessCriteria {
+		if c.Critical {
+			critical = append(critical, i)
+		}
+	}
+	if len(critical) == 0 {
+		fmt.Println("Pre-fault health check: no critical criteria defined, skipping")
+		return nil
+	}
 
-	for i, criterion := range o.scenario.Spec.SuccessCriteria {
-		fmt.Printf("  [%d/%d] Checking: %s\n", i+1, len(o.scenario.Spec.SuccessCriteria), criterion.Name)
+	fmt.Printf("Pre-fault health check: verifying steady state before injection (%d critical criteria)...\n",
+		len(critical))
+
+	for n, i := range critical {
+		criterion := o.scenario.Spec.SuccessCriteria[i]
+		fmt.Printf("  [%d/%d] Checking: %s\n", n+1, len(critical), criterion.Name)
 
 		result, err := o.detector.Evaluate(ctx, criterion)
 		if err != nil {
@@ -579,11 +627,12 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 
 		if result.Passed {
 			fmt.Printf("    ✓ %s\n", result.Message)
-		} else if criterion.Critical {
-			fmt.Printf("    ✗ FAILED (CRITICAL): %s\n", result.Message)
-			return fmt.Errorf("pre-fault health check failed: system not in steady state — aborting experiment")
 		} else {
-			fmt.Printf("    ⚠ FAILED (non-critical): %s\n", result.Message)
+			fmt.Printf("    ✗ FAILED (CRITICAL): %s\n", result.Message)
+			if criterion.Description != "" {
+				fmt.Printf("      → %s\n", criterion.Description)
+			}
+			return fmt.Errorf("pre-fault health check failed: system not in steady state — aborting experiment")
 		}
 	}
 
@@ -594,6 +643,7 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 // executeInject injects all faults simultaneously using goroutines.
 // Each fault targets a different set of containers so concurrent injection is safe.
 func (o *Orchestrator) executeInject(ctx context.Context) error {
+	o.injectTime = time.Now() // record fault window start for log scoping
 	fmt.Println("Injecting faults...")
 
 	if len(o.scenario.Spec.Faults) == 0 {
@@ -664,6 +714,59 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 
 	fmt.Printf("✓ %d fault(s) injected simultaneously on %d target(s)\n",
 		len(jobs), len(o.injectedFaults))
+
+	// Post-injection verification: confirm tc rules are actually in place.
+	if err := o.verifyFaultsActive(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// verifyFaultsActive checks that network faults are actually applied by
+// inspecting tc qdisc rules via each target's sidecar. This is the only way
+// to confirm comcast/tc commands took effect — without it, a silently failed
+// injection is indistinguishable from a successful one.
+func (o *Orchestrator) verifyFaultsActive(ctx context.Context) error {
+	fmt.Println("Verifying faults are active...")
+
+	verified := 0
+	for containerID, faultType := range o.injectedFaults {
+		if faultType != "network" {
+			verified++
+			continue
+		}
+
+		// Find target name for display
+		targetName := containerID[:12]
+		for _, t := range o.targets {
+			if t.ContainerID == containerID {
+				targetName = t.Name
+				break
+			}
+		}
+
+		// Run tc qdisc show inside the sidecar (shares target's network namespace)
+		output, err := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+		if err != nil {
+			return fmt.Errorf("fault verification failed on %s: could not inspect tc rules: %w", targetName, err)
+		}
+
+		if !strings.Contains(output, "netem") && !strings.Contains(output, "tbf") {
+			return fmt.Errorf("fault verification failed on %s: no netem/tbf rules found after injection (tc output: %s)", targetName, strings.TrimSpace(output))
+		}
+
+		// Print the active rule so operators can confirm parameters
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "netem") || strings.Contains(line, "tbf") {
+				fmt.Printf("  ✓ %s: %s\n", targetName, line)
+			}
+		}
+		verified++
+	}
+
+	fmt.Printf("✓ Verified %d fault(s) active\n", verified)
 	return nil
 }
 
@@ -671,6 +774,26 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 func (o *Orchestrator) executeMonitor(ctx context.Context) error {
 	duration := o.scenario.Spec.Duration
 	fmt.Printf("Monitoring for: %s\n", duration)
+
+	// Start real-time log watcher — streams container logs and prints
+	// ERROR/CRIT/PANIC/FATAL lines to stdout as they happen.
+	var logWatcher *logcollector.Watcher
+	if o.logCollector != nil && len(o.targets) > 0 {
+		watchTargets := make([]logcollector.WatchTarget, len(o.targets))
+		for i, t := range o.targets {
+			watchTargets[i] = logcollector.WatchTarget{
+				ContainerID: t.ContainerID,
+				Name:        t.Name,
+			}
+		}
+		logWatcher = logcollector.NewWatcher(o.dockerClient, watchTargets)
+		since := o.injectTime
+		if since.IsZero() {
+			since = o.startTime
+		}
+		fmt.Println("  Starting real-time log watcher...")
+		logWatcher.Start(ctx, since)
+	}
 
 	if o.collector != nil && o.promClient != nil {
 		// Reconfigure collector with scenario metrics
@@ -687,20 +810,31 @@ func (o *Orchestrator) executeMonitor(ctx context.Context) error {
 		// Monitor for the duration (interruptible)
 		if err := o.interruptibleSleep(ctx, duration); err != nil {
 			o.collector.Stop()
+			if logWatcher != nil {
+				logWatcher.Stop()
+			}
 			return err
 		}
 
 		// Stop collection
 		o.collector.Stop()
-		fmt.Println("  ✓ Metrics collection stopped")
+		fmt.Println("  Metrics collection stopped")
 	} else {
-		fmt.Println("  ⚠ Prometheus not available, monitoring duration only")
+		fmt.Println("  Prometheus not available, monitoring duration only")
 		if err := o.interruptibleSleep(ctx, duration); err != nil {
+			if logWatcher != nil {
+				logWatcher.Stop()
+			}
 			return err
 		}
 	}
 
-	fmt.Println("✓ Monitoring complete")
+	if logWatcher != nil {
+		logWatcher.Stop()
+		fmt.Println("  Log watcher stopped")
+	}
+
+	fmt.Println("Monitoring complete")
 	return nil
 }
 
@@ -720,6 +854,7 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 	// Evaluate each criterion
 	allPassed := true
 	criticalFailed := false
+	var failedCritical []string
 
 	for i, criterion := range o.scenario.Spec.SuccessCriteria {
 		fmt.Printf("  [%d/%d] Evaluating: %s\n", i+1, len(o.scenario.Spec.SuccessCriteria), criterion.Name)
@@ -734,12 +869,34 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 		} else {
 			if criterion.Critical {
 				fmt.Printf("    ✗ FAILED (CRITICAL): %s\n", result.Message)
+				if criterion.Description != "" {
+					fmt.Printf("      → %s\n", criterion.Description)
+				}
 				criticalFailed = true
+				failedCritical = append(failedCritical, criterion.Name)
 			} else {
 				fmt.Printf("    ⚠ FAILED (non-critical): %s\n", result.Message)
+				if criterion.Description != "" {
+					fmt.Printf("      → %s\n", criterion.Description)
+				}
 			}
 			allPassed = false
 		}
+	}
+
+	// Print a clear failure banner so the cause is visible above the log digest.
+	if criticalFailed {
+		fmt.Printf("\n╔══ CRITICAL FAILURE ══════════════════════════════════════════════════╗\n")
+		for _, name := range failedCritical {
+			fmt.Printf("║  ✗ %s\n", name)
+		}
+		fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n")
+	}
+
+	// On any failure, collect and print service logs from fault-injected targets
+	// to surface error messages from Bor/Heimdall that explain the failure.
+	if !allPassed {
+		o.collectAndPrintServiceLogs(ctx)
 	}
 
 	if criticalFailed {
@@ -753,6 +910,37 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// collectAndPrintServiceLogs fetches recent logs from each fault-injected target,
+// filters for error-level entries, prints a digest to stdout, and saves the full
+// tail to the report directory. Called only on test failure — never on success.
+func (o *Orchestrator) collectAndPrintServiceLogs(ctx context.Context) {
+	if o.logCollector == nil || len(o.targets) == 0 {
+		return
+	}
+
+	// Scope log capture to the fault window (inject → now), not the full test.
+	// Using o.startTime would pull in pre-fault and post-teardown cleanup logs
+	// (e.g. normal "Demoting invalidated transaction" WARNs on reconnect) that
+	// obscure the errors that actually explain the failure.
+	since := o.injectTime
+	if since.IsZero() {
+		since = o.startTime // fallback: inject phase never started
+	}
+
+	var snapshots []*logcollector.ServiceLogSnapshot
+	for _, target := range o.targets {
+		snap := o.logCollector.Snapshot(ctx, target.ContainerID, target.Name, since, 300)
+		if snap != nil {
+			snapshots = append(snapshots, snap)
+		}
+	}
+
+	logcollector.PrintSummary(snapshots)
+
+	logDir := fmt.Sprintf("%s/logs/%s", o.cfg.Reporting.OutputDir, o.testID)
+	logcollector.Save(snapshots, logDir)
 }
 
 // executeCooldown waits for the cooldown period
@@ -783,7 +971,7 @@ func (o *Orchestrator) interruptibleSleep(ctx context.Context, duration time.Dur
 			return fmt.Errorf("interrupted by context cancellation")
 		case <-ticker.C:
 			// Check if stop was requested
-			if o.stopRequested {
+			if o.stopRequested.Load() {
 				return fmt.Errorf("interrupted by emergency stop")
 			}
 			// Check if duration elapsed
@@ -851,7 +1039,7 @@ func (o *Orchestrator) executeReport(ctx context.Context, result *TestResult) er
 // RequestStop requests the orchestrator to stop execution
 func (o *Orchestrator) RequestStop() {
 	fmt.Println("Stop requested!")
-	o.stopRequested = true
+	o.stopRequested.Store(true)
 }
 
 // preFlightCleanup removes remnants from previous failed/interrupted tests
@@ -1011,4 +1199,19 @@ func getContainerName(names []string) string {
 func getContainerIP(container types.Container) string {
 	// This is a simplified version - in production would extract from NetworkSettings
 	return ""
+}
+
+// validateKurtosisEnclave runs "kurtosis enclave inspect <name>" to confirm the
+// enclave is active. Returns a clear error if the enclave does not exist or the
+// Kurtosis CLI is unavailable.
+func validateKurtosisEnclave(enclaveName string) error {
+	cmd := exec.Command("kurtosis", "enclave", "inspect", enclaveName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("Kurtosis enclave %q not found or not running: %s", enclaveName, msg)
+	}
+	return nil
 }

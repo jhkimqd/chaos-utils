@@ -1,0 +1,114 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-heimdall-link-isolation
+  description: >
+    Complete isolation of the Bor→Heimdall REST link (100% packet loss on port 1317).
+    SCOPE: This test validates span-cache resilience WITHIN the current span window only.
+    Bor caches the active span for ~6400 blocks (~3.5h at 2s/block) and does not call
+    Heimdall REST during normal operation inside that window — so this test SHOULD PASS
+    in a standard devnet. It proves the cache works correctly.
+    LIMITATION: This test will NOT reproduce the span-rotation stall (Bor calling
+    waitForNewSpan at span boundary). To hit that failure, either:
+      (a) use a devnet with short span length (e.g. bor.span-override=200 blocks), or
+      (b) run span-rotation-heimdall-stall.yaml which forces Heimdall to stall before
+          it can commit the next span.
+    The block_production_uninterrupted criterion below uses min_over_time so any
+    2-minute production gap mid-fault is caught even if overall throughput looks fine.
+  tags: [network, isolation, partition, bor-heimdall, span, cache]
+  author: DevTools
+  version: "0.0.2"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: validator1_bor
+
+  duration: 7m
+  warmup: 60s
+  cooldown: 60s
+
+  faults:
+    - phase: bor_heimdall_rest_blackhole
+      description: Drop all outgoing Bor TCP traffic to port 1317 — Bor cannot fetch spans, checkpoints, or milestones from Heimdall REST API
+      target: validator1_bor
+      type: network
+      params:
+        packet_loss: 100
+        target_ports: "1317"
+        target_proto: tcp
+        device: eth0
+
+  success_criteria:
+    # ========== CRITICAL: Chain must survive ==========
+
+    - name: bor_block_production_survives
+      description: CRITICAL — Bor must continue producing blocks from cached span even with zero Heimdall API access. Expected to PASS on standard devnet (span cache covers full 7m window).
+      type: prometheus
+      query: sum(increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)
+      threshold: "> 0"
+      window: 7m
+      critical: true
+
+    - name: block_production_uninterrupted
+      description: CRITICAL — Block rate must not drop to zero in any 2-minute window during the fault. Detects mid-fault stalls that aggregate queries mask. FAILS on short-span devnet if Bor hits span rotation and waitForNewSpan times out.
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[6m:1m]))
+      threshold: "> 0"
+      window: 7m
+      critical: true
+
+    - name: network_quorum_maintained
+      description: CRITICAL — At least 2/3 of validators remain online
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+      threshold: ">= 0.67"
+      window: 7m
+      critical: true
+
+    # ========== NON-CRITICAL: Indicators ==========
+
+    - name: span_proposals_continue
+      description: Heimdall continues processing span proposals — rate bound ensures sustained activity
+      type: prometheus
+      query: min(min_over_time(rate(heimdallv2_bor_api_calls_success_total[5m])[7m:2m]))
+      threshold: "> 0.1"
+      window: 7m
+      critical: false
+
+    - name: checkpoint_activity_continues
+      description: Checkpoint submission activity is not disrupted — rate bound ensures sustained activity
+      type: prometheus
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_total[5m])[7m:2m]))
+      threshold: "> 0.1"
+      window: 7m
+      critical: false
+
+    - name: validator_not_jailed
+      description: Heimdall isolation must not cause validator 1 to be jailed
+      type: prometheus
+      query: cometbft_consensus_validator_power{job="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "> 0"
+      window: 7m
+      critical: false
+
+    - name: peer_count_maintained
+      description: Validator 1 Heimdall maintains P2P peer connections during Bor isolation
+      type: prometheus
+      query: min_over_time(cometbft_p2p_peers{job="l2-cl-1-heimdall-v2-bor-validator"}[7m])
+      threshold: ">= 2"
+      window: 7m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - heimdallv2_checkpoint_api_calls_total
+    - cometbft_consensus_validator_power
+    - cometbft_p2p_peers
+    - up

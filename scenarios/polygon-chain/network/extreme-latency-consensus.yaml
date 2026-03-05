@@ -33,10 +33,11 @@ spec:
   success_criteria:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
+    # Gap detection: healthy validators must never stall
     - name: other_validators_continue
-      description: CRITICAL - Other validators (2,3,4) continue producing blocks
+      description: CRITICAL - Other validators (2,3,4) produce blocks continuously (no mid-test stalls)
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-[234]-.*-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[234]-.*-validator"}[1m])[10m:3m]))
       threshold: "> 0"
       window: 10m
       critical: true
@@ -49,15 +50,25 @@ spec:
       window: 10m
       critical: true
 
+    # Bounded degradation: slow validator still makes some progress
     - name: affected_validator_survives
-      description: BASELINE - Slow validator eventually recovers (makes progress)
+      description: BASELINE - Slow validator maintains minimum consensus rate
       type: prometheus
-      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[5m])
-      threshold: "> 0"
+      query: rate(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[5m])
+      threshold: "> 0.1"
       window: 10m
       critical: false
 
     # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    # Fault effectiveness: affected validator's rate is significantly degraded
+    - name: affected_validator_rate_degrades
+      description: Affected validator's consensus rate is significantly lower than healthy peers
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[2m]) / clamp_min(avg(rate(cometbft_consensus_height{job=~"l2-cl-[234]-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "< 0.5"
+      window: 10m
+      critical: false
 
     - name: late_votes_under_stress
       description: Late votes should stay under 3000/min (expect high under 3s latency)

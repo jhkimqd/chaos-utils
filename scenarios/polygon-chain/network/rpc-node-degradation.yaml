@@ -32,29 +32,29 @@ spec:
         target_proto: tcp
 
   success_criteria:
-    # Critical: Validators continue producing blocks
+    # Critical: Validators continue producing blocks (gap detection + rate bound)
     - name: validators_unaffected
-      description: Validators continue block production despite RPC degradation
+      description: Validators maintain steady block production - rate stays high
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])
-      threshold: "> 0"
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[8m:4m]))
+      threshold: "> 0.1"
       window: 8m
       critical: true
 
-    # Critical: Consensus continues
+    # Critical: Consensus continues (gap detection + rate bound)
     - name: consensus_unaffected
-      description: Consensus continues despite RPC degradation
+      description: Consensus maintains steady rate despite RPC degradation
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])
-      threshold: "> 0"
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])[8m:4m]))
+      threshold: "> 0.1"
       window: 8m
       critical: true
 
-    # Non-critical: RPC still responds (degraded but functional)
+    # Non-critical: RPC still responds (gap detection)
     - name: rpc_within_slo
-      description: RPC remains functional despite degraded performance
+      description: RPC remains functional throughout test
       type: prometheus
-      query: increase(heimdallv2_checkpoint_api_calls_total[3m])
+      query: min(min_over_time(rate(heimdallv2_checkpoint_api_calls_total[3m])[8m:4m]))
       threshold: "> 0"
       window: 8m
       critical: false

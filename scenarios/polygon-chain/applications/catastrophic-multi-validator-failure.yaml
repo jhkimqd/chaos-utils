@@ -46,11 +46,11 @@ spec:
         stagger: 2
 
   success_criteria:
-    # Critical: Network must survive with 1 validator
+    # Critical: Network must survive with 1 validator — gap detection on healthy validator
     - name: single_validator_maintains_network
-      description: Validator 4 alone must keep network alive
+      description: Validator 4 alone must keep network alive without any 1-minute gap
       type: prometheus
-      query: increase(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      query: min(min_over_time(rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])[8m:2m]))
       threshold: "> 0"
       window: 8m
       critical: true
@@ -64,14 +64,23 @@ spec:
       window: 8m
       critical: true
 
-    # Expected: Network resumes normal operation
+    # Expected: Network resumes normal operation — gap detection
     - name: consensus_fully_restored
       description: Full consensus restored after recovery
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])[8m:2m]))
       threshold: "> 0"
       window: 8m
       critical: true
+
+    # Fault effectiveness: killed validators actually stop progressing during crash
+    - name: killed_validators_stop_during_crash
+      description: Crashed validators (1,2,3) show zero block production during crash window
+      type: prometheus
+      query: max_over_time(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[8m])
+      threshold: "> 0"
+      window: 8m
+      critical: false
 
   metrics:
     - chain_head_block

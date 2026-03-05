@@ -95,20 +95,20 @@ spec:
       delay: 12m
 
   success_criteria:
-    # Critical: Network continues with other validators
+    # Critical: Network continues with other validators — gap detection
     - name: network_resilient_to_single_failure
-      description: Network continues with remaining healthy validators
+      description: Healthy validators continue producing blocks without any 2-minute gap
       type: prometheus
-      query: increase(chain_head_block{job=~"l2-el-[1-3]-bor-heimdall-v2-validator"}[2m])
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[1-3]-bor-heimdall-v2-validator"}[2m])[18m:6m]))
       threshold: "> 0"
       window: 18m
       critical: true
 
-    # Critical: Consensus continues with majority
+    # Critical: Consensus continues with majority — gap detection
     - name: consensus_with_majority
-      description: Consensus continues with healthy validators
+      description: Healthy validators maintain consensus without any 2-minute gap
       type: prometheus
-      query: increase(cometbft_consensus_height{job=~"l2-cl-[1-3]-heimdall-v2-bor-validator"}[2m])
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[1-3]-heimdall-v2-bor-validator"}[2m])[18m:6m]))
       threshold: "> 0"
       window: 18m
       critical: true
