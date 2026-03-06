@@ -72,6 +72,7 @@ spec:
     threshold: == 0
     window: 3m
     critical: false
+    during_fault: true
   - name: proofs_being_generated
     description: ZK proofs are being generated
     type: prometheus

@@ -124,6 +124,7 @@ spec:
       threshold: "> 0"
       window: 10m
       critical: false
+      during_fault: true
 
   metrics:
     - chain_head_block

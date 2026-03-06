@@ -72,6 +72,7 @@ spec:
     threshold: == 0
     window: 3m
     critical: false
+    during_fault: true
   - name: batches_being_sequenced
     description: New batches are being sequenced
     type: prometheus

@@ -622,7 +622,7 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 	// and are expected to fail before injection.
 	var critical []int
 	for i, c := range o.scenario.Spec.SuccessCriteria {
-		if !c.Critical || c.PostFaultOnly {
+		if !c.Critical || c.PostFaultOnly || c.DuringFault {
 			continue
 		}
 		critical = append(critical, i)
@@ -854,6 +854,76 @@ func (o *Orchestrator) executeMonitor(ctx context.Context) error {
 	}
 
 	fmt.Println("Monitoring complete")
+
+	// Evaluate during-fault criteria now, while faults are still active.
+	if err := o.evaluateDuringFaultCriteria(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// evaluateDuringFaultCriteria evaluates criteria marked during_fault: true
+// at the end of the MONITOR phase while faults are still injected.
+func (o *Orchestrator) evaluateDuringFaultCriteria(ctx context.Context) error {
+	var duringFault []int
+	for i, c := range o.scenario.Spec.SuccessCriteria {
+		if c.DuringFault {
+			duringFault = append(duringFault, i)
+		}
+	}
+	if len(duringFault) == 0 {
+		return nil
+	}
+
+	if o.detector == nil || o.promClient == nil {
+		return fmt.Errorf("Prometheus is not configured but during_fault criteria are defined — cannot validate")
+	}
+
+	fmt.Printf("\nEvaluating during-fault criteria (%d) while faults are active...\n", len(duringFault))
+
+	criticalFailed := false
+	for j, idx := range duringFault {
+		criterion := o.scenario.Spec.SuccessCriteria[idx]
+		fmt.Printf("  [%d/%d] Evaluating: %s\n", j+1, len(duringFault), criterion.Name)
+
+		result, err := o.detector.Evaluate(ctx, criterion)
+		if err != nil {
+			return fmt.Errorf("during-fault criteria query failed for %q: %w", criterion.Name, err)
+		}
+
+		o.criteriaResults = append(o.criteriaResults, CriterionOutcome{
+			Name:        criterion.Name,
+			Description: criterion.Description,
+			Type:        criterion.Type,
+			Query:       criterion.Query,
+			Threshold:   criterion.Threshold,
+			Passed:      result.Passed,
+			Value:       result.LastValue,
+			Message:     result.Message,
+			Critical:    criterion.Critical,
+		})
+
+		if result.Passed {
+			fmt.Printf("    ✓ PASSED: %s\n", result.Message)
+		} else if criterion.Critical {
+			fmt.Printf("    ✗ FAILED (CRITICAL): %s\n", result.Message)
+			if criterion.Description != "" {
+				fmt.Printf("      → %s\n", criterion.Description)
+			}
+			criticalFailed = true
+		} else {
+			fmt.Printf("    ⚠ FAILED (non-critical): %s\n", result.Message)
+			if criterion.Description != "" {
+				fmt.Printf("      → %s\n", criterion.Description)
+			}
+		}
+	}
+
+	if criticalFailed {
+		return fmt.Errorf("one or more critical during-fault criteria failed")
+	}
+
 	return nil
 }
 
@@ -876,6 +946,11 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 	var failedCritical []string
 
 	for i, criterion := range o.scenario.Spec.SuccessCriteria {
+		// Skip during_fault criteria — they were already evaluated at end of MONITOR.
+		if criterion.DuringFault {
+			continue
+		}
+
 		fmt.Printf("  [%d/%d] Evaluating: %s\n", i+1, len(o.scenario.Spec.SuccessCriteria), criterion.Name)
 
 		result, err := o.detector.Evaluate(ctx, criterion)

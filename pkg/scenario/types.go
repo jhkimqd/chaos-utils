@@ -139,6 +139,13 @@ type SuccessCriterion struct {
 	// Use for criteria that verify fault effectiveness (e.g., "partitioned
 	// validator stops advancing") — these are expected to fail before injection.
 	PostFaultOnly bool `yaml:"post_fault_only,omitempty"`
+
+	// DuringFault evaluates this criterion while faults are active (end of
+	// MONITOR phase) instead of after teardown (DETECT phase). Use for
+	// criteria that are only meaningful while the fault is injected, such as
+	// verifying a partitioned validator has stalled — after faults are
+	// removed the node recovers and the check becomes meaningless.
+	DuringFault bool `yaml:"during_fault,omitempty"`
 }
 
 // NetworkFaultParams defines parameters for network faults
