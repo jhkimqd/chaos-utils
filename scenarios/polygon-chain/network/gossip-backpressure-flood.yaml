@@ -1,0 +1,160 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: gossip-backpressure-flood
+  description: >
+    Throttle one validator's bandwidth while the network is under mempool load.
+    CometBFT gossips mempool transactions to all connected peers. When one peer
+    can't drain fast enough, the sender's write goroutine for that peer blocks,
+    its channel buffer fills, and depending on implementation:
+    (a) memory grows unbounded from queued messages, or
+    (b) the reactor backs up and impacts ALL peer connections (head-of-line blocking).
+    With 4 validators at quorum edge, if the gossip backpressure from the slow peer
+    degrades the sender's ability to communicate with OTHER healthy peers, consensus
+    can stall even though only one validator is throttled.
+    TARGET SETUP: 4 validators + 1 RPC, with tx load generator running against RPC.
+  tags: [network, bandwidth, gossip, mempool, backpressure, quorum-edge, critical-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Throttle validator 1's Heimdall — gossip target
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: throttled_heimdall
+
+    # Throttle validator 1's Bor — tx propagation target
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: throttled_bor
+
+  duration: 12m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    # Phase 1 (0-6m): Moderate throttle — 16kbit. Gossip buffers start filling
+    # on peers connected to validator 1. Under mempool load, this accelerates
+    # because each tx is gossiped individually.
+    - phase: moderate_throttle_heimdall
+      description: 16kbit bandwidth on Heimdall — gossip write buffers accumulate on peers
+      target: throttled_heimdall
+      type: network
+      params:
+        device: eth0
+        bandwidth: 16
+        target_proto: tcp,udp
+      duration: 6m
+
+    - phase: moderate_throttle_bor
+      description: 16kbit bandwidth on Bor — tx propagation backs up
+      target: throttled_bor
+      type: network
+      params:
+        device: eth0
+        bandwidth: 16
+        target_proto: tcp,udp
+      duration: 6m
+
+    # Phase 2 (6-12m): Extreme throttle — 1kbit. Near-complete stall.
+    # If phase 1 caused buffer growth, phase 2 should push it over the edge.
+    - phase: extreme_throttle_heimdall
+      description: 1kbit bandwidth on Heimdall — near-complete gossip stall
+      target: throttled_heimdall
+      type: network
+      params:
+        device: eth0
+        bandwidth: 1
+        latency: 1000
+        target_proto: tcp,udp
+      duration: 6m
+      delay: 6m
+
+    - phase: extreme_throttle_bor
+      description: 1kbit bandwidth on Bor — near-complete tx propagation stall
+      target: throttled_bor
+      type: network
+      params:
+        device: eth0
+        bandwidth: 1
+        latency: 1000
+        target_proto: tcp,udp
+      duration: 6m
+      delay: 6m
+
+  success_criteria:
+    # Critical: Healthy validators keep producing blocks.
+    # Head-of-line blocking from the slow peer should NOT impact healthy peer
+    # communication. If it does, that's the bug.
+    - name: healthy_block_production
+      description: Validators 2-4 produce blocks without gaps (backpressure isolation test)
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[2-4]-bor-heimdall-v2-validator"}[2m])[12m:1m]))
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Consensus continues on healthy validators.
+    - name: healthy_consensus
+      description: Validators 2-4 consensus advances without gaps
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[2m])[12m:1m]))
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Healthy validators stay up — OOM from gossip buffer growth = fail.
+    - name: healthy_validators_no_oom
+      description: Validators 2-4 never restart (gossip buffer OOM detection)
+      type: prometheus
+      query: min(min_over_time(up{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[12m:1m]))
+      threshold: "== 1"
+      window: 12m
+      critical: true
+
+    # Non-critical: Memory growth on healthy validators from gossip buffering.
+    - name: peer_memory_growth
+      description: Healthy validator memory usage rises from gossip buffer accumulation
+      type: prometheus
+      query: max(process_resident_memory_bytes{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}) / 1024 / 1024
+      threshold: "> 512"
+      window: 12m
+      critical: false
+
+    # Non-critical: Throttled validator's peer count — if peers disconnect the
+    # throttled node, that's actually a good defense mechanism.
+    - name: throttled_peer_disconnection
+      description: Throttled validator loses peers (healthy defense if gossip backs up)
+      type: prometheus
+      query: cometbft_p2p_peers{job="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "< 3"
+      window: 12m
+      critical: false
+      during_fault: true
+
+    # Non-critical: Mempool size on healthy validators — if gossip backpressure
+    # prevents tx propagation, mempool sizes diverge.
+    - name: mempool_divergence
+      description: Mempool size diverges between healthy and throttled validators
+      type: prometheus
+      query: max(cometbft_mempool_size{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}) - min(cometbft_mempool_size{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"})
+      threshold: "> 100"
+      window: 12m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - cometbft_mempool_size
+    - cometbft_mempool_tx_size_bytes
+    - process_resident_memory_bytes
+    - go_memstats_alloc_bytes
+    - go_memstats_sys_bytes
+    - go_goroutines
+    - up

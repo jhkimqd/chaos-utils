@@ -1,0 +1,135 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cross-client-rpc-partition
+  description: >
+    Partition the Erigon RPC node from validators while Bor RPCs remain connected.
+    Erigon and Bor have different P2P implementations, state storage engines, and
+    sync strategies. Under partition:
+    (1) Erigon's reconnection/resync behavior may differ from Bor's,
+    (2) Erigon may handle stale state differently (different cache/eviction logic),
+    (3) After partition heals, Erigon's catch-up sync path is different from Bor's,
+    (4) RPC responses from a partitioned Erigon may return stale data silently
+        vs Bor which might error — important for downstream consumers.
+    This test partitions Erigon fully, then lifts the partition and monitors recovery.
+    NOTE: Adjust the Erigon service name pattern to match your enclave.
+    The Erigon RPC is matched by el_type in the service name (erigon vs bor),
+    so the regex pattern works regardless of index number.
+  tags: [network, partition, rpc, erigon, cross-client, recovery, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Erigon RPC node
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-\\d+-erigon-heimdall-v2-rpc"
+      alias: erigon_rpc
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    # Full partition of Erigon RPC for 6 minutes, then 4 minutes recovery.
+    # The 100% packet loss on all protocols means Erigon loses all P2P peers
+    # and cannot sync blocks. After fault removal, we observe:
+    # - How fast does Erigon reconnect peers?
+    # - How does it resync the missed blocks?
+    # - Does it serve stale RPC responses during partition?
+    - phase: erigon_full_partition
+      description: 100% packet loss on Erigon RPC — fully isolated from network
+      target: erigon_rpc
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+      duration: 6m
+
+  success_criteria:
+    # Critical: Validators completely unaffected by RPC partition.
+    - name: validators_unaffected
+      description: Validator block production continues without gaps
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[10m:1m]))
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Critical: Consensus unaffected.
+    - name: consensus_unaffected
+      description: Consensus height advances without gaps
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])[10m:1m]))
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Critical: Bor RPCs unaffected — only Erigon is partitioned.
+    - name: bor_rpcs_unaffected
+      description: Bor RPC nodes continue syncing normally
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-rpc"}[2m])[10m:1m]))
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    # Critical: Erigon node stays up despite partition (no panic/crash).
+    - name: erigon_stays_alive
+      description: Erigon process does not crash during or after partition
+      type: prometheus
+      query: min(min_over_time(up{job=~"l2-el-.*-erigon-heimdall-v2-rpc"}[10m:1m]))
+      threshold: "== 1"
+      window: 10m
+      critical: true
+
+    # Non-critical: Erigon block height stalls during partition — proves fault works.
+    - name: erigon_stalls_during_partition
+      description: Erigon block height stops advancing during partition
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-erigon-heimdall-v2-rpc"}[3m])
+      threshold: "< 5"
+      window: 10m
+      critical: false
+      during_fault: true
+
+    # Non-critical: Erigon recovers after partition — block height catches up.
+    # After 6m partition, Erigon should resync during the 4m remaining + 2m cooldown.
+    - name: erigon_recovers_after_partition
+      description: Erigon resumes syncing after partition is lifted
+      type: prometheus
+      query: rate(chain_head_block{job=~"l2-el-.*-erigon-heimdall-v2-rpc"}[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: false
+      post_fault_only: true
+
+    # Non-critical: Erigon peer count during/after partition.
+    - name: erigon_peer_recovery
+      description: Erigon reconnects peers after partition heals
+      type: prometheus
+      query: p2p_peers{job=~"l2-el-.*-erigon-heimdall-v2-rpc"}
+      threshold: ">= 1"
+      window: 10m
+      critical: false
+      post_fault_only: true
+
+    # Non-critical: How far behind Erigon falls vs Bor RPC under same partition.
+    - name: erigon_height_lag
+      description: Erigon block height lag behind validators during partition
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - on() chain_head_block{job=~"l2-el-.*-erigon-heimdall-v2-rpc"}
+      threshold: "> 50"
+      window: 10m
+      critical: false
+      during_fault: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - p2p_peers
+    - process_resident_memory_bytes
+    - up

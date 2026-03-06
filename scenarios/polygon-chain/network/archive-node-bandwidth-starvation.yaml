@@ -1,0 +1,144 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: archive-node-bandwidth-starvation
+  description: >
+    Progressive bandwidth starvation on the Bor archive node. Archive nodes sync
+    significantly more data than full nodes (all historical state). Under bandwidth
+    pressure, the archive node falls behind and its catch-up sync requires even more
+    data, creating a negative feedback loop. This tests:
+    (1) Whether the archive node handles falling behind gracefully or panics,
+    (2) Memory growth from buffered blocks/state during slow sync,
+    (3) Whether the archive node's P2P layer degrades other nodes' P2P (peer slot
+        consumption while unable to serve data back),
+    (4) State consistency after recovery — does the archive node produce correct
+        responses for historical queries after catching up from bandwidth starvation?
+    NOTE: Adjust service name pattern to match your enclave.
+    The archive node is matched by kind in the service name (archive vs rpc),
+    so the regex pattern works regardless of index number.
+  tags: [network, bandwidth, archive, sync, state-consistency, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-\\d+-bor-heimdall-v2-archive"
+      alias: archive_node
+
+  duration: 12m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    # Phase 1 (0-4m): 128kbit — archive can sync but slowly. It starts falling
+    # behind as block production outpaces sync bandwidth. Historical state sync
+    # takes more bandwidth than just block headers.
+    - phase: moderate_starvation
+      description: 128kbit bandwidth — archive node starts falling behind
+      target: archive_node
+      type: network
+      params:
+        device: eth0
+        bandwidth: 128
+        target_proto: tcp,udp
+      duration: 4m
+
+    # Phase 2 (4-8m): 16kbit — near-starvation. Archive sync effectively stops.
+    # Buffered data accumulates. The node may attempt fast-sync fallback or
+    # disconnect from peers.
+    - phase: severe_starvation
+      description: 16kbit bandwidth — archive sync effectively halted, buffers grow
+      target: archive_node
+      type: network
+      params:
+        device: eth0
+        bandwidth: 16
+        latency: 500
+        target_proto: tcp,udp
+      duration: 4m
+      delay: 4m
+
+    # Phase 3 (8-12m): 4kbit + 1s latency — extreme. Tests whether the archive
+    # node crashes, OOMs, or handles this gracefully by disconnecting peers
+    # and waiting for bandwidth to return.
+    - phase: extreme_starvation
+      description: 4kbit + 1000ms latency — extreme starvation, crash/OOM test
+      target: archive_node
+      type: network
+      params:
+        device: eth0
+        bandwidth: 4
+        latency: 1000
+        target_proto: tcp,udp
+      duration: 4m
+      delay: 8m
+
+  success_criteria:
+    # Critical: Validators unaffected — archive node degradation must not impact consensus.
+    - name: validators_unaffected
+      description: Validator block production continues without gaps
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[12m:1m]))
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Archive node stays alive through all phases.
+    # A crash under bandwidth starvation is a bug — it should degrade gracefully.
+    - name: archive_stays_alive
+      description: Archive node process does not crash or OOM during starvation
+      type: prometheus
+      query: min(min_over_time(up{job=~"l2-el-.*-bor-heimdall-v2-archive"}[12m:1m]))
+      threshold: "== 1"
+      window: 12m
+      critical: true
+
+    # Critical: Other RPC nodes unaffected — archive degradation should not
+    # consume peer slots or degrade P2P for healthy RPCs.
+    - name: rpc_nodes_unaffected
+      description: Bor and Erigon RPC nodes continue syncing normally
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-heimdall-v2-rpc"}[2m])[12m:1m]))
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Non-critical: Archive node falls behind progressively.
+    - name: archive_falls_behind
+      description: Archive block height diverges from validators during starvation
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-archive"}
+      threshold: "> 100"
+      window: 12m
+      critical: false
+      during_fault: true
+
+    # Non-critical: Memory growth on archive node from buffered state.
+    - name: archive_memory_pressure
+      description: Archive node memory grows from buffered unprocessed data
+      type: prometheus
+      query: process_resident_memory_bytes{job=~"l2-el-.*-bor-heimdall-v2-archive"} / 1024 / 1024
+      threshold: "> 1024"
+      window: 12m
+      critical: false
+
+    # Non-critical: Archive peer count — may drop peers under extreme starvation.
+    - name: archive_peer_stability
+      description: Archive node peer count under bandwidth starvation
+      type: prometheus
+      query: p2p_peers{job=~"l2-el-.*-bor-heimdall-v2-archive"}
+      threshold: ">= 1"
+      window: 12m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - p2p_peers
+    - process_resident_memory_bytes
+    - go_memstats_alloc_bytes
+    - go_memstats_sys_bytes
+    - up

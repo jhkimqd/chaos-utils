@@ -1,0 +1,125 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: quorum-edge-slow-vote
+  description: >
+    High latency on one validator's consensus port in a 4-validator network.
+    With quorum requiring 3/4 votes, a 500ms+ delay on one validator's P2P means
+    its vote often arrives after the proposer's timeout. CometBFT enters additional
+    consensus rounds, each round increasing the timeout duration. This tests whether
+    the timeout escalation logic has edge cases when a vote intermittently arrives
+    just before or just after the deadline. Over many blocks this can expose:
+    (1) proposer timeout drift causing ever-longer block times,
+    (2) vote deduplication bugs when delayed votes arrive in wrong round,
+    (3) consensus reactor goroutine leaks from stale round state.
+    TARGET SETUP: 4 validators + 1 RPC.
+  tags: [network, latency, consensus, timeout, quorum-edge, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: slow_validator_heimdall
+
+  duration: 12m
+  warmup: 1m
+  cooldown: 1m
+
+  faults:
+    # 500ms latency on consensus P2P only — enough to miss tight timeouts,
+    # but not enough to fully partition. The vote sometimes arrives in time,
+    # sometimes doesn't — worst case for consensus state machines.
+    - phase: slow_consensus_vote
+      description: 500ms latency on Heimdall P2P — votes intermittently miss timeout deadlines
+      target: slow_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        target_ports: "26656"
+        target_proto: tcp
+
+  success_criteria:
+    # Critical: Chain must not halt — 3 healthy validators should maintain quorum
+    # even if validator 1's votes arrive late.
+    - name: block_production_continues
+      description: Block production never stalls despite slow vote from validator 1
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[12m:1m]))
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Consensus height keeps advancing on healthy validators.
+    - name: healthy_consensus_no_gaps
+      description: Validators 2-4 consensus advances without gaps
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[2m])[12m:1m]))
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Critical: Block interval stays bounded — timeout escalation should not
+    # cause block times to grow unbounded. Normal is ~2s, under this fault
+    # we accept up to 8s average but not worse.
+    - name: block_interval_bounded
+      description: Average block rate stays above 0.125/s (8s max block interval)
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[2-4]-bor-heimdall-v2-validator"}[3m])[12m:2m]))
+      threshold: "> 0.125"
+      window: 12m
+      critical: true
+
+    # Non-critical: Consensus round duration increases — proves the fault
+    # is causing timeout rounds. If this doesn't trigger, the latency isn't
+    # high enough to impact consensus.
+    - name: consensus_rounds_increase
+      description: Consensus round duration increases due to slow votes
+      type: prometheus
+      query: avg(rate(cometbft_consensus_round_duration_seconds_sum{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[3m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[3m]), 0.001))
+      threshold: "> 1.0"
+      window: 12m
+      critical: false
+
+    # Non-critical: Late votes appear from the slow validator.
+    - name: late_votes_from_slow_validator
+      description: Slow validator generates late votes (proves fault effectiveness)
+      type: prometheus
+      query: rate(cometbft_consensus_late_votes{job="l2-cl-1-heimdall-v2-bor-validator"}[3m]) * 60
+      threshold: "> 1"
+      window: 12m
+      critical: false
+
+    # Non-critical: Slow validator falls behind but doesn't fully stall.
+    - name: slow_validator_degraded_rate
+      description: Slow validator's consensus rate is lower than healthy peers
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[3m]) / clamp_min(avg(rate(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[3m])), 0.001)
+      threshold: "< 0.9"
+      window: 12m
+      critical: false
+
+    # Non-critical: Duplicate votes may appear if delayed votes arrive in
+    # a later round after the validator has already voted.
+    - name: duplicate_votes_detected
+      description: Duplicate votes appear from round boundary races
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[3m])) * 60
+      threshold: "> 0"
+      window: 12m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count
+    - cometbft_consensus_rounds
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_duplicate_vote
+    - cometbft_p2p_peers
+    - process_resident_memory_bytes

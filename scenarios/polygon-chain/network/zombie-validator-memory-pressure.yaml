@@ -1,0 +1,130 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: zombie-validator-memory-pressure
+  description: >
+    Near-zero bandwidth on one validator to cause TCP send buffer accumulation on
+    healthy peers. With 4 validators (quorum = 3), the remaining 3 are at the exact
+    quorum edge while their kernel socket buffers grow from retransmissions to the
+    zombie. CometBFT keeps persistent connections and gossips blocks, votes, and
+    mempool txs — a peer that can't drain causes unbounded write buffer growth on
+    senders. Combined with tight container memory limits, this can trigger OOM on
+    healthy validators and cascade into quorum loss.
+    TARGET SETUP: 4 validators + 1 RPC, 2GB memory limit per container.
+  tags: [network, bandwidth, memory-pressure, oom, quorum-edge, critical-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Zombie validator — both Heimdall and Bor get trickle bandwidth
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: zombie_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: zombie_bor
+
+  duration: 15m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    # Trickle bandwidth on Heimdall — enough to keep TCP alive, too slow to drain
+    # send buffers. Peers' goroutines block on writes, channel buffers fill,
+    # memory grows. The 2s latency compounds retransmission backoff.
+    - phase: zombie_heimdall_trickle
+      description: 1kbit bandwidth + 2000ms latency on Heimdall — TCP stays alive but cannot drain
+      target: zombie_heimdall
+      type: network
+      params:
+        device: eth0
+        bandwidth: 1
+        latency: 2000
+        target_proto: tcp,udp
+
+    # Same treatment on Bor — block part gossip and tx propagation back up
+    - phase: zombie_bor_trickle
+      description: 1kbit bandwidth + 2000ms latency on Bor — execution layer write buffers accumulate
+      target: zombie_bor
+      type: network
+      params:
+        device: eth0
+        bandwidth: 1
+        latency: 2000
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: Healthy validators (2,3,4) must never stall block production.
+    # If they OOM, this fails — which is the bug we're hunting.
+    - name: healthy_validators_block_production
+      description: Validators 2-4 maintain block production without gaps (OOM = fail)
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[2-4]-bor-heimdall-v2-validator"}[2m])[15m:1m]))
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    # Critical: Healthy validators maintain consensus.
+    - name: healthy_validators_consensus
+      description: Validators 2-4 consensus height advances in every 2m window
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[2m])[15m:1m]))
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    # Critical: All healthy validators stay up for the full duration.
+    # An OOM kill would cause this to fail.
+    - name: healthy_validators_stay_alive
+      description: Validators 2-4 processes never restart (OOM detection)
+      type: prometheus
+      query: min(min_over_time(up{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[15m:1m]))
+      threshold: "== 1"
+      window: 15m
+      critical: true
+
+    # Non-critical: Zombie validator's consensus stalls — proves the fault works.
+    - name: zombie_validator_stalls
+      description: Validator 1 consensus stops advancing (proves trickle bandwidth is effective)
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[5m])
+      threshold: "< 5"
+      window: 15m
+      critical: false
+      during_fault: true
+
+    # Non-critical: Memory usage on healthy validators rises.
+    # If process_resident_memory_bytes climbs toward container limit, we're
+    # on the path to OOM even if it doesn't trigger during this test window.
+    - name: healthy_validator_memory_growth
+      description: Memory usage on healthy validators rises (indicates buffer accumulation)
+      type: prometheus
+      query: max(process_resident_memory_bytes{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}) / 1024 / 1024
+      threshold: "> 512"
+      window: 15m
+      critical: false
+
+    # Non-critical: Peer connections from zombie validator degrade but stay open
+    - name: zombie_peers_degrade
+      description: Zombie validator peer count drops but TCP connections linger
+      type: prometheus
+      query: cometbft_p2p_peers{job="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "< 3"
+      window: 15m
+      critical: false
+      during_fault: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - process_resident_memory_bytes
+    - go_memstats_alloc_bytes
+    - go_memstats_sys_bytes
+    - up

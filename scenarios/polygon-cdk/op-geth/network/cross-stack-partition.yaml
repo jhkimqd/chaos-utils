@@ -79,6 +79,7 @@ spec:
     threshold: == 0
     window: 3m
     critical: false
+    during_fault: true
   metrics:
   - panoptichain_rpc_height
   - panoptichain_rpc_finalized_height
