@@ -1,0 +1,198 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-p2p-block-producer-delay
+  description: >
+    Inject latency on the Bor P2P port (30303) of a block producer connected to a client.
+    SCOPE: A delayed P2P port on a block producer causes slow block propagation to
+    peers and clients. When blocks slow down near a span boundary, Bor may trigger
+    waitForNewSpan — and if the latency also degrades Heimdall REST responsiveness
+    or the span cache expires, the block producer stalls waiting for the next span.
+    This scenario specifically tests whether sustained P2P latency on a block producer
+    causes: (1) measurable block time degradation across the network, (2) unexpected
+    span rotations due to slow block propagation delaying span boundary crossings,
+    and (3) cascading slowdowns on peers that depend on the delayed producer for blocks.
+    On a short-span devnet (bor.span-override=200), this is more likely to trigger
+    span rotation edge cases within the test window.
+  tags: [network, latency, bor, p2p, block-producer, span, slow-blocks, edge-case]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: block_producer_bor
+
+  duration: 15m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: bor_p2p_latency
+      description: >
+        Inject 5s latency on Bor P2P port 30303 — slows block propagation from
+        producer to peers/clients, may trigger slow block detection and span rotation
+        edge cases at span boundaries
+      target: block_producer_bor
+      type: network
+      params:
+        latency: 5000
+        target_ports: "30303"
+        target_proto: tcp,udp
+        device: eth0
+
+  success_criteria:
+    # ========== CRITICAL: Chain must not halt ==========
+
+    - name: chain_continues_producing
+      description: CRITICAL — Block production continues across the network despite delayed producer P2P
+      type: prometheus
+      query: sum(increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    - name: no_prolonged_block_stall
+      description: CRITICAL — Block production must not stall for any 2-minute window on healthy validators
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[234]-bor-heimdall-v2-validator"}[2m])[14m:1m]))
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    - name: consensus_progresses
+      description: CRITICAL — Heimdall consensus height advances throughout the test
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[5m])) or vector(0)
+      threshold: "> 0"
+      window: 15m
+      critical: true
+
+    # ========== SLOW BLOCK DETECTION ==========
+
+    - name: block_intervals_acceptable
+      description: Average block intervals stay under 10s — detects slow blocks caused by delayed P2P propagation from producer
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 15m
+      critical: false
+
+    - name: affected_producer_block_rate
+      description: Affected block producer's block rate stays above minimum — 5s P2P latency should not freeze production entirely
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-1-bor-heimdall-v2-validator"}[3m])
+      threshold: "> 0.05"
+      window: 15m
+      critical: false
+
+    - name: peer_block_rate_not_degraded
+      description: Healthy validators maintain at least 50% of expected block rate — detects cascade slowdowns from delayed producer
+      type: prometheus
+      query: avg(rate(chain_head_block{job=~"l2-el-[234]-bor-heimdall-v2-validator"}[2m]))
+      threshold: "> 0.2"
+      window: 15m
+      critical: false
+
+    # ========== SPAN ROTATION DETECTION ==========
+
+    - name: span_api_calls_succeed
+      description: Span API call success rate remains healthy — detects span fetch failures caused by slow block propagation near span boundaries
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[5m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[5m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 15m
+      critical: false
+
+    - name: span_proposals_continue
+      description: Heimdall continues processing span/milestone proposals — stalls indicate span rotation issues
+      type: prometheus
+      query: sum(increase(heimdallv2_bor_api_calls_total[10m])) or vector(0)
+      threshold: "> 0"
+      window: 15m
+      critical: false
+
+    - name: checkpoint_submissions_continue
+      description: Checkpoint submissions continue — slow blocks should not permanently block checkpointing
+      type: prometheus
+      query: sum(increase(heimdallv2_checkpoint_api_calls_total[10m])) or vector(0)
+      threshold: "> 0"
+      window: 15m
+      critical: false
+
+    # ========== NETWORK HEALTH ==========
+
+    - name: p2p_peers_maintained
+      description: Affected producer maintains P2P connections despite latency
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: ">= 2"
+      window: 15m
+      critical: false
+
+    - name: late_votes_bounded
+      description: Late votes stay bounded — high latency on Bor P2P should not cascade to consensus voting
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 3000"
+      window: 15m
+      critical: false
+
+    - name: consensus_rounds_efficient
+      description: Multi-round consensus stays low — excess rounds indicate difficulty reaching agreement from slow block propagation
+      type: prometheus
+      query: sum(rate(cometbft_consensus_rounds{job=~"l2-cl-.*-validator"}[5m])) * 60
+      threshold: "< 10"
+      window: 15m
+      critical: false
+
+    - name: validator_not_jailed
+      description: Block producer retains voting power — slow P2P must not cause jailing
+      type: prometheus
+      query: cometbft_consensus_validator_power{job="l2-cl-1-heimdall-v2-bor-validator"}
+      threshold: "> 0"
+      window: 15m
+      critical: false
+
+    - name: bor_span_requests_healthy
+      description: Bor-side span fetch requests succeed — detects client-side span rotation failures from p2p delays or Heimdall unavailability
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid[5m])) / clamp_min(sum(rate(client_requests_span_valid[5m])) + sum(rate(client_requests_span_invalid[5m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 15m
+      critical: false
+
+
+  metrics:
+    # Block production
+    - chain_head_block
+
+    # Consensus
+    - cometbft_consensus_height
+    - cometbft_consensus_rounds
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_duplicate_vote
+    - cometbft_consensus_validator_power
+    - cometbft_consensus_missing_validators
+
+    # Block timing
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+
+    # Span rotation
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - heimdallv2_checkpoint_api_calls_total
+
+    # Network health
+    - cometbft_p2p_peers
+    - up
+    # Bor-side span rotation detection
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - client_requests_span_duration
+    - client_requests_latestspan_valid
+    - client_requests_latestspan_invalid

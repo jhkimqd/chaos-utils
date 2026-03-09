@@ -109,9 +109,47 @@ spec:
       window: 6m
       critical: false
 
+    # ========== SLOW BLOCK & SPAN ROTATION DETECTION ==========
+
+    - name: block_times_acceptable
+      description: Block intervals stay within acceptable range — detects slow blocks from degraded p2p or span delays
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 6m
+      critical: false
+
+    - name: span_api_success_rate
+      description: Span API call success rate remains healthy — detects span rotation issues from p2p or network delays
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[5m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[5m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 6m
+      critical: false
+
+    - name: bor_span_requests_healthy
+      description: Bor-side span fetch requests succeed — detects client-side span rotation failures from p2p delays or Heimdall unavailability
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid[5m])) / clamp_min(sum(rate(client_requests_span_valid[5m])) + sum(rate(client_requests_span_invalid[5m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 6m
+      critical: false
+
+
   metrics:
     - chain_head_block
     - cometbft_consensus_height
     - cometbft_consensus_validators
     - cometbft_consensus_missing_validators
     - up
+    # Slow block & span rotation detection
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    # Bor-side span rotation detection
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - client_requests_span_duration
+    - client_requests_latestspan_valid
+    - client_requests_latestspan_invalid
