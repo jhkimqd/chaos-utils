@@ -1,0 +1,175 @@
+name: chaos-suite
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # Daily at 8 AM UTC
+  workflow_dispatch:
+    inputs:
+      kurtosis_config:
+        description: "Kurtosis config file (relative to kurtosis-pos/.github/configs/)"
+        required: false
+        default: "large.yml"
+      scenario_filter:
+        description: "Scenario filter: all, network, applications, cpu-memory, filesystem"
+        required: false
+        default: "all"
+      kurtosis_pos_ref:
+        description: "kurtosis-pos branch/tag to deploy"
+        required: false
+        default: "feat/chaos-test-ymls"
+
+permissions:
+  contents: read
+  actions: write
+  id-token: write
+
+concurrency:
+  group: chaos-suite-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENCLAVE_NAME: pos
+
+jobs:
+  run-chaos-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: standard
+            file: large.yml
+          - name: version-mix
+            file: large-version-mix.yml
+    steps:
+      - name: Checkout chaos-utils
+        uses: actions/checkout@v6
+
+      - name: Checkout kurtosis-pos
+        uses: actions/checkout@v6
+        with:
+          repository: 0xPolygon/kurtosis-pos
+          ref: ${{ inputs.kurtosis_pos_ref || 'feat/chaos-test-ymls' }}
+          path: kurtosis-pos
+
+      - name: Setup Kurtosis
+        uses: ./kurtosis-pos/.github/actions/setup
+        with:
+          docker_username: ${{ secrets.DOCKER_USERNAME }}
+          docker_token: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build chaos-runner
+        run: make build-runner
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Deploy devnet (${{ matrix.config.name }})
+        run: |
+          set -o pipefail
+          kurtosis run \
+            --enclave=${{ env.ENCLAVE_NAME }} \
+            --verbosity detailed \
+            --args-file=kurtosis-pos/.github/configs/${{ inputs.kurtosis_config || matrix.config.file }} \
+            kurtosis-pos 2>&1 | tee deploy.log
+
+      - name: Wait for network readiness
+        run: |
+          RPC_SERVICE=$(kurtosis enclave inspect ${{ env.ENCLAVE_NAME }} | awk '/l2-el/ && /RUNNING/ {print $2; exit}')
+          RPC_URL=$(kurtosis port print ${{ env.ENCLAVE_NAME }} "${RPC_SERVICE}" rpc)
+          echo "Waiting for 40 blocks on ${RPC_SERVICE} (${RPC_URL})..."
+
+          for i in $(seq 1 120); do
+            BLOCK=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
+            echo "Block: ${BLOCK}/40 (attempt ${i}/120)"
+            if [[ "${BLOCK}" -ge 40 ]]; then
+              echo "Network ready!"
+              break
+            fi
+            if [[ "${i}" -eq 120 ]]; then
+              echo "::error::Network did not reach 40 blocks in 10 minutes"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Run chaos scenarios (${{ matrix.config.name }})
+        run: |
+          FILTER="${{ inputs.scenario_filter || 'all' }}"
+          REPORT_DIR="reports/ci-${{ matrix.config.name }}-$(date +%Y%m%d-%H%M%S)"
+          mkdir -p "${REPORT_DIR}"
+
+          # Collect scenario files
+          SCENARIO_DIRS=""
+          case "${FILTER}" in
+            all)     SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/cpu-memory scenarios/polygon-chain/filesystem" ;;
+            *)       SCENARIO_DIRS="scenarios/polygon-chain/${FILTER}" ;;
+          esac
+
+          PASSED=0
+          FAILED=0
+          ERRORS=0
+
+          for dir in ${SCENARIO_DIRS}; do
+            [[ -d "${dir}" ]] || continue
+            for scenario in "${dir}"/*.yaml; do
+              name=$(basename "${scenario}" .yaml)
+              echo "::group::${name}"
+              echo "Running scenario: ${name}"
+
+              EXIT_CODE=0
+              ./bin/chaos-runner run \
+                --scenario "${scenario}" \
+                --enclave ${{ env.ENCLAVE_NAME }} \
+                --set "ENCLAVE_NAME=${{ env.ENCLAVE_NAME }}" \
+                --format text 2>&1 | tee "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
+
+              if [[ ${EXIT_CODE} -eq 0 ]]; then
+                echo "✅ PASSED: ${name}"
+                echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
+                PASSED=$((PASSED + 1))
+              elif [[ ${EXIT_CODE} -eq 1 ]]; then
+                echo "::warning::FAILED: ${name}"
+                echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
+                FAILED=$((FAILED + 1))
+              else
+                echo "::error::ERROR: ${name} (exit: ${EXIT_CODE})"
+                echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
+                ERRORS=$((ERRORS + 1))
+              fi
+              echo "::endgroup::"
+            done
+          done
+
+          TOTAL=$((PASSED + FAILED + ERRORS))
+          echo ""
+          echo "═══════════════════════════════════════"
+          echo "  RESULTS: ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${ERRORS} errors"
+          echo "═══════════════════════════════════════"
+          echo ""
+          echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
+
+          if [[ "${FAILED}" -gt 0 || "${ERRORS}" -gt 0 ]]; then
+            echo "::error::${FAILED} scenarios failed, ${ERRORS} errors"
+            cat "${REPORT_DIR}/results.txt"
+            exit 1
+          fi
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-reports-${{ matrix.config.name }}
+          path: reports/
+
+      - name: Cleanup enclave
+        if: always()
+        run: |
+          kurtosis enclave stop ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
+          kurtosis enclave rm ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
