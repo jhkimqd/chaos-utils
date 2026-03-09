@@ -16,6 +16,13 @@ type PolygonPoSSLI struct {
 	HeimdallPeerCount           string
 	HeimdallValidatorPower      string
 
+	// Block timing & span rotation metrics
+	BlockIntervalAvg       string
+	SpanAPICallSuccessRate string
+
+	// Bor-side span request metrics
+	BorSpanRequestSuccessRate string
+
 	// L1 Integration metrics
 	L1RPCLatency        string
 	L1CheckpointSuccess string
@@ -43,6 +50,13 @@ func DefaultPolygonPosSLI() PolygonPoSSLI {
 		HeimdallCheckpointLatency:   "histogram_quantile(0.95, rate(heimdall_checkpoint_duration_seconds_bucket[5m]))",
 		HeimdallPeerCount:           "heimdall_p2p_peers",
 		HeimdallValidatorPower:      "heimdall_validator_voting_power",
+
+		// Block timing & span rotation
+		BlockIntervalAvg:       "rate(cometbft_consensus_block_interval_seconds_sum[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count[2m]), 0.001)",
+		SpanAPICallSuccessRate: "(sum(rate(heimdallv2_bor_api_calls_success_total[5m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[5m])), 0.001)) or vector(1)",
+
+		// Bor-side span requests
+		BorSpanRequestSuccessRate: "(sum(rate(client_requests_span_valid[5m])) / clamp_min(sum(rate(client_requests_span_valid[5m])) + sum(rate(client_requests_span_invalid[5m])), 0.001)) or vector(1)",
 
 		// L1 Integration
 		L1RPCLatency:        "histogram_quantile(0.95, rate(l1_rpc_duration_seconds_bucket[5m]))",
@@ -133,6 +147,75 @@ func GetAllMetrics() []MetricDefinition {
 			Description: "Validator voting power",
 			Type:        "gauge",
 			Labels:      []string{"service", "validator"},
+		},
+
+		// Block timing metrics (slow block detection)
+		{
+			Name:        "cometbft_consensus_block_interval_seconds_sum",
+			Query:       "cometbft_consensus_block_interval_seconds_sum",
+			Description: "Sum of block interval durations — used with _count to compute average block time",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "cometbft_consensus_block_interval_seconds_count",
+			Query:       "cometbft_consensus_block_interval_seconds_count",
+			Description: "Count of block intervals — used with _sum to compute average block time",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+
+		// Span rotation metrics
+		{
+			Name:        "heimdallv2_bor_api_calls_total",
+			Query:       "heimdallv2_bor_api_calls_total",
+			Description: "Total Bor API calls to Heimdall (span/milestone queries)",
+			Type:        "counter",
+			Labels:      []string{"service", "endpoint"},
+		},
+		{
+			Name:        "heimdallv2_bor_api_calls_success_total",
+			Query:       "heimdallv2_bor_api_calls_success_total",
+			Description: "Successful Bor API calls to Heimdall — low success rate indicates span rotation failures",
+			Type:        "counter",
+			Labels:      []string{"service", "endpoint"},
+		},
+
+		// Bor-side span request metrics
+		{
+			Name:        "client_requests_span_valid",
+			Query:       "client_requests_span_valid",
+			Description: "Successful Bor span fetch requests to Heimdall",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "client_requests_span_invalid",
+			Query:       "client_requests_span_invalid",
+			Description: "Failed Bor span fetch requests to Heimdall — indicates span rotation failures",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "client_requests_span_duration",
+			Query:       "client_requests_span_duration",
+			Description: "Duration of Bor span fetch requests to Heimdall",
+			Type:        "histogram",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "client_requests_latestspan_valid",
+			Query:       "client_requests_latestspan_valid",
+			Description: "Successful Bor latest-span fetch requests to Heimdall",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "client_requests_latestspan_invalid",
+			Query:       "client_requests_latestspan_invalid",
+			Description: "Failed Bor latest-span fetch requests to Heimdall — indicates span rotation failures",
+			Type:        "counter",
+			Labels:      []string{"service"},
 		},
 
 		// RabbitMQ metrics
