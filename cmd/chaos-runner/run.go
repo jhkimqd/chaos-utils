@@ -136,6 +136,15 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create orchestrator: %w", err)
 	}
 
+	// Auto-discover Heimdall API endpoint from Kurtosis
+	fmt.Println("Attempting Heimdall API auto-discovery from Kurtosis...")
+	if heimdallURL, discoverErr := config.DiscoverHeimdallEndpoint(cfg.Kurtosis.EnclaveName); discoverErr == nil {
+		fmt.Printf("Discovered Heimdall API endpoint: %s\n", heimdallURL)
+		orch.SetHeimdallAPI(heimdallURL)
+	} else {
+		fmt.Printf("Heimdall API auto-discovery failed (exclude_producer won't work): %v\n", discoverErr)
+	}
+
 	// Create progress reporter
 	progressReporter := reporting.NewProgressReporter(
 		reporting.OutputFormat(outputFormat),

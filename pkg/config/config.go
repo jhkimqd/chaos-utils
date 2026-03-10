@@ -160,6 +160,45 @@ func DiscoverPrometheusEndpoint(enclaveName string) (string, error) {
 	return "", fmt.Errorf("failed to discover Prometheus endpoint (tried: %v)", serviceNames)
 }
 
+// DiscoverHeimdallEndpoint attempts to discover a Heimdall API endpoint from Kurtosis enclave
+func DiscoverHeimdallEndpoint(enclaveName string) (string, error) {
+	if enclaveName == "" {
+		return "", fmt.Errorf("enclave name is empty")
+	}
+
+	// Try multiple Heimdall service name patterns
+	serviceNames := []string{
+		"l2-cl-1-heimdall-v2-bor-validator",
+		"l2-cl-2-heimdall-v2-bor-validator",
+	}
+
+	var lastErr error
+	for _, serviceName := range serviceNames {
+		cmd := exec.Command("kurtosis", "port", "print", enclaveName, serviceName, "http")
+		output, err := cmd.Output()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		endpoint := strings.TrimSpace(string(output))
+		if endpoint == "" {
+			continue
+		}
+
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			continue
+		}
+
+		return endpoint, nil
+	}
+
+	if lastErr != nil {
+		return "", fmt.Errorf("failed to discover Heimdall endpoint (tried: %v): %w", serviceNames, lastErr)
+	}
+	return "", fmt.Errorf("failed to discover Heimdall endpoint (tried: %v)", serviceNames)
+}
+
 // Load loads configuration from a YAML file
 func Load(path string) (*Config, error) {
 	// Start with defaults

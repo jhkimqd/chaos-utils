@@ -362,6 +362,11 @@ func (v *Validator) validateSuccessCriteria(s *scenario.Scenario) {
 			if criterion.URL == "" {
 				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].url is required for health_check type", i))
 			}
+
+		case "log":
+			if criterion.Pattern == "" {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].pattern is required for log type", i))
+			}
 		}
 	}
 }
