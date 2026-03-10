@@ -45,6 +45,7 @@ spec:
       description: 16kbit bandwidth on Heimdall — gossip write buffers accumulate on peers
       target: throttled_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 16
@@ -55,6 +56,7 @@ spec:
       description: 16kbit bandwidth on Bor — tx propagation backs up
       target: throttled_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 16
@@ -67,6 +69,7 @@ spec:
       description: 1kbit bandwidth on Heimdall — near-complete gossip stall
       target: throttled_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 1
@@ -79,6 +82,7 @@ spec:
       description: 1kbit bandwidth on Bor — near-complete tx propagation stall
       target: throttled_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 1

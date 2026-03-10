@@ -30,6 +30,7 @@ spec:
       description: 32 Kbps bandwidth (slower than dial-up, increased stress from 56 Kbps)
       target: throttled_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 32        # 32 Kbps - slower than dial-up modem!
@@ -39,6 +40,7 @@ spec:
       description: 32 Kbps bandwidth on Bor (increased stress from 56 Kbps)
       target: throttled_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 32        # 32 Kbps - severe throttle!

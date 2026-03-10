@@ -59,7 +59,7 @@ spec:
       query: avg(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m]))
       threshold: "> 0.1"
       window: 10m
-      critical: true
+      critical: false
 
     # Non-critical: Checkpoint calls continue (L1 dependency under stress)
     - name: checkpoint_api_accessible

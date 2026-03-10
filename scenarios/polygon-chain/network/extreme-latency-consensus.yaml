@@ -24,6 +24,7 @@ spec:
       description: 3 second latency on consensus ports - extreme timeout stress
       target: slow_validator
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 3000        # 3 seconds! (increased from 2s)

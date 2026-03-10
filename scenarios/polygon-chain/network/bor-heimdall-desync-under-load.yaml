@@ -46,6 +46,7 @@ spec:
       description: 100% packet loss on Bor→Heimdall REST (port 1317) — Bor loses span/checkpoint source
       target: victim_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         packet_loss: 100
@@ -59,6 +60,7 @@ spec:
       description: 400ms latency on Heimdall P2P — votes arrive late, compounding Bor desync
       target: victim_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 400
@@ -73,6 +75,7 @@ spec:
       description: 32kbit bandwidth on Bor P2P — block gossip backs up, may trigger sync that needs Heimdall
       target: victim_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 32

@@ -30,6 +30,7 @@ spec:
       description: Limit Heimdall bandwidth to 1 Mbps
       target: throttled_validator_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 1000  # 1 Mbps in kbps
@@ -39,6 +40,7 @@ spec:
       description: Limit Bor bandwidth to 1 Mbps
       target: throttled_validator_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 1000  # 1 Mbps in kbps

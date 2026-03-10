@@ -31,6 +31,7 @@ spec:
       description: Add 100ms latency to Heimdall
       target: degraded_validator_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 100
@@ -42,6 +43,7 @@ spec:
       description: Add 100ms latency to Bor
       target: degraded_validator_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 100
@@ -53,6 +55,7 @@ spec:
       description: Increase latency to 300ms and add 5% packet loss on Heimdall
       target: degraded_validator_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 300
@@ -66,6 +69,7 @@ spec:
       description: Increase latency to 300ms and add 5% packet loss on Bor
       target: degraded_validator_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 300
@@ -79,6 +83,7 @@ spec:
       description: Increase to 500ms latency and 10% packet loss on Heimdall
       target: degraded_validator_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 500
@@ -92,6 +97,7 @@ spec:
       description: Increase to 500ms latency and 10% packet loss on Bor
       target: degraded_validator_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 500

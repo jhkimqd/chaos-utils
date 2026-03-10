@@ -42,6 +42,7 @@ spec:
       description: 1kbit bandwidth + 2000ms latency on Heimdall — TCP stays alive but cannot drain
       target: zombie_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 1
@@ -53,6 +54,7 @@ spec:
       description: 1kbit bandwidth + 2000ms latency on Bor — execution layer write buffers accumulate
       target: zombie_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         bandwidth: 1
