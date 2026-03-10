@@ -32,6 +32,7 @@ spec:
       description: 200ms latency on all consensus traffic (simulates CPU contention)
       target: slow_validator_consensus
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 200
@@ -42,6 +43,7 @@ spec:
       description: 200ms latency on all execution traffic
       target: slow_validator_execution
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 200
@@ -53,6 +55,7 @@ spec:
       description: 500ms latency (simulates severe CPU exhaustion)
       target: slow_validator_consensus
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 500
@@ -64,6 +67,7 @@ spec:
       description: 500ms latency (simulates severe resource exhaustion)
       target: slow_validator_execution
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 500

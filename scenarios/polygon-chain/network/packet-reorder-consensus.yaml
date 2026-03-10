@@ -24,6 +24,7 @@ spec:
       description: Extreme packet reordering (85%) to stress BFT tolerance
       target: validator1_consensus
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 150        # 150ms base delay (increased from 100ms)

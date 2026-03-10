@@ -32,6 +32,7 @@ spec:
       description: Complete network isolation of validator 1 Heimdall
       target: isolated_validator_heimdall
       type: network
+      exclude_producer: true
       params:
         device: eth0
         packet_loss: 100
@@ -41,6 +42,7 @@ spec:
       description: Complete network isolation of validator 1 Bor
       target: isolated_validator_bor
       type: network
+      exclude_producer: true
       params:
         device: eth0
         packet_loss: 100

@@ -24,6 +24,7 @@ spec:
       description: Extreme packet reordering (95%) with 250ms latency - maximum chaos
       target: validator1_consensus
       type: network
+      exclude_producer: true
       params:
         device: eth0
         latency: 250        # 250ms delay (increased from 200ms)

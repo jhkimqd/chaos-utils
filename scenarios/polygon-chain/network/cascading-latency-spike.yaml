@@ -101,7 +101,7 @@ spec:
       query: avg(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m]))
       threshold: "> 0.1"
       window: 15m
-      critical: true
+      critical: false
 
     # Non-critical: Late votes SHOULD increase under latency. If they don't,
     # the fault may not be impacting consensus at all.

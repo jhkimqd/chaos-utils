@@ -30,6 +30,7 @@ spec:
       description: 10% probability of dropping new TCP connections on consensus ports
       target: validator2_consensus
       type: connection_drop
+      exclude_producer: true
       params:
         rule_type: drop
         target_ports: "26656,26657"
@@ -41,6 +42,7 @@ spec:
       description: 10% probability of dropping new connections on execution P2P
       target: validator2_execution
       type: connection_drop
+      exclude_producer: true
       params:
         rule_type: drop
         target_ports: "30303,30304"
