@@ -116,43 +116,25 @@ func (iw *IptablesWrapper) buildIptablesCommands(params ConnectionDropParams) ([
 	// Split ports
 	ports := strings.Split(params.TargetPorts, ",")
 
-	// Build rules for each protocol and port
+	// Build rules for each protocol and port.
+	// We add both --dport and --sport rules because P2P connections can be
+	// initiated from either side. If this node initiated the connection (using a
+	// random source port to connect to the remote's 30303), incoming responses
+	// arrive with sport=30303 but a random dport — so --dport alone misses them.
 	for _, proto := range protocols {
 		proto = strings.TrimSpace(proto)
 		for _, port := range ports {
 			port = strings.TrimSpace(port)
 
-			// Build base rule
-			rule := []string{"iptables", "-A", "CHAOS_DROP", "-p", proto}
+			// Match destination port (catches connections accepted on this port)
+			dportRule := iw.buildDropRule(proto, "--dport", port, params)
+			cmds = append(cmds, dportRule)
 
-			// Add port
+			// Match source port (catches return traffic from connections this node initiated)
 			if port != "" {
-				rule = append(rule, "--dport", port)
+				sportRule := iw.buildDropRule(proto, "--sport", port, params)
+				cmds = append(cmds, sportRule)
 			}
-
-			// Add probability
-			if params.Probability > 0 {
-				rule = append(rule,
-					"-m", "statistic",
-					"--mode", "random",
-					"--probability", fmt.Sprintf("%.4f", params.Probability),
-				)
-			}
-
-			// Add action
-			action := "DROP"
-			if params.RuleType == "reject" {
-				action = "REJECT"
-				if proto == "tcp" {
-					rule = append(rule, "-j", action, "--reject-with", "tcp-reset")
-				} else {
-					rule = append(rule, "-j", action, "--reject-with", "icmp-port-unreachable")
-				}
-			} else {
-				rule = append(rule, "-j", action)
-			}
-
-			cmds = append(cmds, rule)
 		}
 	}
 
@@ -163,6 +145,37 @@ func (iw *IptablesWrapper) buildIptablesCommands(params ConnectionDropParams) ([
 	})
 
 	return cmds, nil
+}
+
+// buildDropRule builds a single iptables drop/reject rule
+func (iw *IptablesWrapper) buildDropRule(proto, portFlag, port string, params ConnectionDropParams) []string {
+	rule := []string{"iptables", "-A", "CHAOS_DROP", "-p", proto}
+
+	if port != "" {
+		rule = append(rule, portFlag, port)
+	}
+
+	if params.Probability > 0 {
+		rule = append(rule,
+			"-m", "statistic",
+			"--mode", "random",
+			"--probability", fmt.Sprintf("%.4f", params.Probability),
+		)
+	}
+
+	action := "DROP"
+	if params.RuleType == "reject" {
+		action = "REJECT"
+		if proto == "tcp" {
+			rule = append(rule, "-j", action, "--reject-with", "tcp-reset")
+		} else {
+			rule = append(rule, "-j", action, "--reject-with", "icmp-port-unreachable")
+		}
+	} else {
+		rule = append(rule, "-j", action)
+	}
+
+	return rule
 }
 
 // ValidateConnectionDropParams validates connection drop parameters

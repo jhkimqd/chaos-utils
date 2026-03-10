@@ -143,9 +143,7 @@ func (c *Coordinator) verifySidecarNamespace(ctx context.Context, targetID strin
 
 // cleanViaSidecar removes tc and iptables rules using the sidecar.
 func (c *Coordinator) cleanViaSidecar(ctx context.Context, targetID string) {
-	// Remove comcast rules
-	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"comcast", "--stop"})
-	// Remove tc qdisc
+	// Remove tc qdisc (covers all tc-based faults)
 	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"tc", "qdisc", "del", "dev", "eth0", "root"})
 	// Flush iptables chaos chain if it exists
 	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-F", "chaos_utils"})

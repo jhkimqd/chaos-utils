@@ -541,18 +541,18 @@ func (o *Orchestrator) executePrepare(ctx context.Context) error {
 		}
 
 		if !result.Clean && result.TCRulesFound {
-			fmt.Printf("  Found remnant tc rules on %s, running comcast --stop...\n", target.Name)
+			fmt.Printf("  Found remnant tc rules on %s, clearing...\n", target.Name)
 
-			// Create temporary sidecar to run comcast --stop
+			// Create temporary sidecar to clear tc rules
 			tempSidecarID, err := o.sidecarMgr.CreateSidecar(ctx, target.ContainerID)
 			if err != nil {
 				fmt.Printf("  ⚠ Failed to create temp sidecar for %s: %v\n", target.Name, err)
 				continue
 			}
 
-			// Execute comcast --stop in the sidecar
-			stopCmd := []string{"comcast", "--stop"}
-			_, execErr := o.dockerClient.ExecCommand(ctx, tempSidecarID, stopCmd)
+			// Remove tc rules directly
+			clearCmd := []string{"tc", "qdisc", "del", "dev", "eth0", "root"}
+			_, execErr := o.dockerClient.ExecCommand(ctx, tempSidecarID, clearCmd)
 
 			// Destroy temp sidecar
 			removeOptions := types.ContainerRemoveOptions{
@@ -562,7 +562,7 @@ func (o *Orchestrator) executePrepare(ctx context.Context) error {
 			o.dockerClient.ContainerRemove(ctx, tempSidecarID, removeOptions)
 
 			if execErr != nil {
-				fmt.Printf("  ⚠ Failed to run comcast --stop: %v\n", execErr)
+				fmt.Printf("  ⚠ Failed to clear tc rules: %v\n", execErr)
 			} else {
 				fmt.Printf("  ✓ Cleaned tc rules on %s\n", target.Name)
 			}
@@ -781,6 +781,13 @@ func (o *Orchestrator) verifyFaultsActive(ctx context.Context) error {
 			if strings.Contains(line, "netem") || strings.Contains(line, "tbf") {
 				fmt.Printf("  ✓ %s: %s\n", targetName, line)
 			}
+		}
+
+		// Also show tc filters if any (u32 port filters)
+		filterOutput, _ := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "filter", "show", "dev", "eth0"})
+		if filterOutput != "" && strings.Contains(filterOutput, "u32") {
+			filterCount := strings.Count(filterOutput, "match")
+			fmt.Printf("  ✓ %s: %d u32 port filter(s) active\n", targetName, filterCount)
 		}
 		verified++
 	}

@@ -25,7 +25,6 @@ type Target struct {
 
 // Injector provides unified interface for all fault types
 type Injector struct {
-	networkInjector  *l3l4.ComcastWrapper
 	tcInjector       *l3l4.TCWrapper
 	containerManager *container.Manager
 	stressInjector   *stress.StressWrapper
@@ -38,7 +37,6 @@ type Injector struct {
 // New creates a new unified fault injector
 func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 	return &Injector{
-		networkInjector:  l3l4.New(sidecarMgr),
 		tcInjector:       l3l4.NewTCWrapper(sidecarMgr),
 		containerManager: container.NewManager(dockerClient.GetClient()),
 		stressInjector:   stress.New(dockerClient),
@@ -119,22 +117,9 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		}
 	}
 
-	// If packet reordering is specified, use TC wrapper instead of comcast
-	if params.Reorder > 0 {
-		if params.Latency == 0 {
-			return fmt.Errorf("packet reordering requires latency to be set")
-		}
-		for _, target := range targets {
-			if err := i.tcInjector.InjectPacketReorder(ctx, target.ContainerID, params); err != nil {
-				return fmt.Errorf("failed to inject packet reorder on %s: %w", target.Name, err)
-			}
-		}
-		return nil
-	}
-
-	// Otherwise use comcast for standard network faults
+	// Use tc directly for all network faults (latency, loss, reorder, port filtering)
 	for _, target := range targets {
-		if err := i.networkInjector.InjectFault(ctx, target.ContainerID, params); err != nil {
+		if err := i.tcInjector.InjectFault(ctx, target.ContainerID, params); err != nil {
 			return fmt.Errorf("failed to inject network fault on %s: %w", target.Name, err)
 		}
 	}
@@ -470,8 +455,6 @@ func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault,
 func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerID string) error {
 	switch faultType {
 	case "network":
-		// Try to remove both comcast and tc rules
-		_ = i.networkInjector.RemoveFault(ctx, containerID)
 		_ = i.tcInjector.RemoveFault(ctx, containerID)
 		return nil
 	case "container_restart", "container_kill":
