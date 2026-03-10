@@ -104,6 +104,9 @@ type Fault struct {
 
 	// Delay before injecting this fault
 	Delay time.Duration `yaml:"delay,omitempty"`
+
+	// ExcludeProducer dynamically excludes the current block producer from targets
+	ExcludeProducer bool `yaml:"exclude_producer,omitempty"`
 }
 
 // SuccessCriterion defines a success criterion for the test
@@ -146,6 +149,25 @@ type SuccessCriterion struct {
 	// verifying a partitioned validator has stalled — after faults are
 	// removed the node recovers and the check becomes meaningless.
 	DuringFault bool `yaml:"during_fault,omitempty"`
+
+	// --- Log-based criteria fields (type: "log") ---
+
+	// Pattern is a regex pattern to search for in container logs.
+	Pattern string `yaml:"pattern,omitempty"`
+
+	// TargetLog specifies which target alias's containers to scan.
+	// If empty, all scenario targets are scanned.
+	TargetLog string `yaml:"target_log,omitempty"`
+
+	// ContainerPattern is a glob/substring pattern for discovering containers
+	// to scan by name (e.g., "heimdall-v2-bor-validator"). This allows
+	// scanning containers that are NOT scenario targets. If set, TargetLog
+	// is ignored and containers are discovered via Docker API.
+	ContainerPattern string `yaml:"container_pattern,omitempty"`
+
+	// Absence inverts the check: pass if the pattern is NOT found.
+	// Default false = pass if pattern IS found.
+	Absence bool `yaml:"absence,omitempty"`
 }
 
 // NetworkFaultParams defines parameters for network faults
@@ -172,6 +194,8 @@ func ParseNetworkParams(params map[string]interface{}) NetworkFaultParams {
 	}
 	if v, ok := params["packet_loss"].(float64); ok {
 		nfp.PacketLoss = v
+	} else if v, ok := params["packet_loss"].(int); ok {
+		nfp.PacketLoss = float64(v)
 	} else if v, ok := params["packet_loss"].(string); ok {
 		// Handle "50%" format
 		var pct float64

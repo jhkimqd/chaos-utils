@@ -2,10 +2,14 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,6 +110,7 @@ type Orchestrator struct {
 	validator    *validator.Validator
 	dockerClient *docker.Client
 	promClient   *prometheus.Client
+	heimdallAPI  string
 	detector     *detector.FailureDetector
 	collector    *collector.Collector
 	logCollector *logcollector.Collector
@@ -613,8 +618,21 @@ func (o *Orchestrator) executePreCheck(ctx context.Context) error {
 	if len(o.scenario.Spec.SuccessCriteria) == 0 {
 		return nil
 	}
-	if o.detector == nil || o.promClient == nil {
-		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
+	if o.detector == nil {
+		return fmt.Errorf("detector is not configured but success criteria are defined — cannot validate experiment")
+	}
+
+	// Wire up log context for log-based criteria
+	if o.dockerClient != nil {
+		var logTargets []detector.LogTarget
+		for _, t := range o.targets {
+			logTargets = append(logTargets, detector.LogTarget{
+				Alias:       t.Alias,
+				ContainerID: t.ContainerID,
+				Name:        t.Name,
+			})
+		}
+		o.detector.SetLogContext(o.dockerClient, logTargets, o.startTime)
 	}
 
 	// Collect only critical criteria that verify steady-state health.
@@ -691,6 +709,41 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 			continue
 		}
 		jobs = append(jobs, faultJob{index: i, fault: fault, targets: targets})
+	}
+
+	// Exclude current block producer from jobs that request it.
+	for i, job := range jobs {
+		if !job.fault.ExcludeProducer {
+			continue
+		}
+		producerName, err := o.resolveCurrentProducer(ctx)
+		if err != nil {
+			fmt.Printf("  ⚠ Could not resolve current producer for fault %q: %v\n", job.fault.Phase, err)
+			continue
+		}
+		var filtered []TargetInfo
+		for _, t := range job.targets {
+			if t.Name == producerName {
+				fmt.Printf("  ⊘ Excluding current block producer %s from fault %q\n", producerName, job.fault.Phase)
+			} else {
+				filtered = append(filtered, t)
+			}
+		}
+		if len(filtered) == 0 {
+			fmt.Printf("  ⚠ No targets remain after excluding producer for fault %q — skipping\n", job.fault.Phase)
+		}
+		jobs[i].targets = filtered
+	}
+
+	// Remove jobs with no targets after producer exclusion.
+	{
+		var remaining []faultJob
+		for _, job := range jobs {
+			if len(job.targets) > 0 {
+				remaining = append(remaining, job)
+			}
+		}
+		jobs = remaining
 	}
 
 	// injectResult carries the outcome of one goroutine.
@@ -883,8 +936,25 @@ func (o *Orchestrator) evaluateDuringFaultCriteria(ctx context.Context) error {
 		return nil
 	}
 
-	if o.detector == nil || o.promClient == nil {
-		return fmt.Errorf("Prometheus is not configured but during_fault criteria are defined — cannot validate")
+	if o.detector == nil {
+		return fmt.Errorf("detector is not configured but during_fault criteria are defined — cannot validate")
+	}
+
+	// Wire up log context for log-based criteria
+	if o.dockerClient != nil {
+		var logTargets []detector.LogTarget
+		for _, t := range o.targets {
+			logTargets = append(logTargets, detector.LogTarget{
+				Alias:       t.Alias,
+				ContainerID: t.ContainerID,
+				Name:        t.Name,
+			})
+		}
+		since := o.injectTime
+		if since.IsZero() {
+			since = o.startTime
+		}
+		o.detector.SetLogContext(o.dockerClient, logTargets, since)
 	}
 
 	fmt.Printf("\nEvaluating during-fault criteria (%d) while faults are active...\n", len(duringFault))
@@ -943,8 +1013,33 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 		return nil
 	}
 
-	if o.detector == nil || o.promClient == nil {
-		return fmt.Errorf("Prometheus is not configured but success criteria are defined — cannot validate experiment")
+	// Check if any criteria need prometheus
+	hasPromCriteria := false
+	for _, c := range o.scenario.Spec.SuccessCriteria {
+		if c.Type == "prometheus" {
+			hasPromCriteria = true
+			break
+		}
+	}
+	if hasPromCriteria && (o.detector == nil || o.promClient == nil) {
+		return fmt.Errorf("Prometheus is not configured but prometheus criteria are defined — cannot validate experiment")
+	}
+
+	// Wire up log context for log-based criteria
+	if o.detector != nil && o.dockerClient != nil {
+		var logTargets []detector.LogTarget
+		for _, t := range o.targets {
+			logTargets = append(logTargets, detector.LogTarget{
+				Alias:       t.Alias,
+				ContainerID: t.ContainerID,
+				Name:        t.Name,
+			})
+		}
+		since := o.injectTime
+		if since.IsZero() {
+			since = o.startTime
+		}
+		o.detector.SetLogContext(o.dockerClient, logTargets, since)
 	}
 
 	// Evaluate each criterion
@@ -1214,6 +1309,74 @@ func (o *Orchestrator) preFlightCleanup(ctx context.Context) error {
 }
 
 // GetCleanupSummary returns the cleanup summary from the coordinator
+// SetHeimdallAPI sets the Heimdall API endpoint URL for producer discovery.
+func (o *Orchestrator) SetHeimdallAPI(url string) {
+	o.heimdallAPI = url
+}
+
+// resolveCurrentProducer queries the Heimdall API for the current block producer
+// and returns the container name that should be excluded from fault injection.
+func (o *Orchestrator) resolveCurrentProducer(ctx context.Context) (string, error) {
+	if o.heimdallAPI == "" {
+		return "", fmt.Errorf("heimdall API endpoint not configured")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	url := strings.TrimRight(o.heimdallAPI, "/") + "/bor/spans/latest"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s returned status %d: %s", url, resp.StatusCode, string(body))
+	}
+
+	// Parse JSON: {"span": {"selected_producers": [{"val_id": "2", ...}]}}
+	var result struct {
+		Span struct {
+			SelectedProducers []struct {
+				ValID string `json:"val_id"`
+			} `json:"selected_producers"`
+		} `json:"span"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("parse JSON: %w", err)
+	}
+
+	if len(result.Span.SelectedProducers) == 0 {
+		return "", fmt.Errorf("no selected producers in span response")
+	}
+
+	valIDStr := result.Span.SelectedProducers[0].ValID
+	valID, err := strconv.Atoi(valIDStr)
+	if err != nil {
+		return "", fmt.Errorf("parse val_id %q: %w", valIDStr, err)
+	}
+
+	pattern := fmt.Sprintf("l2-el-%d-bor", valID)
+
+	for _, t := range o.targets {
+		if strings.Contains(t.Name, pattern) {
+			return t.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no target container matching pattern %q found", pattern)
+}
+
 func (o *Orchestrator) GetCleanupSummary() cleanup.CleanupSummary {
 	return o.cleanupCoord.GetSummary()
 }

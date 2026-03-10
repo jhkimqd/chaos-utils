@@ -4,18 +4,32 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	dockertypes "github.com/docker/docker/api/types"
+
+	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 	"github.com/jihwankim/chaos-utils/pkg/monitoring/prometheus"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
 )
 
+// LogTarget holds the container info needed for log-based criteria.
+type LogTarget struct {
+	Alias       string
+	ContainerID string
+	Name        string
+}
+
 // FailureDetector evaluates success criteria during chaos tests
 type FailureDetector struct {
-	promClient *prometheus.Client
-	results    map[string]*CriterionResult
+	promClient   *prometheus.Client
+	dockerClient *docker.Client
+	logTargets   []LogTarget
+	logSince     time.Time
+	results      map[string]*CriterionResult
 }
 
 // CriterionResult represents the evaluation result of a success criterion
@@ -35,6 +49,13 @@ func New(promClient *prometheus.Client) *FailureDetector {
 		promClient: promClient,
 		results:    make(map[string]*CriterionResult),
 	}
+}
+
+// SetLogContext configures the detector for log-based criteria evaluation.
+func (fd *FailureDetector) SetLogContext(dockerClient *docker.Client, targets []LogTarget, since time.Time) {
+	fd.dockerClient = dockerClient
+	fd.logTargets = targets
+	fd.logSince = since
 }
 
 // Evaluate evaluates a single success criterion
@@ -61,6 +82,9 @@ func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.Succ
 
 	case "health_check":
 		return fd.evaluateHealthCheck(ctx, criterion, result)
+
+	case "log":
+		return fd.evaluateLog(ctx, criterion, result)
 
 	default:
 		result.Passed = false
@@ -125,6 +149,163 @@ func (fd *FailureDetector) evaluateHealthCheck(ctx context.Context, criterion sc
 	result.Passed = false
 	result.Message = "health check not yet implemented"
 	return result, fmt.Errorf("health check not yet implemented")
+}
+
+// evaluateLog evaluates a log-pattern-based criterion by scanning container logs.
+func (fd *FailureDetector) evaluateLog(ctx context.Context, criterion scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
+	if fd.dockerClient == nil {
+		result.Passed = false
+		result.Message = "docker client not configured for log criteria"
+		result.Failures++
+		return result, fmt.Errorf("docker client not configured for log criteria")
+	}
+
+	if criterion.Pattern == "" {
+		result.Passed = false
+		result.Message = "pattern is required for log criteria"
+		result.Failures++
+		return result, fmt.Errorf("pattern is required for log criteria")
+	}
+
+	re, err := regexp.Compile(criterion.Pattern)
+	if err != nil {
+		result.Passed = false
+		result.Message = fmt.Sprintf("invalid pattern: %v", err)
+		result.Failures++
+		return result, fmt.Errorf("invalid log pattern %q: %w", criterion.Pattern, err)
+	}
+
+	// Determine which containers to scan
+	var targets []LogTarget
+
+	if criterion.ContainerPattern != "" {
+		// Discover containers by name pattern via Docker API
+		discovered, err := fd.discoverContainersByPattern(ctx, criterion.ContainerPattern)
+		if err != nil {
+			fmt.Printf("    [log] warning: container discovery failed: %v\n", err)
+		}
+		targets = discovered
+	} else if criterion.TargetLog != "" {
+		for _, t := range fd.logTargets {
+			if t.Alias == criterion.TargetLog || t.Name == criterion.TargetLog {
+				targets = append(targets, t)
+			}
+		}
+	} else {
+		targets = fd.logTargets
+	}
+
+	if len(targets) == 0 {
+		result.Passed = false
+		result.Message = "no targets available for log scanning"
+		result.Failures++
+		return result, nil
+	}
+
+	// Scan logs from each target
+	totalMatches := 0
+	var matchExamples []string
+
+	for _, target := range targets {
+		tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		lines, err := fd.dockerClient.ContainerLogs(tctx, target.ContainerID, 5000, fd.logSince)
+		cancel()
+		if err != nil {
+			fmt.Printf("    [log] warning: failed to fetch logs from %s: %v\n", target.Name, err)
+			continue
+		}
+
+		for _, line := range lines {
+			if re.MatchString(line) {
+				totalMatches++
+				if len(matchExamples) < 3 {
+					// Truncate long lines for display
+					display := line
+					if len(display) > 200 {
+						display = display[:200] + "..."
+					}
+					matchExamples = append(matchExamples, fmt.Sprintf("[%s] %s", target.Name, display))
+				}
+			}
+		}
+	}
+
+	result.LastValue = float64(totalMatches)
+
+	if criterion.Threshold != "" {
+		// Count threshold mode: evaluate match count against threshold
+		passed, err := fd.evaluateThreshold(float64(totalMatches), criterion.Threshold)
+		if err != nil {
+			result.Passed = false
+			result.Message = fmt.Sprintf("threshold evaluation failed: %v", err)
+			result.Failures++
+			return result, err
+		}
+		result.Passed = passed
+		if passed {
+			result.Message = fmt.Sprintf("pattern %q matched %d times, meets threshold %s", criterion.Pattern, totalMatches, criterion.Threshold)
+		} else {
+			result.Message = fmt.Sprintf("pattern %q matched %d times, does not meet threshold %s", criterion.Pattern, totalMatches, criterion.Threshold)
+			result.Failures++
+			for _, ex := range matchExamples {
+				fmt.Printf("      match: %s\n", ex)
+			}
+		}
+	} else if criterion.Absence {
+		// Pass if pattern NOT found
+		result.Passed = totalMatches == 0
+		if result.Passed {
+			result.Message = fmt.Sprintf("pattern %q not found in logs (expected absence)", criterion.Pattern)
+		} else {
+			result.Message = fmt.Sprintf("pattern %q found %d times in logs (expected absence)", criterion.Pattern, totalMatches)
+			result.Failures++
+			for _, ex := range matchExamples {
+				fmt.Printf("      match: %s\n", ex)
+			}
+		}
+	} else {
+		// Pass if pattern IS found
+		result.Passed = totalMatches > 0
+		if result.Passed {
+			result.Message = fmt.Sprintf("pattern %q found %d times in logs", criterion.Pattern, totalMatches)
+			for _, ex := range matchExamples {
+				fmt.Printf("      match: %s\n", ex)
+			}
+		} else {
+			result.Message = fmt.Sprintf("pattern %q not found in logs", criterion.Pattern)
+			result.Failures++
+		}
+	}
+
+	return result, nil
+}
+
+// discoverContainersByPattern finds running containers whose name contains the pattern.
+func (fd *FailureDetector) discoverContainersByPattern(ctx context.Context, pattern string) ([]LogTarget, error) {
+	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	containers, err := fd.dockerClient.ContainerList(tctx, dockertypes.ContainerListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var targets []LogTarget
+	for _, c := range containers {
+		for _, name := range c.Names {
+			name = strings.TrimPrefix(name, "/")
+			if strings.Contains(name, pattern) {
+				targets = append(targets, LogTarget{
+					ContainerID: c.ID,
+					Name:        name,
+				})
+				break
+			}
+		}
+	}
+
+	fmt.Printf("    [log] discovered %d containers matching %q\n", len(targets), pattern)
+	return targets, nil
 }
 
 // evaluateThreshold parses and evaluates a threshold expression
