@@ -1,0 +1,152 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-producer-inclusive-p2p-delay
+  description: >
+    Every other network scenario uses exclude_producer: true — this one does NOT.
+    Faults 4 of 8 validators' Bor P2P with 8s latency. With random producer
+    selection across sprints (16 blocks, ~32s each), there is a ~50% chance each
+    sprint that the current block producer is faulted. When it is, produced blocks
+    arrive 8s late at peers.
+    The span rotation mechanism (heimdall-v2/app/abci.go:847) checks whether
+    Heimdall has gone more than 10 blocks (~20-30s) without a new milestone.
+    Milestones require Bor blocks to propagate and be observed by Heimdall
+    validators. If the producer's blocks arrive 8s late, milestones are delayed.
+    With 2s Bor block period, 8s delay means ~4 blocks accumulate before peers
+    see any — this may push the milestone gap past the 10-block Heimdall threshold
+    and trigger span rotation even though blocks ARE being produced.
+    This is the most realistic production scenario: the producer itself has
+    network issues, not just non-producers.
+  tags: [network, bor, p2p, producer, latency, span-rotation, milestone, realistic]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  faults:
+    # NO exclude_producer — the producer WILL be faulted ~50% of sprints
+    - phase: producer_inclusive_delay_1
+      description: 8s Bor P2P latency — producer NOT excluded
+      target: bor_1
+      type: network
+      params:
+        latency: 8000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: producer_inclusive_delay_2
+      target: bor_2
+      type: network
+      params:
+        latency: 8000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: producer_inclusive_delay_3
+      target: bor_3
+      type: network
+      params:
+        latency: 8000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: producer_inclusive_delay_4
+      target: bor_4
+      type: network
+      params:
+        latency: 8000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    # ========== PRIMARY: Span rotation detection ==========
+
+    - name: no_span_rotation
+      description: No span rotation despite producer having P2P latency — blocks must propagate within 10-Heimdall-block window
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    # ========== Chain health ==========
+
+    - name: block_production_continues
+      description: Block production never fully stalls
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_progresses
+      description: Heimdall consensus advances (Heimdall ports not faulted)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # ========== Milestone/span indicators ==========
+
+    - name: span_api_success_rate
+      description: Span API healthy
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 5m
+      critical: false
+
+    - name: block_intervals_acceptable
+      description: Block intervals bounded — late producer blocks cause spikes
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 15.0"
+      window: 5m
+      critical: false
+
+    - name: late_votes_bounded
+      description: Late votes bounded
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 50000"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - cometbft_consensus_late_votes
+    - cometbft_p2p_peers
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - up

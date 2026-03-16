@@ -1,0 +1,151 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-p2p-partition-heimdall-healthy
+  description: >
+    Create a layer disconnect: Bor P2P is fully partitioned on 3 validators while
+    their Heimdall consensus stays healthy. Those 3 validators continue voting in
+    Heimdall consensus normally — they appear "online" — but their Bor instances
+    cannot exchange blocks with peers.
+    The span rotation mechanism (heimdall-v2/app/abci.go:847) triggers when
+    Heimdall goes 10 blocks (~20-30s) without a new milestone. Milestones require
+    Bor blocks to propagate and be finalized. If the current block producer is
+    among the 3 partitioned validators (3/8 = 37.5% chance per sprint, ~94% chance
+    over 5 minutes), their blocks are produced but never reach peers. No milestone
+    can be committed for those blocks, and Heimdall will rotate the producer — even
+    though the producer IS producing and IS voting in Heimdall consensus.
+    This tests the critical disconnect between consensus health (Heimdall sees the
+    producer voting) and execution health (Bor blocks not propagating). A robust
+    implementation should detect this layer mismatch without false-positive rotation
+    when the producer is actually healthy on Heimdall.
+  tags: [network, bor, partition, heimdall, layer-disconnect, span-rotation, milestone]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    # Only Bor P2P is faulted — Heimdall ports (26656, 26657, 1317) are NOT touched
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  faults:
+    # 100% packet loss on Bor P2P ONLY — Heimdall is completely healthy
+    # No exclude_producer — we WANT to test what happens when the producer's
+    # Bor P2P is broken but Heimdall is fine
+    - phase: bor_partition_2
+      description: Full Bor P2P partition — Heimdall untouched
+      target: bor_2
+      type: network
+      params:
+        packet_loss: 100
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: bor_partition_3
+      target: bor_3
+      type: network
+      params:
+        packet_loss: 100
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: bor_partition_4
+      target: bor_4
+      type: network
+      params:
+        packet_loss: 100
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    # ========== PRIMARY ==========
+
+    - name: no_span_rotation
+      description: No span rotation — unfaulted producers (5/8) should sustain milestones
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    - name: healthy_validators_produce_blocks
+      description: Unfaulted validators (1,5,6,7,8) continue block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[15678]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: heimdall_consensus_healthy
+      description: All 8 Heimdall instances maintain consensus (Heimdall is NOT faulted)
+      type: prometheus
+      query: min(min_over_time(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # ========== Layer disconnect indicators ==========
+
+    - name: partitioned_bor_stalls
+      description: Partitioned Bor validators (2,3,4) stop advancing chain head — proves Bor P2P is broken
+      type: prometheus
+      query: max(rate(chain_head_block{job=~"l2-el-[234]-bor-heimdall-v2-validator"}[2m]))
+      threshold: "< 0.1"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: partitioned_heimdall_still_voting
+      description: Partitioned validators' Heimdall still advancing — proves layer disconnect
+      type: prometheus
+      query: min(rate(cometbft_consensus_height{job=~"l2-cl-[234]-heimdall-v2-bor-validator"}[2m]))
+      threshold: "> 0"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: block_intervals_acceptable
+      description: Block intervals on healthy validators stay bounded
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 5m
+      critical: false
+
+    - name: span_api_success_rate
+      description: Span API healthy (REST port not faulted)
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - up

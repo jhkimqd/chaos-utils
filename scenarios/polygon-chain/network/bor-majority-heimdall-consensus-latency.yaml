@@ -1,0 +1,179 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-majority-heimdall-consensus-latency
+  description: >
+    Stress Heimdall BFT consensus near the 67% threshold. Adds 1.5s latency to
+    Heimdall P2P (26656) on 5 of 8 validators. BFT requires 6/8 (67%) for quorum.
+    With 3 healthy validators + 5 degraded, consensus rounds need at least 3 of
+    the degraded validators to participate in each round. At 1.5s latency, their
+    votes arrive late — sometimes within the CometBFT timeout, sometimes not.
+    CometBFT's timeout escalation increases the propose/prevote/precommit timeouts
+    after each failed round. This creates a feedback loop: slow rounds → higher
+    timeouts → slower rounds → even higher timeouts. Over several minutes, block
+    time can drift from ~2s to 5-10s+.
+    The span rotation check (heimdall-v2/helper/config.go:701) uses a threshold
+    of 10 Heimdall blocks. If Heimdall block time doubles from 2s to 4s, the
+    10-block window stretches from 20s to 40s — giving Bor more time before
+    rotation. But if block time spikes to 10s+, the 10-block window becomes 100s+,
+    and milestones from an earlier, faster period may still prevent rotation.
+    This tests whether timeout escalation creates edge cases in the rotation logic.
+  tags: [network, heimdall, consensus, bft, timeout, quorum, latency, escalation]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-5-heimdall-v2-bor-validator"
+      alias: heimdall_5
+
+  duration: 8m
+  warmup: 1m
+  cooldown: 1m
+
+  faults:
+    # 1.5s on Heimdall P2P only — Bor P2P is untouched.
+    # At 1.5s, vote delivery is borderline: CometBFT default propose timeout
+    # starts at 3s and grows. 1.5s latency means 3s round-trip, right at the edge.
+    - phase: consensus_latency_1
+      description: 1.5s Heimdall P2P latency — votes arrive at CometBFT timeout boundary
+      target: heimdall_1
+      type: network
+      params:
+        latency: 1500
+        target_ports: "26656"
+        target_proto: tcp
+
+    - phase: consensus_latency_2
+      target: heimdall_2
+      type: network
+      params:
+        latency: 1500
+        target_ports: "26656"
+        target_proto: tcp
+
+    - phase: consensus_latency_3
+      target: heimdall_3
+      type: network
+      params:
+        latency: 1500
+        target_ports: "26656"
+        target_proto: tcp
+
+    - phase: consensus_latency_4
+      target: heimdall_4
+      type: network
+      params:
+        latency: 1500
+        target_ports: "26656"
+        target_proto: tcp
+
+    - phase: consensus_latency_5
+      target: heimdall_5
+      type: network
+      params:
+        latency: 1500
+        target_ports: "26656"
+        target_proto: tcp
+
+  success_criteria:
+    # ========== PRIMARY ==========
+
+    - name: consensus_does_not_halt
+      description: Heimdall consensus must not fully halt — some rounds should still complete
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[3m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: block_production_continues
+      description: Bor block production continues (Bor P2P is not faulted)
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: no_span_rotation
+      description: Slow Heimdall consensus must not trigger span rotation
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    # ========== Timeout escalation indicators ==========
+
+    - name: consensus_round_duration_increases
+      description: Consensus round duration increases — proves timeout escalation is active
+      type: prometheus
+      query: avg(rate(cometbft_consensus_round_duration_seconds_sum{job=~"l2-cl-[678]-heimdall-v2-bor-validator"}[3m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job=~"l2-cl-[678]-heimdall-v2-bor-validator"}[3m]), 0.001))
+      threshold: "> 2.0"
+      window: 8m
+      critical: false
+      during_fault: true
+
+    - name: late_votes_from_degraded_validators
+      description: Degraded validators generate late votes — proves fault effectiveness
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-[1-5]-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "> 1"
+      window: 8m
+      critical: false
+      during_fault: true
+
+    - name: heimdall_block_interval_degrades
+      description: Heimdall block intervals increase from ~2s toward 5-10s
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 15.0"
+      window: 8m
+      critical: false
+
+    - name: span_api_success_rate
+      description: Span API healthy (REST on different port)
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count
+    - cometbft_consensus_rounds
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_duplicate_vote
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up

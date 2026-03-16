@@ -1,0 +1,163 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-heimdall-grpc-retry-storm
+  description: >
+    Exploit Heimdall gRPC client retry behavior to create a retry storm. The
+    Heimdall gRPC client (consensus/bor/heimdallgrpc/client.go:31) has a 30-second
+    per-call timeout and a retry policy of 25 retries with 5-second linear backoff —
+    meaning a single failed span fetch can block for up to 125+ seconds. State sync
+    fetches have a 1-minute total timeout with 30-second page timeouts.
+    This scenario injects packet loss (not full partition) on the Heimdall gRPC port
+    (1317) of 3 validators. At 50% loss, gRPC calls intermittently fail, triggering
+    retries. Unlike bor-heimdall-link-isolation (100% loss, clean failure) or
+    bor-heimdall-link-latency (latency, slow success), this creates the worst case:
+    calls that sometimes succeed, sometimes fail, keeping the retry loop active and
+    creating bursts of retried requests that compete for Heimdall resources.
+    The hypothesis: retry storms from multiple validators simultaneously overwhelm
+    Heimdall's ability to serve span/state-sync data, causing cascading timeouts
+    that propagate back to block production.
+  tags: [network, bor, heimdall, grpc, retry, storm, packet-loss, cascade]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+
+  duration: 8m
+  warmup: 1m
+  cooldown: 1m
+
+  faults:
+    # 50% packet loss on Heimdall REST/gRPC port — intermittent failures
+    # trigger retry loops without clean failure that would let Bor fall back
+    - phase: grpc_packet_loss_2
+      description: 50% packet loss on Heimdall port to trigger gRPC retry storms
+      target: bor_2
+      type: network
+      params:
+        packet_loss: 50
+        target_ports: "1317"
+        target_proto: tcp
+
+    - phase: grpc_packet_loss_3
+      target: bor_3
+      type: network
+      params:
+        packet_loss: 50
+        target_ports: "1317"
+        target_proto: tcp
+
+    - phase: grpc_packet_loss_4
+      target: bor_4
+      type: network
+      params:
+        packet_loss: 50
+        target_ports: "1317"
+        target_proto: tcp
+
+  success_criteria:
+    # ========== PRIMARY: Chain must survive retry storms ==========
+
+    - name: block_production_no_gaps
+      description: Block production never fully stalls — retry storms must not cascade to block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances despite increased load from retries
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: no_span_rotation
+      description: Retry storms must not cause span rotation
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+    # ========== Retry storm indicators ==========
+
+    - name: span_api_degraded_but_functional
+      description: Span API success rate drops but stays above 50% — some retries succeed
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.5"
+      window: 8m
+      critical: false
+      during_fault: true
+
+    - name: span_api_call_volume_increase
+      description: Span API call volume increases — confirms retry behavior is active
+      type: prometheus
+      query: sum(rate(heimdallv2_bor_api_calls_total[2m]))
+      threshold: "> 0"
+      window: 8m
+      critical: false
+      during_fault: true
+
+    - name: bor_span_requests_not_all_invalid
+      description: Bor span fetch not entirely failing — some retries get through
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid[2m])) / clamp_min(sum(rate(client_requests_span_valid[2m])) + sum(rate(client_requests_span_invalid[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.3"
+      window: 8m
+      critical: false
+      during_fault: true
+
+    - name: span_api_recovers_post_fault
+      description: Span API success rate recovers to normal after fault removal
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.9"
+      window: 8m
+      critical: false
+      post_fault_only: true
+
+    - name: block_intervals_acceptable
+      description: Block times stay bounded
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - client_requests_span_duration
+    - client_requests_span_duration_sum
+    - client_requests_span_duration_count
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - cometbft_consensus_late_votes
+    - go_goroutines
+    - up
