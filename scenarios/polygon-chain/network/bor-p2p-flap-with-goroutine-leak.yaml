@@ -1,7 +1,7 @@
 apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
-  name: bor-p2p-flap-wit-goroutine-leak
+  name: bor-p2p-flap-with-goroutine-leak
   description: >
     Induce P2P connection flapping to expose the WIT broadcast goroutine leak.
     In eth/protocols/wit/broadcast.go:8-30, broadcastWitness() exits
