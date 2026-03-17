@@ -14,6 +14,8 @@ import (
 	"github.com/jihwankim/chaos-utils/pkg/injection/process"
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 	"github.com/jihwankim/chaos-utils/pkg/injection/stress"
+	chaoshttp "github.com/jihwankim/chaos-utils/pkg/injection/http"
+	chaostime "github.com/jihwankim/chaos-utils/pkg/injection/time"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
 )
 
@@ -32,6 +34,10 @@ type Injector struct {
 	dnsInjector      *dns.DNSWrapper
 	processInjector  *process.PriorityWrapper
 	diskInjector     *disk.IODelayWrapper
+	diskFillInjector *disk.FillWrapper
+	fileOpsInjector  *disk.FileOpsWrapper
+	clockInjector    *chaostime.ClockSkewWrapper
+	httpInjector     *chaoshttp.HTTPFaultWrapper
 }
 
 // New creates a new unified fault injector
@@ -44,6 +50,10 @@ func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 		dnsInjector:      dns.New(sidecarMgr),
 		processInjector:  process.New(dockerClient),
 		diskInjector:     disk.New(dockerClient),
+		diskFillInjector: disk.NewFillWrapper(dockerClient),
+		fileOpsInjector:  disk.NewFileOpsWrapper(dockerClient),
+		clockInjector:    chaostime.New(dockerClient),
+		httpInjector:     chaoshttp.New(sidecarMgr),
 	}
 }
 
@@ -70,6 +80,18 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 		return i.injectProcessPriority(ctx, fault, targets)
 	case "disk_io":
 		return i.injectDiskIODelay(ctx, fault, targets)
+	case "disk_fill":
+		return i.injectDiskFill(ctx, fault, targets)
+	case "file_delete":
+		return i.injectFileDelete(ctx, fault, targets)
+	case "file_corrupt":
+		return i.injectFileCorrupt(ctx, fault, targets)
+	case "clock_skew":
+		return i.injectClockSkew(ctx, fault, targets)
+	case "process_kill":
+		return i.injectProcessKill(ctx, fault, targets)
+	case "http_fault":
+		return i.injectHTTPFault(ctx, fault, targets)
 	default:
 		return fmt.Errorf("unknown fault type: %s", fault.Type)
 	}
@@ -103,17 +125,21 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		if targetProto, ok := fault.Params["target_proto"].(string); ok {
 			params.TargetProto = targetProto
 		}
-		if targetIPs, ok := fault.Params["target_ips"].(string); ok {
-			params.TargetIPs = targetIPs
-		}
-		if targetCIDR, ok := fault.Params["target_cidr"].(string); ok {
-			params.TargetCIDR = targetCIDR
-		}
 		if reorder, ok := fault.Params["reorder"].(int); ok {
 			params.Reorder = reorder
 		}
 		if reorderCorr, ok := fault.Params["reorder_correlation"].(int); ok {
 			params.ReorderCorrelation = reorderCorr
+		}
+		if corrupt, ok := fault.Params["corrupt"].(float64); ok {
+			params.Corrupt = corrupt
+		} else if corrupt, ok := fault.Params["corrupt"].(int); ok {
+			params.Corrupt = float64(corrupt)
+		}
+		if duplicate, ok := fault.Params["duplicate"].(float64); ok {
+			params.Duplicate = duplicate
+		} else if duplicate, ok := fault.Params["duplicate"].(int); ok {
+			params.Duplicate = float64(duplicate)
 		}
 	}
 
@@ -475,22 +501,247 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 		// For now, just return nil - priority will reset on process restart
 		return nil
 	case "disk_io":
-		// Restore I/O priority to best-effort (class 2) on the container's
-		// main process. No target_path needed — RemoveFault falls back to PID 1
-		// when lsof finds nothing, which is the same fallback used during injection.
+		// Kill background dd processes and clean up stress files
 		return i.diskInjector.RemoveFault(ctx, containerID, disk.IODelayParams{Operation: "all"})
+	case "disk_fill":
+		return i.diskFillInjector.RemoveFault(ctx, containerID)
+	case "file_delete", "file_corrupt":
+		// Restore any .chaos_backup files left by backup_first=true
+		return i.fileOpsInjector.RestoreAllBackups(ctx, containerID)
+	case "clock_skew":
+		return i.clockInjector.RemoveClockSkew(ctx, containerID, chaostime.ClockSkewParams{})
+	case "process_kill":
+		// Process kill is a one-shot action, nothing to remove
+		return nil
+	case "http_fault":
+		return i.httpInjector.RemoveAllFaults(ctx, containerID)
 	default:
 		return fmt.Errorf("unknown fault type for removal: %s", faultType)
 	}
 }
 
-// Cleanup performs emergency cleanup of all faults
-func (i *Injector) Cleanup(ctx context.Context) error {
-	// Cleanup container faults
-	if err := i.containerManager.Cleanup(ctx); err != nil {
-		return fmt.Errorf("failed to cleanup container faults: %w", err)
+// injectDiskFill handles disk fill injection
+func (i *Injector) injectDiskFill(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := disk.FillParams{}
+
+	if fault.Params != nil {
+		if targetPath, ok := fault.Params["target_path"].(string); ok {
+			params.TargetPath = targetPath
+		}
+		if sizeMB, ok := fault.Params["size_mb"].(int); ok {
+			params.SizeMB = sizeMB
+		} else if sizeMB, ok := fault.Params["size_mb"].(float64); ok {
+			params.SizeMB = int(sizeMB)
+		}
+		if fillPercent, ok := fault.Params["fill_percent"].(int); ok {
+			params.FillPercent = fillPercent
+		} else if fillPercent, ok := fault.Params["fill_percent"].(float64); ok {
+			params.FillPercent = int(fillPercent)
+		}
+		if fileName, ok := fault.Params["file_name"].(string); ok {
+			params.FileName = fileName
+		}
 	}
 
-	// Network faults are cleaned up by the orchestrator via sidecar removal
+	if err := disk.ValidateFillParams(params); err != nil {
+		return fmt.Errorf("invalid disk fill parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.diskFillInjector.InjectDiskFill(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject disk fill on %s: %w", target.Name, err)
+		}
+	}
+
 	return nil
 }
+
+// injectFileDelete handles file deletion injection
+func (i *Injector) injectFileDelete(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := disk.FileDeleteParams{}
+
+	if fault.Params != nil {
+		if targetPath, ok := fault.Params["target_path"].(string); ok {
+			params.TargetPath = targetPath
+		}
+		if recursive, ok := fault.Params["recursive"].(bool); ok {
+			params.Recursive = recursive
+		}
+		if backupFirst, ok := fault.Params["backup_first"].(bool); ok {
+			params.BackupFirst = backupFirst
+		}
+	}
+
+	if err := disk.ValidateFileDeleteParams(params); err != nil {
+		return fmt.Errorf("invalid file delete parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.fileOpsInjector.InjectFileDelete(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject file delete on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectFileCorrupt handles file corruption injection
+func (i *Injector) injectFileCorrupt(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := disk.FileCorruptParams{
+		CorruptBytes: 512,
+		Method:       "random",
+	}
+
+	if fault.Params != nil {
+		if targetPath, ok := fault.Params["target_path"].(string); ok {
+			params.TargetPath = targetPath
+		}
+		if corruptBytes, ok := fault.Params["corrupt_bytes"].(int); ok {
+			params.CorruptBytes = corruptBytes
+		}
+		if corruptOffset, ok := fault.Params["corrupt_offset"].(int); ok {
+			params.CorruptOffset = corruptOffset
+		}
+		if method, ok := fault.Params["method"].(string); ok {
+			params.Method = method
+		}
+		if backupFirst, ok := fault.Params["backup_first"].(bool); ok {
+			params.BackupFirst = backupFirst
+		}
+	}
+
+	if err := disk.ValidateFileCorruptParams(params); err != nil {
+		return fmt.Errorf("invalid file corrupt parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.fileOpsInjector.InjectFileCorrupt(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject file corruption on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectClockSkew handles clock skew injection
+func (i *Injector) injectClockSkew(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := chaostime.ClockSkewParams{}
+
+	if fault.Params != nil {
+		if offset, ok := fault.Params["offset"].(string); ok {
+			params.Offset = offset
+		}
+		if disableNTP, ok := fault.Params["disable_ntp"].(bool); ok {
+			params.DisableNTP = disableNTP
+		}
+	}
+
+	if err := chaostime.ValidateClockSkewParams(params); err != nil {
+		return fmt.Errorf("invalid clock skew parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.clockInjector.InjectClockSkew(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject clock skew on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectProcessKill handles process kill injection
+func (i *Injector) injectProcessKill(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := process.KillParams{
+		Signal: "KILL",
+		Count:  1,
+	}
+
+	if fault.Params != nil {
+		if processPattern, ok := fault.Params["process_pattern"].(string); ok {
+			params.ProcessPattern = processPattern
+		}
+		if signal, ok := fault.Params["signal"].(string); ok {
+			params.Signal = signal
+		}
+		if killChildren, ok := fault.Params["kill_children"].(bool); ok {
+			params.KillChildren = killChildren
+		}
+		if interval, ok := fault.Params["interval"].(int); ok {
+			params.Interval = interval
+		}
+		if count, ok := fault.Params["count"].(int); ok {
+			params.Count = count
+		}
+	}
+
+	if err := process.ValidateKillParams(params); err != nil {
+		return fmt.Errorf("invalid process kill parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.processInjector.InjectProcessKill(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject process kill on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// injectHTTPFault handles HTTP fault injection via Envoy proxy
+func (i *Injector) injectHTTPFault(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := chaoshttp.HTTPFaultParams{
+		DelayPercent: 100,
+		AbortPercent: 100,
+	}
+
+	if fault.Params != nil {
+		if targetPort, ok := fault.Params["target_port"].(int); ok {
+			params.TargetPort = targetPort
+		} else if targetPort, ok := fault.Params["target_port"].(float64); ok {
+			params.TargetPort = int(targetPort)
+		}
+		if delayMs, ok := fault.Params["delay_ms"].(int); ok {
+			params.DelayMs = delayMs
+		} else if delayMs, ok := fault.Params["delay_ms"].(float64); ok {
+			params.DelayMs = int(delayMs)
+		}
+		if delayPercent, ok := fault.Params["delay_percent"].(int); ok {
+			params.DelayPercent = delayPercent
+		}
+		if abortCode, ok := fault.Params["abort_code"].(int); ok {
+			params.AbortCode = abortCode
+		} else if abortCode, ok := fault.Params["abort_code"].(float64); ok {
+			params.AbortCode = int(abortCode)
+		}
+		if abortPercent, ok := fault.Params["abort_percent"].(int); ok {
+			params.AbortPercent = abortPercent
+		}
+		if bodyOverride, ok := fault.Params["body_override"].(string); ok {
+			params.BodyOverride = bodyOverride
+		}
+		if pathPattern, ok := fault.Params["path_pattern"].(string); ok {
+			params.PathPattern = pathPattern
+		}
+		if headerOverrides, ok := fault.Params["header_overrides"].(map[string]interface{}); ok {
+			params.HeaderOverrides = make(map[string]string)
+			for k, v := range headerOverrides {
+				if s, ok := v.(string); ok {
+					params.HeaderOverrides[k] = s
+				}
+			}
+		}
+	}
+
+	if err := chaoshttp.ValidateHTTPFaultParams(params); err != nil {
+		return fmt.Errorf("invalid HTTP fault parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.httpInjector.InjectHTTPFault(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject HTTP fault on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+

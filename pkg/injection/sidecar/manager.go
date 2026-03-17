@@ -37,7 +37,6 @@ func (m *Manager) CreateSidecar(ctx context.Context, targetContainerID string) (
 	}
 
 	// Pull sidecar image if needed
-	// TODO: Check pull policy from config
 	fmt.Printf("Ensuring sidecar image is available: %s\n", m.sidecarImage)
 
 	// Create sidecar container with network namespace sharing
@@ -151,19 +150,3 @@ func (m *Manager) ListSidecars() map[string]string {
 	return result
 }
 
-// DestroyAllSidecars removes all sidecars
-func (m *Manager) DestroyAllSidecars(ctx context.Context) error {
-	var errors []error
-
-	for targetID := range m.createdSidecars {
-		if err := m.DestroySidecar(ctx, targetID); err != nil {
-			errors = append(errors, err)
-		}
-	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to destroy some sidecars: %v", errors)
-	}
-
-	return nil
-}

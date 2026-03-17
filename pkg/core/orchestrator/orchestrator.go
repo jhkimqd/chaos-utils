@@ -760,6 +760,18 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+
+			// Honor per-fault delay if specified (e.g., delay: 2m)
+			if job.fault.Delay > 0 {
+				fmt.Printf("  ⏳ %s: waiting %s before injection...\n", job.fault.Phase, job.fault.Delay)
+				select {
+				case <-time.After(job.fault.Delay):
+				case <-ctx.Done():
+					results[i] = injectResult{job: job, err: ctx.Err()}
+					return
+				}
+			}
+
 			injTargets := make([]injection.Target, len(job.targets))
 			for j, t := range job.targets {
 				injTargets[j] = injection.Target{Name: t.Name, ContainerID: t.ContainerID}

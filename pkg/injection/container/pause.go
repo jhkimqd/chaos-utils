@@ -89,39 +89,4 @@ func (pm *PauseManager) UnpauseContainer(ctx context.Context, containerID string
 	return nil
 }
 
-// CleanupAllPaused unpauses all tracked paused containers (for emergency cleanup)
-func (pm *PauseManager) CleanupAllPaused(ctx context.Context) error {
-	pm.mu.Lock()
-	ids := make([]string, 0, len(pm.pausedContainers))
-	for id := range pm.pausedContainers {
-		ids = append(ids, id)
-	}
-	pm.mu.Unlock()
 
-	if len(ids) == 0 {
-		return nil
-	}
-
-	log.Info().Int("count", len(ids)).Msg("Unpausing all paused containers")
-
-	var lastErr error
-	for _, containerID := range ids {
-		if err := pm.UnpauseContainer(ctx, containerID); err != nil {
-			log.Error().Err(err).Str("container", containerID).Msg("Failed to unpause container")
-			lastErr = err
-		}
-	}
-
-	return lastErr
-}
-
-// GetPausedContainers returns the list of currently paused containers
-func (pm *PauseManager) GetPausedContainers() []string {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	containers := make([]string, 0, len(pm.pausedContainers))
-	for containerID := range pm.pausedContainers {
-		containers = append(containers, containerID)
-	}
-	return containers
-}

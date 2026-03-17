@@ -178,8 +178,6 @@ type NetworkFaultParams struct {
 	Bandwidth   int     `yaml:"bandwidth,omitempty"`
 	TargetPorts string  `yaml:"target_ports,omitempty"`
 	TargetProto string  `yaml:"target_proto,omitempty"`
-	TargetIPs   string  `yaml:"target_ips,omitempty"`
-	TargetCIDR  string  `yaml:"target_cidr,omitempty"`
 }
 
 // ParseNetworkParams converts generic params to NetworkFaultParams
@@ -212,13 +210,6 @@ func ParseNetworkParams(params map[string]interface{}) NetworkFaultParams {
 	if v, ok := params["target_proto"].(string); ok {
 		nfp.TargetProto = v
 	}
-	if v, ok := params["target_ips"].(string); ok {
-		nfp.TargetIPs = v
-	}
-	if v, ok := params["target_cidr"].(string); ok {
-		nfp.TargetCIDR = v
-	}
-
 	return nfp
 }
 
