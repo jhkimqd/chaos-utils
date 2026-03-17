@@ -1,0 +1,108 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-rpc-error-injection
+  description: >
+    Inspired by Chaos Mesh HTTPChaos and Gremlin Failure Flags. Uses Envoy
+    proxy to inject HTTP-level faults into Bor's JSON-RPC endpoint (port 8545).
+    Returns HTTP 503 Service Unavailable for 30% of RPC requests on 3 validators.
+    This simulates:
+    - Breaking API changes from an upstream load balancer
+    - Partial service failure where some requests succeed and others fail
+    - Degraded RPC infrastructure that external clients depend on
+    Tests whether applications consuming Bor's RPC (block explorers, indexers,
+    bridges) handle intermittent 503s with proper retry logic. Also tests
+    whether the validators themselves are affected by their own RPC being
+    partially broken (they shouldn't be — RPC is for external consumers).
+  tags: [network, http, rpc, error-injection, partial-failure, chaos-mesh-inspired]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    - phase: rpc_error_bor_2
+      description: 30% HTTP 503 on Bor 2 JSON-RPC
+      target: bor_2
+      type: http_fault
+      params:
+        target_port: 8545
+        abort_code: 503
+        abort_percent: 30
+
+    - phase: rpc_error_bor_4
+      description: 30% HTTP 503 on Bor 4 JSON-RPC
+      target: bor_4
+      type: http_fault
+      params:
+        target_port: 8545
+        abort_code: 503
+        abort_percent: 30
+
+    - phase: rpc_error_bor_6
+      description: 30% HTTP 503 on Bor 6 JSON-RPC
+      target: bor_6
+      type: http_fault
+      params:
+        target_port: 8545
+        abort_code: 503
+        abort_percent: 30
+
+  success_criteria:
+    - name: block_production_unaffected
+      description: Block production must not be affected by RPC errors (RPC is external-facing)
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: validators_stay_online
+      description: RPC error injection must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-el-[246]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      window: 5m
+      critical: true
+
+    - name: peer_connectivity_stable
+      description: P2P connections unaffected by RPC errors
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-[246]-heimdall-v2-bor-validator"})
+      threshold: ">= 3"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

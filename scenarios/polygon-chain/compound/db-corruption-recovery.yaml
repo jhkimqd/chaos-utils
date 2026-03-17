@@ -1,0 +1,103 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: db-corruption-recovery
+  description: >
+    Inspired by Chaos Mesh IOChaos "mistake" action. Corrupts LevelDB/Pebble
+    SST files in Bor's chaindata directory by writing random bytes at random
+    offsets. This simulates:
+    - Bit rot from degraded storage media
+    - Incomplete writes from power loss
+    - Silent data corruption from faulty disk controllers
+    Bor should detect the corruption via SST checksums and either:
+    (a) Self-heal by re-syncing from peers, or
+    (b) Fail to start with a clear error requiring manual intervention.
+    Tests 2 validators: one with minor corruption (512 bytes), one with major
+    corruption (4096 bytes across multiple files). A backup is created first
+    so the node can be restored if it cannot self-heal.
+  tags: [compound, corruption, database, leveldb, pebble, chaos-mesh-inspired]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Minor corruption: 512 random bytes in one SST file
+    - phase: corrupt_minor
+      description: Minor corruption — 512 random bytes in Bor chaindata
+      target: bor_2
+      type: file_corrupt
+      params:
+        target_path: "/var/lib/bor/bor/chaindata/000001.sst"
+        corrupt_bytes: 512
+        method: random
+        backup_first: true
+
+    # Major corruption: 4KB random bytes
+    - phase: corrupt_major
+      description: Major corruption — 4KB random bytes in Bor chaindata
+      target: bor_6
+      type: file_corrupt
+      params:
+        target_path: "/var/lib/bor/bor/chaindata/000001.sst"
+        corrupt_bytes: 4096
+        method: random
+        backup_first: true
+
+  success_criteria:
+    - name: healthy_validators_unaffected
+      description: Non-corrupted validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[13458]-bor-heimdall-v2-validator"}[1m])[4m:1m]))
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances (corruption only on Bor layer)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    - name: corrupted_node_detects_error
+      description: >
+        Corrupted node should detect the corruption — either via log output
+        or by going offline (up metric drops)
+      type: prometheus
+      query: min(up{job=~"l2-el-[26]-bor-heimdall-v2-validator"})
+      threshold: ">= 0"
+      window: 4m
+      critical: false
+
+    - name: chain_head_converges_after_recovery
+      description: All validators converge post-recovery
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 100"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

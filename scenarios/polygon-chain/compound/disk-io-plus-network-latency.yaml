@@ -1,0 +1,207 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: disk-io-plus-network-latency
+  description: >
+    Compound fault: 150ms disk I/O + 3s P2P latency on the SAME 3 validators.
+    Tests the interaction between slow state writes and delayed block arrival.
+    In core/blockchain.go:2506, insertChainWithWitnesses() holds the chainmu
+    lock during block import. Slow disk extends the lock hold time (state
+    trie commits, receipt writes). Combined with 3s P2P latency, blocks arrive
+    late AND take longer to import — the gap compounds multiplicatively.
+    Individually, 150ms disk I/O and 3s P2P latency are each tolerable (proven
+    by existing tests). But together they may exceed the span rotation threshold
+    (10 Heimdall blocks ~20-30s) because:
+    - 3s network delay + 150ms×N disk ops per block import = effective 5-8s per block
+    - Over 10 Heimdall blocks, the cumulative lag exceeds 30s
+    This scenario tests whether individually-safe degradations become dangerous
+    when combined on the same nodes.
+  tags: [compound, disk-io, network, latency, chainmu-lock, block-import]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    # Network latency on Bor P2P
+    - phase: net_latency_2
+      description: 3s Bor P2P latency
+      target: bor_2
+      type: network
+      params:
+        latency: 3000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: net_latency_4
+      target: bor_4
+      type: network
+      params:
+        latency: 3000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: net_latency_6
+      target: bor_6
+      type: network
+      params:
+        latency: 3000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    # Disk I/O latency on same Bor nodes
+    - phase: disk_io_bor_2
+      description: 150ms disk I/O on Bor chaindata
+      target: bor_2
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/var/lib/bor/bor/chaindata"
+        operation: all
+
+    - phase: disk_io_bor_4
+      target: bor_4
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/var/lib/bor/bor/chaindata"
+        operation: all
+
+    - phase: disk_io_bor_6
+      target: bor_6
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/var/lib/bor/bor/chaindata"
+        operation: all
+
+    # Disk I/O latency on matching Heimdall nodes
+    - phase: disk_io_heimdall_2
+      description: 150ms disk I/O on Heimdall data
+      target: heimdall_2
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/etc/heimdall/data"
+        operation: all
+
+    - phase: disk_io_heimdall_4
+      target: heimdall_4
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/etc/heimdall/data"
+        operation: all
+
+    - phase: disk_io_heimdall_6
+      target: heimdall_6
+      type: disk_io
+      params:
+        io_latency_ms: 150
+        target_path: "/etc/heimdall/data"
+        operation: all
+
+  success_criteria:
+    - name: block_production_no_gaps
+      description: Block production never fully stalls under compound fault
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: no_span_rotation
+      description: Compound fault must not trigger span rotation
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+    # Degradation measurement
+    - name: degraded_nodes_sync_rate
+      description: Compound-faulted validators' sync rate — measures multiplicative impact
+      type: prometheus
+      query: avg(rate(chain_head_block{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m]))
+      threshold: "> 0.2"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: healthy_nodes_unaffected
+      description: Non-faulted validators maintain normal sync
+      type: prometheus
+      query: avg(rate(chain_head_block{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m]))
+      threshold: "> 0.8"
+      window: 5m
+      critical: false
+
+    - name: block_intervals_acceptable
+      description: Block intervals bounded
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 5m
+      critical: false
+
+    - name: span_api_success_rate
+      description: Span API healthy
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up

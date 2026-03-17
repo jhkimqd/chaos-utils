@@ -1,0 +1,162 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: heimdall-grpc-blackhole-bor-split
+  description: >
+    Inspired by Gremlin Blackhole attack. Creates a complete communication
+    blackhole between Bor and Heimdall layers on 3 validators by dropping ALL
+    traffic on Heimdall's gRPC port (1317) and Tendermint RPC port (26657).
+    Bor depends on Heimdall for:
+    - Span information (which validators produce blocks)
+    - Checkpoint data (for finality)
+    - State sync events (bridge transactions)
+    Without Heimdall, Bor can still produce blocks for the current span but
+    cannot rotate spans or process checkpoints. This tests the maximum
+    tolerance window for Bor-Heimdall disconnection.
+    Combined with Heimdall P2P latency to simulate partial Heimdall degradation.
+  tags: [compound, blackhole, grpc, bor-heimdall, layer-split, gremlin-inspired]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    # Blackhole gRPC between Bor → Heimdall
+    - phase: blackhole_grpc_2
+      description: Drop all gRPC traffic from Bor 2 to Heimdall
+      target: bor_2
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317,26657"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: blackhole_grpc_4
+      target: bor_4
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317,26657"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: blackhole_grpc_6
+      target: bor_6
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317,26657"
+        target_proto: tcp
+        probability: 1.0
+
+    # Add Heimdall P2P latency to compound the issue
+    - phase: heimdall_latency_2
+      description: 2s Heimdall P2P latency
+      target: heimdall_2
+      type: network
+      params:
+        latency: 2000
+        target_ports: "26656"
+        target_proto: tcp
+
+    - phase: heimdall_latency_4
+      target: heimdall_4
+      type: network
+      params:
+        latency: 2000
+        target_ports: "26656"
+        target_proto: tcp
+
+    - phase: heimdall_latency_6
+      target: heimdall_6
+      type: network
+      params:
+        latency: 2000
+        target_ports: "26656"
+        target_proto: tcp
+
+  success_criteria:
+    - name: bor_continues_current_span
+      description: Bor validators continue block production within current span
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: heimdall_consensus_continues
+      description: Heimdall consensus itself advances (P2P still works, just slow)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: span_api_degrades
+      description: Span API should show degradation on disconnected nodes
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(0)
+      threshold: "< 0.5"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: healthy_nodes_span_api_fine
+      description: Non-blackholed validators maintain span API access
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 5m
+      critical: true
+
+    - name: recovery_after_blackhole_removed
+      description: Bor reconnects to Heimdall after blackhole removed
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[1m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[1m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up
