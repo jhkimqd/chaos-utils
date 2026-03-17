@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/docker/docker/client"
-	"github.com/rs/zerolog/log"
 )
 
 // Manager provides unified interface for all container lifecycle operations
@@ -55,18 +54,3 @@ func (m *Manager) UnpauseContainer(ctx context.Context, containerID string) erro
 	return m.pauseMgr.UnpauseContainer(ctx, containerID)
 }
 
-// Cleanup performs emergency cleanup of all container faults
-func (m *Manager) Cleanup(ctx context.Context) error {
-	log.Info().Msg("Cleaning up container lifecycle faults")
-
-	// Unpause any paused containers
-	if err := m.pauseMgr.CleanupAllPaused(ctx); err != nil {
-		log.Error().Err(err).Msg("Failed to cleanup paused containers")
-		return err
-	}
-
-	// Note: Restarted and killed containers don't need cleanup
-	// as they're already in running state (or will be restarted)
-
-	return nil
-}

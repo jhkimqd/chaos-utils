@@ -2,7 +2,6 @@ package validator
 
 import (
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 
@@ -277,8 +276,10 @@ func (v *Validator) validateFaultType(fault scenario.Fault, index int) {
 		"container_restart", "container_kill", "container_pause",
 		"connection_drop",
 		"dns",
-		"process_priority",
-		"disk_io",
+		"process_priority", "process_kill",
+		"disk_io", "disk_fill", "file_delete", "file_corrupt",
+		"clock_skew",
+		"http_fault",
 		"disk", "process", "custom",
 	}
 	valid := false
@@ -320,22 +321,6 @@ func (v *Validator) validateNetworkFaultParams(params map[string]interface{}, in
 		v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params.bandwidth cannot be negative", index))
 	}
 
-	// Validate CIDR if present
-	if nfp.TargetCIDR != "" {
-		if _, _, err := net.ParseCIDR(nfp.TargetCIDR); err != nil {
-			v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params.target_cidr is invalid: %v", index, err))
-		}
-	}
-
-	// Validate IPs if present
-	if nfp.TargetIPs != "" {
-		ips := strings.Split(nfp.TargetIPs, ",")
-		for _, ip := range ips {
-			if net.ParseIP(strings.TrimSpace(ip)) == nil {
-				v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params.target_ips contains invalid IP: %s", index, ip))
-			}
-		}
-	}
 }
 
 func (v *Validator) validateSuccessCriteria(s *scenario.Scenario) {

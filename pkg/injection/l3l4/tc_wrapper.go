@@ -44,11 +44,6 @@ func (tw *TCWrapper) InjectFault(ctx context.Context, targetContainerID string, 
 	return tw.injectWholeDevice(ctx, targetContainerID, params)
 }
 
-// InjectPacketReorder injects packet reordering using tc netem (kept for backward compat)
-func (tw *TCWrapper) InjectPacketReorder(ctx context.Context, targetContainerID string, params FaultParams) error {
-	return tw.InjectFault(ctx, targetContainerID, params)
-}
-
 // RemoveFault removes all tc rules from the device
 func (tw *TCWrapper) RemoveFault(ctx context.Context, targetContainerID string) error {
 	if _, exists := tw.sidecarMgr.GetSidecarID(targetContainerID); !exists {
@@ -176,6 +171,15 @@ func appendNetemParams(cmd []string, params FaultParams) []string {
 		if params.ReorderCorrelation > 0 {
 			cmd = append(cmd, fmt.Sprintf("%d%%", params.ReorderCorrelation))
 		}
+	}
+	if params.Corrupt > 0 {
+		cmd = append(cmd, "corrupt", fmt.Sprintf("%.2f%%", params.Corrupt))
+	}
+	if params.Duplicate > 0 {
+		cmd = append(cmd, "duplicate", fmt.Sprintf("%.2f%%", params.Duplicate))
+	}
+	if params.Bandwidth > 0 {
+		cmd = append(cmd, "rate", fmt.Sprintf("%dkbit", params.Bandwidth))
 	}
 	return cmd
 }

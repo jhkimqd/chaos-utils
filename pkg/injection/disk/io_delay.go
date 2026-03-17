@@ -8,27 +8,28 @@ import (
 
 // IODelayParams defines parameters for disk I/O delay injection
 type IODelayParams struct {
-	// IOLatencyMs is the I/O latency in milliseconds
+	// IOLatencyMs controls the intensity of I/O contention. Higher values spawn
+	// more aggressive background I/O workers. Not a precise latency value.
 	IOLatencyMs int
 
-	// TargetPath is the path to apply I/O delay (e.g., "/var/lib/heimdall")
+	// TargetPath is the directory where I/O contention is generated (e.g., "/var/lib/bor/bor/chaindata")
 	TargetPath string
 
 	// Operation is the operation type: "read", "write", or "all"
 	Operation string
 
-	// Method is the injection method: "dm-delay" or "fio"
+	// Method is the injection method (ignored — always uses background dd contention)
 	Method string
-}
-
-// IODelayWrapper wraps disk I/O delay injection
-type IODelayWrapper struct {
-	dockerClient DockerClient
 }
 
 // DockerClient interface for Docker operations
 type DockerClient interface {
 	ExecCommand(ctx context.Context, containerID string, cmd []string) (string, error)
+}
+
+// IODelayWrapper wraps disk I/O delay injection
+type IODelayWrapper struct {
+	dockerClient DockerClient
 }
 
 // New creates a new I/O delay wrapper
@@ -38,82 +39,104 @@ func New(dockerClient DockerClient) *IODelayWrapper {
 	}
 }
 
-// InjectIODelay injects disk I/O latency
+// InjectIODelay creates real I/O contention by running background dd processes
+// that continuously read/write to the target path. This saturates the I/O queue
+// and forces the target application to compete for disk bandwidth.
 func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID string, params IODelayParams) error {
-	fmt.Printf("Injecting I/O delay on target %s\n", targetContainerID[:12])
+	fmt.Printf("Injecting I/O contention on target %s\n", targetContainerID[:12])
 
-	// For now, use a simpler approach with ionice to lower I/O priority
-	// dm-delay requires device-mapper setup which is complex in containers
-	// This is a limitation documented in the fault injection guide
+	targetPath := params.TargetPath
+	if targetPath == "" {
+		targetPath = "/tmp"
+	}
 
-	// Find processes accessing the target path
-	findProcCmd := []string{"sh", "-c", fmt.Sprintf(
-		"lsof %s 2>/dev/null | awk 'NR>1 {print $2}' | sort -u | head -5",
-		params.TargetPath,
-	)}
+	// Scale number of workers based on IOLatencyMs:
+	// 50-100ms = 1 worker, 100-200ms = 2 workers, 200+ = 3 workers
+	workers := 1
+	if params.IOLatencyMs >= 200 {
+		workers = 3
+	} else if params.IOLatencyMs >= 100 {
+		workers = 2
+	}
 
-	pidOutput, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, findProcCmd)
+	// Build the I/O stress command based on operation type
+	var stressCmd string
+	chaosFile := fmt.Sprintf("%s/.chaos_io_stress", strings.TrimRight(targetPath, "/"))
+
+	switch params.Operation {
+	case "write":
+		// Continuous write loop — fills I/O write queue
+		stressCmd = fmt.Sprintf(
+			"for i in $(seq 1 %d); do while true; do dd if=/dev/zero of=\"%s_$i\" bs=64K count=256 conv=fdatasync 2>/dev/null; done & done",
+			workers, chaosFile,
+		)
+	case "read":
+		// Create a file then continuously read it — fills I/O read queue
+		stressCmd = fmt.Sprintf(
+			"dd if=/dev/zero of=\"%s_src\" bs=1M count=16 2>/dev/null; for i in $(seq 1 %d); do while true; do dd if=\"%s_src\" of=/dev/null bs=64K 2>/dev/null; done & done",
+			chaosFile, workers, chaosFile,
+		)
+	default: // "all"
+		// Both read and write contention
+		stressCmd = fmt.Sprintf(
+			"dd if=/dev/zero of=\"%s_src\" bs=1M count=16 2>/dev/null; "+
+				"for i in $(seq 1 %d); do while true; do dd if=/dev/zero of=\"%s_w$i\" bs=64K count=256 conv=fdatasync 2>/dev/null; done & done; "+
+				"for i in $(seq 1 %d); do while true; do dd if=\"%s_src\" of=/dev/null bs=64K 2>/dev/null; done & done",
+			chaosFile, workers, chaosFile, workers, chaosFile,
+		)
+	}
+
+	cmd := []string{"sh", "-c", stressCmd}
+	_, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, cmd)
 	if err != nil {
-		return fmt.Errorf("failed to find processes accessing %s via lsof: %w (ensure lsof is available in the target container)", params.TargetPath, err)
+		return fmt.Errorf("failed to start I/O contention: %w", err)
 	}
 
-	if strings.TrimSpace(pidOutput) == "" {
-		return fmt.Errorf("no processes found accessing %s — target path may not be in use", params.TargetPath)
+	// Verify dd processes are running
+	verifyCmd := []string{"sh", "-c",
+		"COUNT=0; for p in /proc/[0-9]*/cmdline; do if tr '\\0' ' ' < $p 2>/dev/null | grep -q '^dd '; then COUNT=$((COUNT+1)); fi; done; echo $COUNT",
+	}
+	countOutput, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
+	if err != nil {
+		return fmt.Errorf("failed to verify I/O contention: %w", err)
 	}
 
-	// Set I/O priority to idle class (lowest)
-	for _, pid := range []string{pidOutput} {
-		if pid == "" {
-			continue
-		}
-
-		// ionice -c 3 = idle I/O class
-		ioniceCmd := []string{"ionice", "-c", "3", "-p", pid}
-		output, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, ioniceCmd)
-		if err != nil {
-			fmt.Printf("  Warning: Failed to set ionice for PID %s: %v (output: %s)\n", pid, err, output)
-			continue
-		}
-
-		fmt.Printf("  Set I/O priority to idle for PID %s\n", pid)
+	count := strings.TrimSpace(countOutput)
+	if count == "" || count == "0" {
+		return fmt.Errorf("I/O contention failed: no dd processes running")
 	}
 
-	fmt.Printf("I/O delay injected (via ionice) on target %s\n", targetContainerID[:12])
-	fmt.Printf("  Note: Full dm-delay support requires device-mapper setup\n")
-
+	fmt.Printf("  I/O contention active: %s dd workers on %s (%s)\n", count, targetPath, params.Operation)
 	return nil
 }
 
-// RemoveFault removes I/O delay
+// RemoveFault kills dd stress processes and cleans up temp files
 func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID string, params IODelayParams) error {
-	fmt.Printf("Removing I/O delay from target %s\n", targetContainerID[:12])
+	fmt.Printf("Removing I/O contention from target %s\n", targetContainerID[:12])
 
-	// Find processes and restore normal I/O priority
-	findProcCmd := []string{"sh", "-c", fmt.Sprintf(
-		"lsof %s 2>/dev/null | awk 'NR>1 {print $2}' | sort -u | head -5",
-		params.TargetPath,
-	)}
-
-	pidOutput, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, findProcCmd)
-	if err != nil || strings.TrimSpace(pidOutput) == "" {
-		// During removal, best-effort is acceptable — log and continue
-		fmt.Printf("  Warning: Could not find processes via lsof during removal: %v\n", err)
-		return nil
+	// Kill dd processes AND their parent shell loops (while true; do dd ...; done).
+	// Match both "dd " and "while" shells that contain "chaos_io_stress" in their args.
+	killCmd := []string{"sh", "-c",
+		"for p in /proc/[0-9]*/cmdline; do " +
+			"PID=$(echo $p | cut -d/ -f3); " +
+			"CMD=$(tr '\\0' ' ' < $p 2>/dev/null); " +
+			"case \"$CMD\" in " +
+			"*chaos_io_stress*|\"dd \"*) kill -9 $PID 2>/dev/null ;; " +
+			"esac; " +
+			"done; echo done",
 	}
+	_, _ = iw.dockerClient.ExecCommand(ctx, targetContainerID, killCmd)
 
-	// Restore to normal I/O priority (best-effort class)
-	for _, pid := range []string{pidOutput} {
-		if pid == "" {
-			continue
-		}
-
-		// ionice -c 2 = best-effort class (normal)
-		ioniceCmd := []string{"ionice", "-c", "2", "-p", pid}
-		_, _ = iw.dockerClient.ExecCommand(ctx, targetContainerID, ioniceCmd)
+	// Clean up stress files
+	targetPath := params.TargetPath
+	if targetPath == "" {
+		targetPath = "/tmp"
 	}
+	chaosFile := fmt.Sprintf("%s/.chaos_io_stress", strings.TrimRight(targetPath, "/"))
+	cleanCmd := []string{"sh", "-c", fmt.Sprintf("rm -f \"%s\"_* 2>/dev/null; echo done", chaosFile)}
+	_, _ = iw.dockerClient.ExecCommand(ctx, targetContainerID, cleanCmd)
 
-	fmt.Printf("I/O delay removed from target %s\n", targetContainerID[:12])
-
+	fmt.Printf("  I/O contention removed from target %s\n", targetContainerID[:12])
 	return nil
 }
 
@@ -122,8 +145,6 @@ func ValidateIODelayParams(params IODelayParams) error {
 	if params.IOLatencyMs < 0 {
 		return fmt.Errorf("io_latency_ms cannot be negative")
 	}
-
-	// TargetPath is optional — empty path falls back to PID 1 (main container process).
 
 	if params.Operation != "read" && params.Operation != "write" && params.Operation != "all" {
 		return fmt.Errorf("operation must be 'read', 'write', or 'all'")

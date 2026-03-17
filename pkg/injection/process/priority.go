@@ -36,8 +36,11 @@ func New(dockerClient DockerClient) *PriorityWrapper {
 func (pw *PriorityWrapper) InjectPriorityChange(ctx context.Context, targetContainerID string, params PriorityParams) error {
 	fmt.Printf("Changing process priority on target %s\n", targetContainerID[:12])
 
-	// Find process ID by pattern
-	findPIDCmd := []string{"sh", "-c", fmt.Sprintf("pgrep -f '%s' | head -1", params.ProcessPattern)}
+	// Find process ID by pattern using /proc scanning (BusyBox-compatible, no pgrep needed)
+	findPIDCmd := []string{"sh", "-c", fmt.Sprintf(
+		"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); if tr '\\0' ' ' < $p 2>/dev/null | grep -q '%s'; then echo $PID; exit 0; fi; done; echo ''",
+		params.ProcessPattern,
+	)}
 	pidOutput, err := pw.dockerClient.ExecCommand(ctx, targetContainerID, findPIDCmd)
 	if err != nil {
 		return fmt.Errorf("failed to find process %s: %w", params.ProcessPattern, err)
@@ -50,11 +53,16 @@ func (pw *PriorityWrapper) InjectPriorityChange(ctx context.Context, targetConta
 
 	fmt.Printf("  Found process %s with PID %s\n", params.ProcessPattern, pid)
 
-	// Change priority using renice
-	reniceCmd := []string{"renice", "-n", fmt.Sprintf("%d", params.Priority), "-p", pid}
+	// Change priority using renice. BusyBox renice uses: renice PRIORITY PID
+	// GNU renice uses: renice -n PRIORITY -p PID
+	// Try BusyBox syntax first, fall back to GNU
+	reniceCmd := []string{"sh", "-c", fmt.Sprintf(
+		"renice %d %s 2>/dev/null || renice -n %d -p %s 2>/dev/null || echo FAIL",
+		params.Priority, pid, params.Priority, pid,
+	)}
 	output, err := pw.dockerClient.ExecCommand(ctx, targetContainerID, reniceCmd)
-	if err != nil {
-		return fmt.Errorf("failed to renice process: %w (output: %s)", err, output)
+	if err != nil || strings.Contains(output, "FAIL") {
+		return fmt.Errorf("failed to renice process %s: %w (output: %s)", pid, err, output)
 	}
 
 	fmt.Printf("Process priority changed to %d on target %s\n", params.Priority, targetContainerID[:12])
@@ -66,8 +74,11 @@ func (pw *PriorityWrapper) InjectPriorityChange(ctx context.Context, targetConta
 func (pw *PriorityWrapper) RemoveFault(ctx context.Context, targetContainerID string, params PriorityParams) error {
 	fmt.Printf("Restoring normal priority on target %s\n", targetContainerID[:12])
 
-	// Find process ID
-	findPIDCmd := []string{"sh", "-c", fmt.Sprintf("pgrep -f '%s' | head -1", params.ProcessPattern)}
+	// Find process ID using /proc scanning (BusyBox-compatible)
+	findPIDCmd := []string{"sh", "-c", fmt.Sprintf(
+		"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); if tr '\\0' ' ' < $p 2>/dev/null | grep -q '%s'; then echo $PID; exit 0; fi; done; echo ''",
+		params.ProcessPattern,
+	)}
 	pidOutput, err := pw.dockerClient.ExecCommand(ctx, targetContainerID, findPIDCmd)
 	if err != nil {
 		return fmt.Errorf("failed to find process: %w", err)
@@ -75,20 +86,17 @@ func (pw *PriorityWrapper) RemoveFault(ctx context.Context, targetContainerID st
 
 	pid := strings.TrimSpace(pidOutput)
 	if pid == "" {
-		// Process not found - might have been restarted, that's fine
 		fmt.Printf("  Process not found (may have been restarted)\n")
 		return nil
 	}
 
-	// Restore to normal priority (0)
-	reniceCmd := []string{"renice", "-n", "0", "-p", pid}
-	output, err := pw.dockerClient.ExecCommand(ctx, targetContainerID, reniceCmd)
-	if err != nil {
-		return fmt.Errorf("failed to restore priority: %w (output: %s)", err, output)
-	}
+	// Restore to normal priority (0) — try BusyBox then GNU syntax
+	reniceCmd := []string{"sh", "-c", fmt.Sprintf(
+		"renice 0 %s 2>/dev/null || renice -n 0 -p %s 2>/dev/null || true", pid, pid,
+	)}
+	_, _ = pw.dockerClient.ExecCommand(ctx, targetContainerID, reniceCmd)
 
 	fmt.Printf("Normal priority restored on target %s\n", targetContainerID[:12])
-
 	return nil
 }
 

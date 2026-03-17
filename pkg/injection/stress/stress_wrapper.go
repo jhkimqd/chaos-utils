@@ -107,11 +107,13 @@ func (sw *StressWrapper) injectActiveCPUStress(ctx context.Context, targetContai
 		return fmt.Errorf("failed to inject active CPU stress: %w", err)
 	}
 
-	// Verify stress processes are actually running
-	verifyCmd := []string{"sh", "-c", "pgrep -c yes"}
+	// Verify stress processes are actually running using /proc scanning (BusyBox-compatible)
+	verifyCmd := []string{"sh", "-c",
+		"COUNT=0; for p in /proc/[0-9]*/cmdline; do if tr '\\0' ' ' < $p 2>/dev/null | grep -q '^yes'; then COUNT=$((COUNT+1)); fi; done; echo $COUNT",
+	}
 	countOutput, err := sw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
 	if err != nil {
-		return fmt.Errorf("CPU stress injection failed: background 'yes' processes are not running")
+		return fmt.Errorf("CPU stress injection failed: could not verify 'yes' processes: %w", err)
 	}
 
 	count := strings.TrimSpace(countOutput)
@@ -241,22 +243,20 @@ func (sw *StressWrapper) injectMemoryLimit(ctx context.Context, targetContainerI
 func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID string) error {
 	fmt.Printf("Removing stress/limits from target %s\n", targetContainerID[:12])
 
-	// Kill any active stress processes (yes, dd, etc.)
-	// This handles the "stress" method
-	killCmds := []string{
-		"pkill -9 yes",
-		"pkill -9 dd",
-		"pkill -9 head",  // Kill memory allocation processes
-		"pkill -9 tr",
-		"pkill -9 sleep", // Kill sleep processes holding memory
-		"rm -f /dev/shm/mem-stress-fill",
-		"rm -f /tmp/mem-stress-fill",
-	}
-
-	for _, cmd := range killCmds {
-		_, _ = sw.dockerClient.ExecCommand(ctx, targetContainerID, []string{"sh", "-c", cmd})
-		// Ignore errors - processes may not exist
-	}
+	// Kill active stress processes (yes, dd, timeout loops) using /proc scanning.
+	// BusyBox-compatible — no pkill dependency.
+	killCmd := []string{"sh", "-c", `
+		for p in /proc/[0-9]*/cmdline; do
+			PID=$(echo $p | cut -d/ -f3)
+			CMD=$(tr '\0' ' ' < $p 2>/dev/null)
+			case "$CMD" in
+				yes*|"dd "*|"timeout "*|"head "*|"tr "*) kill -9 $PID 2>/dev/null ;;
+			esac
+		done
+		rm -f /dev/shm/mem-stress-fill /tmp/mem-stress-fill 2>/dev/null
+		echo done
+	`}
+	_, _ = sw.dockerClient.ExecCommand(ctx, targetContainerID, killCmd)
 
 	// Restore original resource limits (for "limit" method)
 	originalRes, exists := sw.originalResources[targetContainerID]
