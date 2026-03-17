@@ -3,14 +3,14 @@ kind: ChaosScenario
 metadata:
   name: wal-corruption
   description: >
-    Inspired by Chaos Mesh IOChaos fault action. Corrupts 4KB of the active
-    CometBFT WAL file on 2 Heimdall validators while consensus is live.
-    CometBFT WAL (cs.wal/wal) records all consensus state transitions — votes,
-    proposals, and precommits. Corrupting the WAL mid-round simulates partial
-    disk writes from power loss or disk controller errors.
-    Combined with a container restart (to force WAL replay), this tests whether
-    Heimdall detects the corruption and recovers from the last committed state.
-  tags: [compound, wal, corruption, crash-recovery, database, chaos-mesh-inspired]
+    Corrupts Bor's PebbleDB CURRENT file on 2 validators, then restarts them.
+    CURRENT is a 16-byte pointer to the active MANIFEST — without it PebbleDB
+    cannot open the database. This tests the hardest database failure path:
+    Bor must detect the corrupted DB, fail to start, and the container manager
+    (docker restart policy) should bring it back. On restart with a corrupted
+    CURRENT, Bor either repairs using MANIFEST directly or requires a full
+    resync from peers. This validates the operational recovery path.
+  tags: [compound, corruption, pebbledb, crash-recovery, bor]
   author: DevTools
   version: "0.1.0"
 
@@ -19,50 +19,52 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-3-heimdall-v2-bor-validator"
-      alias: heimdall_3
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-7-heimdall-v2-bor-validator"
-      alias: heimdall_7
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
 
   duration: 5m
   warmup: 30s
   cooldown: 3m
 
   faults:
-    # Corrupt active Heimdall WAL file to simulate partial write / disk corruption
-    - phase: corrupt_heimdall_wal_3
-      description: Corrupt active Heimdall CometBFT WAL on validator 3
-      target: heimdall_3
+    # Corrupt CURRENT pointer — PebbleDB cannot find MANIFEST on open
+    - phase: corrupt_bor_current_3
+      description: Corrupt PebbleDB CURRENT file on validator 3
+      target: bor_3
       type: file_corrupt
       params:
-        target_path: "/etc/heimdall/data/cs.wal/wal"
-        corrupt_bytes: 4096
-        method: zero
+        target_path: "/var/lib/bor/bor/chaindata/CURRENT"
+        corrupt_bytes: 16
+        method: random
         backup_first: true
 
-    - phase: corrupt_heimdall_wal_7
-      description: Corrupt active Heimdall CometBFT WAL on validator 7
-      target: heimdall_7
+    - phase: corrupt_bor_current_7
+      description: Corrupt PebbleDB CURRENT file on validator 7
+      target: bor_7
       type: file_corrupt
       params:
-        target_path: "/etc/heimdall/data/cs.wal/wal"
-        corrupt_bytes: 4096
-        method: zero
+        target_path: "/var/lib/bor/bor/chaindata/CURRENT"
+        corrupt_bytes: 16
+        method: random
         backup_first: true
 
-    # Force restart to trigger WAL replay
-    - phase: restart_heimdall_3
-      target: heimdall_3
+    # Restart to force Bor to re-open the corrupted DB
+    - phase: restart_bor_3
+      description: Restart Bor 3 — PebbleDB must handle corrupted CURRENT
+      target: bor_3
       type: container_restart
       params:
         grace_period: 5
         restart_delay: 3
 
-    - phase: restart_heimdall_7
-      target: heimdall_7
+    - phase: restart_bor_7
+      description: Restart Bor 7 — PebbleDB must handle corrupted CURRENT
+      target: bor_7
       type: container_restart
       params:
         grace_period: 5
@@ -70,7 +72,7 @@ spec:
 
   success_criteria:
     - name: validators_come_back
-      description: All WAL-deleted validators restart successfully
+      description: Corrupted validators eventually come back online
       type: prometheus
       query: min(up{job=~"l2-el-[37]-bor-heimdall-v2-validator"})
       threshold: "== 1"
@@ -78,23 +80,15 @@ spec:
       post_fault_only: true
 
     - name: validators_resume_sync
-      description: WAL-deleted validators resume block sync after restart
+      description: Corrupted validators resume block sync after recovery
       type: prometheus
       query: min(rate(chain_head_block{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
       post_fault_only: true
 
-    - name: heimdall_recovers
-      description: Heimdall consensus continues after WAL deletion
-      type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
-      threshold: "> 0"
-      window: 5m
-      critical: true
-
     - name: chain_head_converges
-      description: No fork from WAL loss — validators converge to same chain head
+      description: No fork — all validators converge to same chain head
       type: prometheus
       query: >
         max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
@@ -102,6 +96,14 @@ spec:
       threshold: "< 50"
       critical: true
       post_fault_only: true
+
+    - name: consensus_continues
+      description: Heimdall consensus unaffected
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
 
     - name: healthy_validators_unaffected
       description: Non-faulted validators continue normally

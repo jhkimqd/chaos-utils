@@ -11,7 +11,7 @@ metadata:
     - WAL may be incomplete if I/O was delayed
     Models real-world: disk controller degradation → OOM kill → recovery.
     More dangerous than kill-during-block-write because the I/O delay widens
-    the corruption window. Tests whether Bor's DB engine (LevelDB/Pebble)
+    the corruption window. Tests whether Bor's DB engine (PebbleDB)
     maintains atomicity guarantees even under combined I/O pressure + crash.
   tags: [compound, kill, disk-io, crash-recovery, database, chaos-mesh-inspired]
   author: DevTools
