@@ -1,7 +1,7 @@
 apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
-  name: wal-corruption-under-load
+  name: wal-corruption
   description: >
     Inspired by Chaos Mesh IOChaos fault action. Corrupts 4KB of the active
     CometBFT WAL file on 2 Heimdall validators while consensus is live.

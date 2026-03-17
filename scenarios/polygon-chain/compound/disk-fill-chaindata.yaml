@@ -1,7 +1,7 @@
 apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
-  name: disk-fill-chaindata-under-load
+  name: disk-fill-chaindata
   description: >
     Inspired by Gremlin's Disk Fill attack. Fills the chaindata directory on 2
     validators to 90% capacity while the chain is actively producing blocks.
