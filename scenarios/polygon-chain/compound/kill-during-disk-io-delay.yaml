@@ -1,0 +1,163 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: kill-during-disk-io-delay
+  description: >
+    Compound scenario combining Chaos Mesh IOChaos with Gremlin Process Killer.
+    First applies disk I/O delay on validators to slow state writes, then kills
+    them mid-operation. This is the worst-case for database integrity:
+    - Slow I/O extends the window during which partial writes exist
+    - SIGKILL during partial write maximizes corruption risk
+    - WAL may be incomplete if I/O was delayed
+    Models real-world: disk controller degradation → OOM kill → recovery.
+    More dangerous than kill-during-block-write because the I/O delay widens
+    the corruption window. Tests whether Bor's DB engine (LevelDB/Pebble)
+    maintains atomicity guarantees even under combined I/O pressure + crash.
+  tags: [compound, kill, disk-io, crash-recovery, database, chaos-mesh-inspired]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-7-heimdall-v2-bor-validator"
+      alias: heimdall_7
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Phase 1: Apply I/O delay to widen corruption window
+    - phase: disk_io_bor_3
+      description: 200ms disk I/O delay on Bor 3 chaindata
+      target: bor_3
+      type: disk_io
+      params:
+        io_latency_ms: 200
+        target_path: "/var/lib/bor/bor/chaindata"
+        operation: all
+
+    - phase: disk_io_bor_7
+      target: bor_7
+      type: disk_io
+      params:
+        io_latency_ms: 200
+        target_path: "/var/lib/bor/bor/chaindata"
+        operation: all
+
+    - phase: disk_io_heimdall_3
+      target: heimdall_3
+      type: disk_io
+      params:
+        io_latency_ms: 200
+        target_path: "/etc/heimdall/data"
+        operation: all
+
+    - phase: disk_io_heimdall_7
+      target: heimdall_7
+      type: disk_io
+      params:
+        io_latency_ms: 200
+        target_path: "/etc/heimdall/data"
+        operation: all
+
+    # Phase 2: SIGKILL during slow I/O
+    - phase: kill_bor_3
+      description: SIGKILL Bor 3 while I/O is delayed
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    - phase: kill_bor_7
+      target: bor_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    - phase: kill_heimdall_3
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    - phase: kill_heimdall_7
+      target: heimdall_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+  success_criteria:
+    - name: validators_recover
+      description: Crashed validators restart successfully despite slow-IO kill
+      type: prometheus
+      query: min(up{job=~"l2-el-[37]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    - name: validators_resume_sync
+      description: Recovered validators resume block sync — no permanent corruption
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: No fork from slow-IO crash — all validators on same chain
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: healthy_validators_unaffected
+      description: Non-faulted validators maintain production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124568]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

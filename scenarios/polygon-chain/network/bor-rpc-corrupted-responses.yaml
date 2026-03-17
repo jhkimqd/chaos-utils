@@ -1,0 +1,96 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-rpc-corrupted-responses
+  description: >
+    Inspired by Gremlin Failure Flags "incorrect or corrupted data" pattern.
+    Uses Envoy proxy's Lua filter to replace Bor's JSON-RPC response bodies
+    with malformed JSON, simulating:
+    - Corrupted API gateway responses
+    - Breaking API changes returning unexpected formats
+    - Man-in-the-middle data corruption
+    - CDN/proxy cache corruption
+    Returns a valid HTTP 200 but with a malformed JSON body for 25% of
+    requests. This is more subtle than a 500 error — the client receives a
+    successful status code but the payload is garbage. Tests whether RPC
+    consumers properly validate response bodies vs. just checking status codes.
+    Also adds a custom header to identify corrupted responses for debugging.
+  tags: [network, http, rpc, corruption, body-override, gremlin-inspired]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    - phase: corrupt_rpc_bor_3
+      description: Replace 25% of RPC response bodies with malformed JSON
+      target: bor_3
+      type: http_fault
+      params:
+        target_port: 8545
+        abort_code: 0
+        body_override: '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"chaos: simulated corruption"}}'
+        header_overrides:
+          x-chaos-injected: "true"
+          content-type: "application/json"
+        delay_ms: 100
+        delay_percent: 25
+
+    - phase: corrupt_rpc_bor_5
+      description: Replace 25% of RPC response bodies with malformed JSON
+      target: bor_5
+      type: http_fault
+      params:
+        target_port: 8545
+        body_override: '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"chaos: simulated corruption"}}'
+        header_overrides:
+          x-chaos-injected: "true"
+          content-type: "application/json"
+        delay_ms: 100
+        delay_percent: 25
+
+  success_criteria:
+    - name: block_production_unaffected
+      description: Block production continues — RPC corruption is external-facing only
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[4m:1m]))
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    - name: validators_stay_online
+      description: Corrupted RPC responses must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-el-[35]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      window: 4m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

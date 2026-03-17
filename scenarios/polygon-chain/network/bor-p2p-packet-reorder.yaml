@@ -1,0 +1,151 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-p2p-packet-reorder
+  description: >
+    Target the WIT protocol's lack of message sequencing. The witness broadcast
+    in eth/protocols/wit/broadcast.go sends witnesses and witness hashes over
+    separate channels (queuedWitness, queuedWitnessAnns) with only 10-item
+    buffers (eth/protocols/wit/peer.go:19-26). Packet reordering can cause
+    witness announcements to arrive before the witness data they reference,
+    or block headers to arrive after their witnesses — creating verification
+    mismatches. Unlike latency (which preserves order), reorder breaks the
+    implicit ordering assumption in the WIT handler. 25% reorder on 4/8
+    validators with exclude_producer leaves the producer able to send blocks
+    cleanly while recipients struggle to reassemble messages.
+  tags: [network, bor, p2p, packet-reorder, wit-protocol, message-sequence]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  faults:
+    - phase: reorder_2
+      description: 25% packet reorder on Bor P2P — breaks witness message ordering
+      target: bor_2
+      type: network
+      exclude_producer: true
+      params:
+        latency: 100
+        reorder: 25
+        reorder_correlation: 50
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: reorder_3
+      target: bor_3
+      type: network
+      exclude_producer: true
+      params:
+        latency: 100
+        reorder: 25
+        reorder_correlation: 50
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: reorder_5
+      target: bor_5
+      type: network
+      exclude_producer: true
+      params:
+        latency: 100
+        reorder: 25
+        reorder_correlation: 50
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: reorder_6
+      target: bor_6
+      type: network
+      exclude_producer: true
+      params:
+        latency: 100
+        reorder: 25
+        reorder_correlation: 50
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: block_production_no_gaps
+      description: Block production has no 1-minute gaps despite reordered P2P messages
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: no_span_rotation
+      description: Packet reorder must not cause span rotation
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+    - name: block_sync_rate
+      description: Block sync rate — measures if reorder degrades propagation speed
+      type: prometheus
+      query: avg(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m]))
+      threshold: "> 0.5"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: peer_count_stable
+      description: Peer count stays stable — reorder should not trigger peer drops
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "> 3"
+      window: 5m
+      critical: false
+
+    - name: span_api_success_rate
+      description: Span API healthy
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 5m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - go_goroutines
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up

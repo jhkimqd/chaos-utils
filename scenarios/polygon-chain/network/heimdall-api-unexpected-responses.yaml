@@ -1,0 +1,136 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: heimdall-api-unexpected-responses
+  description: >
+    Inspired by Gremlin Failure Flags "unexpected API responses" pattern.
+    Uses Envoy proxy to inject HTTP-level faults into Heimdall's REST API
+    (port 1317) that Bor depends on for span and checkpoint data.
+    Combines two fault types:
+    1. HTTP 429 Too Many Requests for 20% of requests (simulates rate limiting)
+    2. 2-second delay for 40% of requests (simulates degraded backend)
+    This tests Bor's resilience to Heimdall API degradation:
+    - Does Bor retry with proper backoff on 429s?
+    - Does Bor timeout correctly on slow Heimdall responses?
+    - Can block production continue with degraded span API access?
+    - Does the retry logic create a retry storm (gRPC-retry-storm scenario)?
+  tags: [network, http, api, heimdall, rate-limit, unexpected-response, gremlin-inspired]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    # Inject HTTP 429 rate limiting + delay on Heimdall REST API
+    - phase: api_degrade_heimdall_2
+      description: 20% HTTP 429 + 40% 2s delay on Heimdall 2 REST API
+      target: heimdall_2
+      type: http_fault
+      params:
+        target_port: 1317
+        abort_code: 429
+        abort_percent: 20
+        delay_ms: 2000
+        delay_percent: 40
+
+    - phase: api_degrade_heimdall_4
+      description: 20% HTTP 429 + 40% 2s delay on Heimdall 4 REST API
+      target: heimdall_4
+      type: http_fault
+      params:
+        target_port: 1317
+        abort_code: 429
+        abort_percent: 20
+        delay_ms: 2000
+        delay_percent: 40
+
+    - phase: api_degrade_heimdall_6
+      description: 20% HTTP 429 + 40% 2s delay on Heimdall 6 REST API
+      target: heimdall_6
+      type: http_fault
+      params:
+        target_port: 1317
+        abort_code: 429
+        abort_percent: 20
+        delay_ms: 2000
+        delay_percent: 40
+
+  success_criteria:
+    - name: block_production_continues
+      description: Block production continues despite degraded Heimdall API
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus itself advances (only API is degraded, not consensus)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: span_api_degrades_as_expected
+      description: Span API success rate should drop (confirming fault is active)
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
+      threshold: "< 0.9"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: bor_handles_retries_gracefully
+      description: Bor should not crash or spike API calls from retry storms
+      type: prometheus
+      query: sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "< 100"
+      window: 5m
+      critical: false
+      during_fault: true
+
+    - name: recovery_after_cleanup
+      description: Span API returns to normal after fault removal
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[1m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[1m])), 0.001)) or vector(1)
+      threshold: ">= 0.9"
+      critical: true
+      post_fault_only: true
+
+    - name: no_span_rotation
+      description: API degradation must not trigger span rotation
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up

@@ -1,0 +1,148 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: validator-freeze-zombie
+  description: >
+    Pause (SIGSTOP) 2 validators for 45s to create "zombie" nodes. Unlike a
+    container restart (which triggers TCP RST and immediate peer removal), a
+    paused container holds TCP connections open but never responds. Peers must
+    wait for frameReadTimeout (30s, p2p/server.go:57) before detecting the
+    failure. This tests:
+    1. syncChallengeTimeout (15s, eth/handler.go:72) — peers send required
+       block challenges that time out, triggering removePeer()
+    2. P2P frame timeout cascade — 30s read timeout means peers are blocked
+       for up to 30s per zombie connection before cleanup
+    3. Peer jail mechanism (p2p/server.go:116) — after disconnect, the peer
+       is jailed and must wait before reconnection
+    4. Recovery after unpause — do jailed peers reconnect promptly?
+    The 45s pause exceeds both the 15s sync challenge and 30s frame timeout,
+    ensuring both detection paths fire.
+  tags: [applications, container-pause, zombie, peer-timeout, frame-timeout, recovery]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: freeze_bor_3
+      description: Pause Bor validator 3 — creates zombie with open TCP sockets
+      target: bor_3
+      type: container_pause
+      params:
+        duration: 45
+
+    - phase: freeze_bor_6
+      description: Pause Bor validator 6
+      target: bor_6
+      type: container_pause
+      params:
+        duration: 45
+
+    - phase: freeze_heimdall_3
+      description: Pause Heimdall validator 3
+      target: heimdall_3
+      type: container_pause
+      params:
+        duration: 45
+
+    - phase: freeze_heimdall_6
+      description: Pause Heimdall validator 6
+      target: heimdall_6
+      type: container_pause
+      params:
+        duration: 45
+
+  success_criteria:
+    # Critical: remaining 6/8 validators keep producing
+    - name: block_production_continues
+      description: 6/8 unfrozen validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m])[3m:1m]))
+      threshold: "> 0"
+      window: 3m
+      critical: true
+
+    - name: consensus_continues
+      description: 6/8 Heimdall validators maintain consensus (BFT tolerates 2/8 missing)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 3m
+      critical: true
+
+    - name: no_span_rotation
+      description: 2/8 frozen validators must not trigger span rotation
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+    # Recovery: frozen validators rejoin after unpause
+    - name: frozen_validators_recover
+      description: Frozen validators come back online during cooldown
+      type: prometheus
+      query: min(up{job=~"l2-cl-[36]-heimdall-v2-bor-validator"})
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    # Informational
+    - name: frozen_bor_stalls
+      description: Frozen Bor nodes stop advancing (proves pause is effective)
+      type: prometheus
+      query: max(rate(chain_head_block{job=~"l2-el-[36]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "< 0.1"
+      critical: false
+      during_fault: true
+
+    - name: peer_count_recovers
+      description: Peer count recovers after unpause — tests peer jail/reconnection
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-[36]-heimdall-v2-bor-validator"})
+      threshold: "> 3"
+      critical: false
+      post_fault_only: true
+
+    - name: block_intervals_acceptable
+      description: Block intervals bounded during freeze
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 3m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - up

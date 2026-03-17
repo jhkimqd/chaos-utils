@@ -1,0 +1,160 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-p2p-flap-wit-goroutine-leak
+  description: >
+    Induce P2P connection flapping to expose the WIT broadcast goroutine leak.
+    In eth/protocols/wit/broadcast.go:8-30, broadcastWitness() exits
+    permanently on ANY send error (lines 14-16, 20-22). Once the goroutine
+    dies, the peer's witness channels (queuedWitness, queuedWitnessAnns —
+    10-item buffers) have no reader. Subsequent AsyncSendNewWitness() calls
+    queue data that is never sent, and once the buffer fills, witnesses are
+    silently dropped.
+    This test injects 20s P2P latency on 4 validators for 5 minutes. The
+    20s latency matches frameWriteTimeout (p2p/server.go:60), causing
+    p2p.Send() to fail with write timeout errors — which kills the
+    broadcast goroutine — but WITHOUT triggering full peer disconnection
+    (frameReadTimeout is 30s). This is the precise condition where the
+    goroutine dies but the peer stays "connected."
+    The key assertion is POST-FAULT: after 5 minutes of recovery, faulted
+    validators should sync back to within 60 blocks of head. If WIT
+    goroutines leaked, witness propagation stays dead and sync is degraded.
+  tags: [network, bor, p2p, wit-goroutine, flap, connection-churn, resource-leak]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 5m
+
+  faults:
+    # High packet loss to trigger send errors that kill broadcast goroutines
+    - phase: flap_2
+      description: 20s P2P latency — hits frameWriteTimeout, kills WIT goroutine without full disconnect
+      target: bor_2
+      type: network
+      exclude_producer: true
+      params:
+        latency: 20000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: flap_4
+      target: bor_4
+      type: network
+      exclude_producer: true
+      params:
+        latency: 20000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: flap_5
+      target: bor_5
+      type: network
+      exclude_producer: true
+      params:
+        latency: 20000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: flap_7
+      target: bor_7
+      type: network
+      exclude_producer: true
+      params:
+        latency: 20000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: consensus_continues
+      description: Heimdall consensus advances (not faulted)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: no_span_rotation
+      description: Informational — span rotation may trigger from 20s latency (known threshold issue)
+      type: log
+      pattern: "Span rotated due to the current producer's ineffectiveness"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+    # POST-FAULT RECOVERY — the key assertions for goroutine leak detection
+    - name: post_fault_sync_rate_normal
+      description: >
+        After fault removal, block sync rate recovers to near-normal. If WIT
+        broadcast goroutines leaked, witness propagation is dead and sync
+        stays degraded even with healthy network.
+      type: prometheus
+      query: avg(rate(chain_head_block{job=~"l2-el-[2457]-bor-heimdall-v2-validator"}[2m]))
+      threshold: "> 0.7"
+      critical: true
+      post_fault_only: true
+
+    - name: post_fault_all_validators_synced
+      description: >
+        All previously-faulted validators close the gap to within 60 blocks
+        during 5-minute cooldown. Goroutine leak would prevent catch-up.
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[2457]-bor-heimdall-v2-validator"})
+      threshold: "< 60"
+      critical: true
+      post_fault_only: true
+
+    # During-fault informational
+    - name: goroutine_count_during_fault
+      description: Goroutine count during fault — baseline for comparison
+      type: prometheus
+      query: max(go_goroutines{job=~"l2-el-[2457]-bor-heimdall-v2-validator"})
+      threshold: "< 10000"
+      critical: false
+      during_fault: true
+
+    - name: goroutine_count_after_fault
+      description: >
+        Goroutine count after fault — should be similar to during-fault.
+        If goroutines leaked, count would be lower (dead broadcast goroutines).
+      type: prometheus
+      query: max(go_goroutines{job=~"l2-el-[2457]-bor-heimdall-v2-validator"})
+      threshold: "< 10000"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - go_goroutines
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up
