@@ -5,8 +5,8 @@ metadata:
   description: >
     Inspired by Gremlin's Disk Fill attack. Fills the chaindata directory on 2
     validators to 90% capacity while the chain is actively producing blocks.
-    Tests how Bor handles "no space left on device" errors during LevelDB/Pebble
-    writes (core/rawdb/accessors_chain.go). The DB engine should either:
+    Tests how Bor handles "no space left on device" errors during PebbleDB
+    writes. The DB engine should either:
     (a) gracefully degrade and stop accepting new blocks, or
     (b) trigger a controlled shutdown rather than silent corruption.
     Simultaneously stresses Heimdall's data directory on the same nodes.
