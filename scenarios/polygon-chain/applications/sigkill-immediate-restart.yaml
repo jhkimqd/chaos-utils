@@ -1,0 +1,220 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: sigkill-immediate-restart
+  description: >
+    SIGKILL followed by immediate restart with zero delay — the worst-case
+    restart scenario. When an operator runs "systemctl restart bor" with a
+    short timeout, or when container orchestrators (Docker, k8s) kill and
+    replace containers with aggressive liveness probes, the new process may
+    start before the OS has fully flushed dirty pages or released file locks
+    from the killed process.
+    Specific risks tested:
+    - PebbleDB LOCK file contention: the new process tries to acquire the DB
+      lock while the kernel is still cleaning up the old process's file handles
+    - Incomplete fsync: dirty pages from the killed process may still be in
+      the page cache writeback queue when the new process opens the DB
+    - WAL truncation race: if the old process was mid-WAL-write, the new
+      process sees a truncated WAL entry and must decide to skip or fail
+    Tests both Bor and Heimdall simultaneously to also stress the case where
+    Bor starts before Heimdall is ready (or vice versa), testing the retry
+    logic in the Bor→Heimdall RPC client.
+  tags: [applications, sigkill, immediate-restart, lock-contention, operator-error, pebbledb]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-7-heimdall-v2-bor-validator"
+      alias: heimdall_7
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Simultaneous SIGKILL + immediate restart on both Bor and Heimdall
+    # restart_delay=0 means Docker starts the container again immediately after kill
+    - phase: kill_restart_bor_3
+      description: "SIGKILL Bor 3 + immediate restart (0s delay)"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+
+    - phase: kill_restart_heimdall_3
+      description: "SIGKILL Heimdall 3 + immediate restart (0s delay)"
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+
+    - phase: kill_restart_bor_7
+      description: "SIGKILL Bor 7 + immediate restart (0s delay)"
+      target: bor_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+
+    - phase: kill_restart_heimdall_7
+      description: "SIGKILL Heimdall 7 + immediate restart (0s delay)"
+      target: heimdall_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+
+    # Second round — kill again shortly after the first restart to stress
+    # the recovery path itself. If the first restart is still doing WAL
+    # replay when we kill it again, we test recovery-of-recovery.
+    - phase: kill_restart_bor_3_round2
+      description: "Second SIGKILL Bor 3 — kill during recovery from first crash"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+      delay: 20s
+
+    - phase: kill_restart_heimdall_3_round2
+      description: "Second SIGKILL Heimdall 3 — kill during CometBFT replay"
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+      delay: 20s
+
+    - phase: kill_restart_bor_7_round2
+      description: "Second SIGKILL Bor 7 — compounding unclean shutdown"
+      target: bor_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+      delay: 20s
+
+    - phase: kill_restart_heimdall_7_round2
+      description: "Second SIGKILL Heimdall 7 — compounding unclean shutdown"
+      target: heimdall_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 0
+      delay: 20s
+
+  success_criteria:
+    - name: validators_recover
+      description: Both validators come back online after double immediate-restart
+      type: prometheus
+      query: min(up{job=~"l2-el-[37]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    - name: block_sync_resumes
+      description: Recovered Bor nodes resume block sync — DB lock acquired cleanly
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_consensus_rejoined
+      description: Heimdall validators rejoin consensus after immediate restart
+      type: prometheus
+      query: min(rate(cometbft_consensus_height{job=~"l2-cl-[37]-heimdall-v2-bor-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: bor_heimdall_rpc_healthy
+      description: >
+        Bor→Heimdall RPC recovers — tests retry logic when Bor starts before
+        Heimdall is ready
+      type: prometheus
+      query: (sum(rate(client_requests_latestspan_valid{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[2m])) or vector(1))
+      threshold: "> 0"
+      critical: false
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: No fork from double immediate-restart — all validators converge
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: healthy_validators_unaffected
+      description: Non-faulted validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124568]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances throughout
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: no_lock_errors
+      description: No LOCK file contention or DB open failures in logs
+      type: log
+      pattern: "(lock.*held|lock.*already|could not lock|LOCK.*exists)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+    - name: no_db_corruption
+      description: No PebbleDB corruption from immediate restart race
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_latestspan_valid
+    - client_requests_latestspan_invalid
