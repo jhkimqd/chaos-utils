@@ -1,0 +1,178 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: oom-kill-recovery
+  description: >
+    Simulates the exact OOM-kill sequence operators see in production:
+    Bor's RSS grows past the cgroup limit → kernel OOM killer fires SIGKILL →
+    container restarts → Bor must replay WAL and rebuild in-memory caches from
+    cold state.
+    This is the #1 operator escalation pattern: Bor OOMs, auto-restarts, but
+    immediately begins rebuilding the same caches that caused the OOM in the
+    first place. Without GOMEMLIMIT set, the Go runtime doesn't know about the
+    container limit and will repeat the same allocation pattern → OOM again →
+    restart loop ("flapping OOM").
+    The scenario applies a realistic production memory limit (configurable via
+    MEMORY_LIMIT_MB, default 2048MB), then SIGKILL-restarts validators to
+    simulate the OOM kill. It then monitors whether Bor can successfully
+    restart and resume sync within the same memory envelope, or whether it
+    OOMs again during startup (WAL replay + trie cache rebuild).
+    Key metrics to watch:
+    - go_memstats_sys_bytes: total memory obtained from OS
+    - process_resident_memory_bytes: actual RSS (what triggers OOM kill)
+    - go_memstats_heap_inuse_bytes: live heap objects
+    If RSS climbs back toward the limit after restart, the node will OOM
+    again — indicating a config problem (cache sizes too large for container).
+  tags: [applications, oom, crash-recovery, operator-error, memory, pebbledb]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 8m
+  warmup: 1m
+  cooldown: 4m
+
+  faults:
+    # Phase 1: Apply production-realistic memory limit.
+    # This isn't "stress testing" — it's matching what production actually has.
+    # Default 2048MB matches common ECS/k8s pod limits for Bor.
+    - phase: mem_limit_bor_3
+      description: Apply production memory limit to Bor 3
+      target: bor_3
+      type: memory_pressure
+      params:
+        memory_mb: 2048
+
+    - phase: mem_limit_bor_6
+      description: Apply production memory limit to Bor 6
+      target: bor_6
+      type: memory_pressure
+      params:
+        memory_mb: 2048
+
+    # Phase 2: SIGKILL after memory limit is applied — simulates OOM kill.
+    # In production, the OOM killer fires at peak memory. We kill after 30s
+    # to let Bor accumulate some state under the new limit first.
+    - phase: oom_kill_bor_3
+      description: Simulate OOM kill on Bor 3 (SIGKILL under memory limit)
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 2
+      delay: 30s
+
+    - phase: oom_kill_bor_6
+      description: Simulate OOM kill on Bor 6
+      target: bor_6
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 2
+      delay: 30s
+
+  success_criteria:
+    # Critical: does Bor survive restart within the memory limit?
+    # If it OOMs again during WAL replay, this fails.
+    - name: survives_restart_under_limit
+      description: >
+        Bor restarts and stays running under production memory limit —
+        if this fails, Bor's cache config exceeds the container limit
+      type: prometheus
+      query: min(up{job=~"l2-el-[36]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    - name: resumes_sync_under_limit
+      description: >
+        Bor resumes block sync after OOM kill — PebbleDB WAL replay +
+        trie cache rebuild succeeded within memory envelope
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[36]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    # Informational: memory usage pattern after restart
+    - name: rss_stays_below_limit
+      description: >
+        RSS stays below 90% of limit after recovery — headroom for
+        Go GC and OS page cache. If close to limit, another OOM is imminent.
+      type: prometheus
+      query: max(process_resident_memory_bytes{job=~"l2-el-[36]-bor-heimdall-v2-validator"}) / 1024 / 1024
+      threshold: "< 1843"
+      critical: false
+      post_fault_only: true
+
+    - name: heap_stabilizes
+      description: >
+        Go heap usage stabilizes — not growing unbounded toward limit.
+        Unbounded growth = missing GOMEMLIMIT or caches too large.
+      type: prometheus
+      query: max(go_memstats_heap_inuse_bytes{job=~"l2-el-[36]-bor-heimdall-v2-validator"}) / 1024 / 1024
+      threshold: "< 1536"
+      critical: false
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: OOM-killed validators catch up — no permanent fork
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: healthy_validators_unaffected
+      description: Non-faulted validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus unaffected
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: no_repeated_oom
+      description: >
+        No second OOM kill after restart — container stays running.
+        If this fails, Bor's startup memory footprint exceeds the limit.
+      type: log
+      pattern: "(OOM|oom-kill|Out of memory|killed process)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - process_resident_memory_bytes
+    - go_memstats_heap_inuse_bytes
+    - go_memstats_sys_bytes
+    - go_memstats_alloc_bytes
+    - go_goroutines

@@ -1,42 +1,50 @@
 # Polygon PoS Chaos Scenarios
 
-Comprehensive chaos engineering scenarios for Polygon PoS networks deployed on Kurtosis.
+Last run: 2026-03-18 (8-validator Kurtosis PoS devnet)
 
-## Network Fault Scenarios (✅ Implemented)
+## Process Kill / Restart Scenarios
 
-### Basic Network Faults
-- **`quick-test.yaml`** - 30s latency test for quick validation
-- **`bandwidth-throttle.yaml`** - Bandwidth constraints on validators
-- **`latency-spike-l1-rpc.yaml`** - L1 RPC latency
+| Scenario | What it tests | Result | Notes |
+| --- | --- | --- | --- |
+| `sigkill-mid-write` | SIGKILL during active block writes, expect clean PebbleDB recovery | PASS | WAL replay succeeds, chain converges within 12 blocks |
+| `rapid-restart-flapping` | 5 consecutive SIGKILL+restart cycles on same validator, expect no DB corruption | PASS | PebbleDB survives all 5 unclean shutdowns |
+| `sigkill-immediate-restart` | Double SIGKILL with 0s restart delay on 2 validators, expect no LOCK contention | PASS | No LOCK errors or corruption |
+| `rapid-restart-peer-churn` | Rapid restarts causing peer disconnects, expect peer jail recovery | PASS | |
+| `validator-crash-during-checkpoint` | Crashes during checkpoint submission, expect checkpoint continuity | | |
+| `validator-freeze-zombie` | SIGSTOP creating zombie nodes with open TCP, expect timeout detection | PASS | |
+| `simultaneous-validator-restart` | All validators restart at once, expect block production resumes | | |
+| `oom-kill-recovery` | SIGKILL under production memory limit, expect restart within memory envelope | | |
+| `oom-flapping-loop` | 3 OOM kills in succession, expect no repeated OOM on startup | | |
 
-### Validator Isolation & Partitions
-- **`validator-partition.yaml`** - Complete network isolation of single validator
-- **`regional-network-outage.yaml`** - Single validator isolation (maintains consensus)
-- **`split-brain-partition.yaml`** - Network split causing two validator groups
-- **`asymmetric-network-partition.yaml`** - One-way network partition
+## Compound Scenarios
 
-### Progressive & Cascading Failures
-- **`progressive-network-degradation.yaml`** - Progressive packet loss increase
-- **`cascading-latency-spike.yaml`** - Cascading latency L1→L2→Validator
-- **`intermittent-checkpoint-failures.yaml`** - Progressive packet loss on checkpoints
+| Scenario | What it tests | Result | Notes |
+| --- | --- | --- | --- |
+| `kill-during-disk-io-delay` | SIGKILL while disk I/O is degraded, expect recovery despite widened corruption window | PASS | |
+| `db-corruption-recovery` | I/O contention + SIGKILL, expect Bor re-syncs lost blocks from peers | PASS | |
+| `cascading-partition-kill-restart` | Network partition followed by kill/restart, expect convergence | PASS | |
+| `disk-io-plus-network-latency` | Disk I/O delay + network latency combined, expect continued operation | PASS | |
+| `heimdall-grpc-blackhole-bor-split` | gRPC blackhole between Heimdall and Bor, expect retry recovery | PASS | |
 
-### Dependency Failures
-- **`mixed-dependency-failure.yaml`** - Combined L1 RPC failure + RabbitMQ latency
-- **`total-dependency-isolation.yaml`** - Complete L1 + RabbitMQ isolation
+## Network Scenarios
 
-### Service Degradation
-- **`rpc-node-degradation.yaml`** - RPC service latency
-- **`monitoring-stress-test.yaml`** - Progressive degradation to test alerting
+| Scenario | What it tests | Result | Notes |
+| --- | --- | --- | --- |
+| `bor-p2p-packet-corruption` | Corrupted P2P packets, expect detection and retransmission | PASS | |
+| `bor-p2p-packet-reorder` | Reordered P2P packets, expect protocol handles out-of-order delivery | PASS | |
+| `bor-p2p-bandwidth-throttle` | P2P bandwidth constrained, expect block propagation continues | PASS | |
+| `bor-p2p-flap-with-goroutine-leak` | P2P connection flapping, expect no goroutine leak | PASS | |
+| `bor-partition-recovery-speed` | Measure time to recover after partition heals | PASS | |
+| `bor-dns-delay-peer-discovery` | DNS delay on peer discovery, expect eventual peer resolution | PASS | |
+| `bor-witness-sync-rpc-impact` | Witness sync under RPC load, expect both continue | PASS | |
+| `bor-rpc-corrupted-responses` | Corrupted RPC responses, expect client-side error handling | PASS | |
+| `bor-rpc-error-injection` | HTTP error codes injected on RPC, expect retry logic works | PASS | |
+| `heimdall-api-unexpected-responses` | Unexpected API response codes, expect graceful handling | PASS | |
 
----
+## Observations
 
-## Container Lifecycle Scenarios (🚧 Requires Implementation)
-
-### ⭐ HIGH PRIORITY: simultaneous-validator-restart.yaml
-**Purpose:** All validators restart at once - simulates upgrade gone wrong
-**Real Bug:** Block production stopped after simultaneous validator restart during upgrade
-
-This scenario caught a **real production bug**. Running this regularly ensures the bug doesn't reoccur.
-
-See `docs/IMPLEMENTATION_PLAN_NEW_FAULTS.md` for implementation details.
-
+- PebbleDB WAL replay recovers after SIGKILL with no corruption observed across single kill, 5x rapid kills, and double-kill-with-0s-delay.
+- `chain out of sync` and `missing trie node ... layer stale` errors appear on every restart and self-resolve within ~20-30s as the trie cache rebuilds.
+- `Failed to update latest span: 503` appears when Bor starts before Heimdall is ready. Bor retries and recovers, but there is a window during co-located restarts where span fetches fail.
+- Kurtosis containers use restart policy `no`. `process_kill` leaves the container exited with no auto-restart. `container_kill` with `restart: true` is required.
+- Metrics queries targeting a single down validator return 0/empty during downtime, causing non-critical check failures in flapping tests. These are Prometheus scrape gaps, not application issues.
