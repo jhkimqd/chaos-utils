@@ -30,11 +30,9 @@ func (rm *RestartManager) RestartContainer(ctx context.Context, containerID stri
 		Int("restart_delay", params.RestartDelay).
 		Msg("Restarting container")
 
-	// Default grace period is 10 seconds
+	// grace_period=0 means immediate SIGKILL (no grace). The default of 10
+	// is applied upstream in the injector when the YAML field is absent.
 	gracePeriod := params.GracePeriod
-	if gracePeriod == 0 {
-		gracePeriod = 10
-	}
 
 	// 1. Stop container with grace period
 	stopOptions := container.StopOptions{
@@ -84,9 +82,6 @@ func (rm *RestartManager) RestartContainersSimultaneous(ctx context.Context, con
 		Msg("Restarting containers simultaneously")
 
 	gracePeriod := params.GracePeriod
-	if gracePeriod == 0 {
-		gracePeriod = 10
-	}
 
 	stopOptions := container.StopOptions{
 		Timeout: func() *int { t := gracePeriod; return &t }(),
