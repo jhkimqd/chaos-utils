@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -39,7 +40,14 @@ func (km *KillManager) KillContainer(ctx context.Context, containerID string, pa
 
 	// 1. Kill container with specified signal
 	if err := km.dockerClient.ContainerKill(ctx, containerID, signal); err != nil {
-		return fmt.Errorf("failed to kill container %s: %w", containerID, err)
+		// "container is not running" is expected when another goroutine already
+		// killed this container (e.g. rapid-restart-flapping with overlapping
+		// cycles).  Treat it as a successful stop rather than a fatal error.
+		if strings.Contains(err.Error(), "is not running") {
+			log.Warn().Str("container", containerID).Msg("Container already stopped — skipping kill")
+		} else {
+			return fmt.Errorf("failed to kill container %s: %w", containerID, err)
+		}
 	}
 
 	log.Debug().Str("container", containerID).Msg("Kill signal sent")

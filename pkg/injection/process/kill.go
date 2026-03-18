@@ -40,6 +40,12 @@ func (pw *PriorityWrapper) InjectProcessKill(ctx context.Context, targetContaine
 		count = 1
 	}
 
+	// Bracket the first character of the pattern so grep does not match its
+	// own sh -c cmdline.  "bor" → "[b]or" — the regex [b]or matches the
+	// string "bor", but the literal "[b]or" in the sh cmdline does not
+	// match the regex.
+	grepPattern := "[" + string(params.ProcessPattern[0]) + "]" + params.ProcessPattern[1:]
+
 	for i := 0; i < count; i++ {
 		if i > 0 && params.Interval > 0 {
 			// Sleep between kills
@@ -49,18 +55,19 @@ func (pw *PriorityWrapper) InjectProcessKill(ctx context.Context, targetContaine
 
 		// Find and kill processes matching pattern
 		// Use /proc scanning for POSIX/BusyBox compatibility (pgrep/pkill may not exist)
+		// Skip our own shell ($$) to avoid self-kill.
 		var killCmd []string
 		if params.KillChildren {
 			// Kill all matching processes
 			killCmd = []string{"sh", "-c", fmt.Sprintf(
-				"FOUND=0; for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); if tr '\\0' ' ' < $p 2>/dev/null | grep -q '%s'; then kill -%s $PID 2>/dev/null && FOUND=$((FOUND+1)); fi; done; echo \"killed $FOUND\"",
-				params.ProcessPattern, signal,
+				"FOUND=0; for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); [ \"$PID\" = \"$$\" ] && continue; if tr '\\0' ' ' < $p 2>/dev/null | grep -q '%s'; then kill -%s $PID 2>/dev/null && FOUND=$((FOUND+1)); fi; done; echo \"killed $FOUND\"",
+				grepPattern, signal,
 			)}
 		} else {
 			// Kill only the first matching process
 			killCmd = []string{"sh", "-c", fmt.Sprintf(
-				"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); if tr '\\0' ' ' < $p 2>/dev/null | grep -q '%s'; then kill -%s $PID 2>/dev/null && echo \"killed $PID\" && exit 0; fi; done; echo 'no match'",
-				params.ProcessPattern, signal,
+				"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); [ \"$PID\" = \"$$\" ] && continue; if tr '\\0' ' ' < $p 2>/dev/null | grep -q '%s'; then kill -%s $PID 2>/dev/null && echo \"killed $PID\" && exit 0; fi; done; echo 'no match'",
+				grepPattern, signal,
 			)}
 		}
 
