@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -31,6 +32,7 @@ type StressParams struct {
 type StressWrapper struct {
 	dockerClient DockerClient
 	// Store original container resources for restoration
+	mu                sync.Mutex
 	originalResources map[string]container.Resources
 }
 
@@ -135,6 +137,7 @@ func (sw *StressWrapper) injectCPULimit(ctx context.Context, targetContainerID s
 	}
 
 	// Save original resources if not already saved
+	sw.mu.Lock()
 	if _, exists := sw.originalResources[targetContainerID]; !exists {
 		sw.originalResources[targetContainerID] = container.Resources{
 			NanoCPUs:   inspect.HostConfig.NanoCPUs,
@@ -144,6 +147,7 @@ func (sw *StressWrapper) injectCPULimit(ctx context.Context, targetContainerID s
 			MemorySwap: inspect.HostConfig.MemorySwap,
 		}
 	}
+	sw.mu.Unlock()
 
 	cpuPercent := params.CPUPercent
 	if cpuPercent == 0 {
@@ -200,6 +204,7 @@ func (sw *StressWrapper) injectMemoryLimit(ctx context.Context, targetContainerI
 	}
 
 	// Save original resources if not already saved
+	sw.mu.Lock()
 	if _, exists := sw.originalResources[targetContainerID]; !exists {
 		sw.originalResources[targetContainerID] = container.Resources{
 			NanoCPUs:   inspect.HostConfig.NanoCPUs,
@@ -209,6 +214,7 @@ func (sw *StressWrapper) injectMemoryLimit(ctx context.Context, targetContainerI
 			MemorySwap: inspect.HostConfig.MemorySwap,
 		}
 	}
+	sw.mu.Unlock()
 
 	// Calculate memory limit
 	memoryMB := params.MemoryMB
@@ -259,7 +265,9 @@ func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID stri
 	_, _ = sw.dockerClient.ExecCommand(ctx, targetContainerID, killCmd)
 
 	// Restore original resource limits (for "limit" method)
+	sw.mu.Lock()
 	originalRes, exists := sw.originalResources[targetContainerID]
+	sw.mu.Unlock()
 	if !exists {
 		// No original resources saved, only stress cleanup was needed
 		fmt.Printf("Stress processes killed on target %s\n", targetContainerID[:12])
@@ -305,7 +313,9 @@ func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID stri
 	}
 
 	// Remove from tracking
+	sw.mu.Lock()
 	delete(sw.originalResources, targetContainerID)
+	sw.mu.Unlock()
 
 	fmt.Printf("Stress removed and limits restored on target %s\n", targetContainerID[:12])
 
