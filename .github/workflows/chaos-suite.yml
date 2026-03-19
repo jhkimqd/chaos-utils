@@ -16,15 +16,24 @@ on:
       kurtosis_pos_ref:
         description: "kurtosis-pos branch/tag to deploy"
         required: false
-        default: "main"
+        default: "feat/execution-specs"
       fast_mode:
         description: "Compress scenario timings for faster CI (true/false)"
         required: false
         default: "true"
+      bor_image:
+        description: "Bor Docker image (leave empty to auto-detect latest release)"
+        required: false
+        default: ""
+      heimdall_v2_image:
+        description: "Heimdall-v2 Docker image (leave empty to auto-detect latest release)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
   actions: write
+  packages: read
   id-token: write
 
 concurrency:
@@ -33,26 +42,68 @@ concurrency:
 
 env:
   ENCLAVE_NAME: pos
+  KURTOSIS_POS_REF: ${{ inputs.kurtosis_pos_ref || 'feat/execution-specs' }}
 
 jobs:
+  resolve-images:
+    runs-on: ubuntu-latest
+    outputs:
+      bor-image: ${{ steps.resolve.outputs.bor-image }}
+      heimdall-v2-image: ${{ steps.resolve.outputs.heimdall-v2-image }}
+    steps:
+      - name: Resolve bor and heimdall-v2 images
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Use explicit images if provided
+          if [[ -n "${{ inputs.bor_image }}" ]]; then
+            echo "bor-image=${{ inputs.bor_image }}" >> "$GITHUB_OUTPUT"
+          else
+            bor_tag=$(gh api repos/0xPolygon/bor/releases --jq \
+              '[.[] | select(.draft == false)] | .[0].tag_name' 2>/dev/null || echo "")
+            if [[ -n "$bor_tag" ]]; then
+              echo "bor-image=0xpolygon/bor:${bor_tag#v}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Failed to fetch bor release, using 'latest'."
+              echo "bor-image=0xpolygon/bor:latest" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ -n "${{ inputs.heimdall_v2_image }}" ]]; then
+            echo "heimdall-v2-image=${{ inputs.heimdall_v2_image }}" >> "$GITHUB_OUTPUT"
+          else
+            hv2_tag=$(gh api repos/0xPolygon/heimdall-v2/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+            if [[ -n "$hv2_tag" ]]; then
+              echo "heimdall-v2-image=0xpolygon/heimdall-v2:${hv2_tag#v}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Failed to fetch heimdall-v2 release, using 'latest'."
+              echo "heimdall-v2-image=0xpolygon/heimdall-v2:latest" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Summary
+        run: |
+          echo "### Chaos Suite Image Resolution" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bor | \`${{ steps.resolve.outputs.bor-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Heimdall-v2 | \`${{ steps.resolve.outputs.heimdall-v2-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| kurtosis-pos ref | \`${{ env.KURTOSIS_POS_REF }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
   run-chaos-tests:
+    needs: resolve-images
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - name: standard
-            file: large.yml
     steps:
       - name: Checkout chaos-utils
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Checkout kurtosis-pos
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: 0xPolygon/kurtosis-pos
-          ref: ${{ inputs.kurtosis_pos_ref || 'main' }}
+          ref: ${{ env.KURTOSIS_POS_REF }}
           path: kurtosis-pos
 
       - name: Free up disk space
@@ -98,20 +149,56 @@ jobs:
       - name: Build chaos-runner
         run: make build-runner
 
-      - name: Deploy devnet (${{ matrix.config.name }})
+      - name: Generate kurtosis params
+        run: |
+          BOR_IMAGE="${{ needs.resolve-images.outputs.bor-image }}"
+          HV2_IMAGE="${{ needs.resolve-images.outputs.heimdall-v2-image }}"
+
+          echo "Bor:         ${BOR_IMAGE}"
+          echo "Heimdall-v2: ${HV2_IMAGE}"
+
+          # 8 validators + 1 RPC node for chaos testing.
+          # Chaos scenarios reference validators l2-el-[1-8] and RPC l2-el-9.
+          cat > /tmp/chaos-params.yml <<PARAMS
+          polygon_pos_package:
+            participants:
+              - kind: validator
+                count: 8
+                el_bor_produce_witness: true
+                cl_type: heimdall-v2
+                cl_image: "${HV2_IMAGE}"
+                el_type: bor
+                el_image: "${BOR_IMAGE}"
+
+              - kind: rpc
+                count: 1
+                cl_type: heimdall-v2
+                cl_image: "${HV2_IMAGE}"
+                el_type: bor
+                el_image: "${BOR_IMAGE}"
+          PARAMS
+
+          echo "--- Generated params ---"
+          cat /tmp/chaos-params.yml
+
+      - name: Deploy devnet
         run: |
           set -o pipefail
+          pushd kurtosis-pos
           kurtosis run \
             --enclave=${{ env.ENCLAVE_NAME }} \
-            --verbosity detailed \
-            --args-file=kurtosis-pos/.github/configs/${{ matrix.config.file }} \
-            kurtosis-pos 2>&1 | tee deploy.log
+            --args-file /tmp/chaos-params.yml \
+            . 2>&1 | tee ../deploy.log
+          popd
 
       - name: Wait for network readiness
         run: |
-          RPC_SERVICE=$(kurtosis enclave inspect ${{ env.ENCLAVE_NAME }} | awk '/l2-el/ && /RUNNING/ {print $2; exit}')
-          RPC_URL=$(kurtosis port print ${{ env.ENCLAVE_NAME }} "${RPC_SERVICE}" rpc)
-          echo "Waiting for 40 blocks on ${RPC_SERVICE} (${RPC_URL})..."
+          VALIDATOR_RPC="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-1-bor-heimdall-v2-validator rpc)"
+          # Normalize: strip any existing scheme, then prepend http://
+          VALIDATOR_RPC="${VALIDATOR_RPC#http://}"
+          VALIDATOR_RPC="${VALIDATOR_RPC#https://}"
+          RPC_URL="http://${VALIDATOR_RPC}"
+          echo "Waiting for 40 blocks on ${RPC_URL}..."
 
           for i in $(seq 1 120); do
             BLOCK=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
@@ -132,7 +219,7 @@ jobs:
           FILTER="${{ inputs.scenario_filter || 'all' }}"
           COUNT="${{ inputs.scenario_count || '8' }}"
           FAST_MODE="${{ inputs.fast_mode || 'true' }}"
-          REPORT_DIR="reports/ci-${{ matrix.config.name }}-$(date +%Y%m%d-%H%M%S)"
+          REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${REPORT_DIR}"
 
           # ── Collect all candidate scenario files ──
@@ -165,12 +252,6 @@ jobs:
           # container_pause durations and large fault delays are baked into
           # fault params, not spec-level fields. --set duration only changes
           # the spec-level duration, so it must be >= the longest fault.
-          #
-          # validator-freeze-zombie:      120s pause in goroutine → needs duration >= 2m30s
-          # shifting-fault-combinations:  135s max delay + 60s pause → needs duration >= 4m
-          # rolling-restart:              90s max delay + restart cycles → needs duration >= 2m30s
-          # oom-flapping-loop:            90s max delay + kill cycles → needs duration >= 2m30s
-          # coordinated-full-cluster-crash: 30s restart_delay (all nodes) → needs duration >= 1m30s
           SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
 
           PASSED=0
@@ -187,7 +268,6 @@ jobs:
             # ── Build --set overrides for fast mode ──
             SET_FLAGS=""
             if [[ "${FAST_MODE}" == "true" ]]; then
-              # Check if this scenario has hard timing floors
               IS_SLOW=false
               for s in ${SLOW_SCENARIOS}; do
                 [[ "${name}" == "${s}" ]] && IS_SLOW=true
@@ -255,11 +335,22 @@ jobs:
             exit 1
           fi
 
+      - name: Dump enclave logs
+        if: failure()
+        run: kurtosis dump ./dump
+
+      - name: Upload enclave dump
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-enclave-dump-${{ github.run_id }}
+          path: ./dump
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chaos-reports-${{ matrix.config.name }}
+          name: chaos-reports-${{ github.run_id }}
           path: reports/
 
       - name: Cleanup enclave
