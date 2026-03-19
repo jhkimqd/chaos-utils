@@ -49,37 +49,28 @@ spec:
   cooldown: 4m
 
   faults:
-    # Phase 1: SIGKILL to ensure WAL has uncommitted entries
-    - phase: stop_bor
-      description: "SIGKILL Bor 4 — ensure pending WAL entries exist"
+    # Phase 1: Corrupt CURRENT file while Bor is running (256 bytes —
+    # destroys the MANIFEST filename reference entirely)
+    - phase: corrupt_metadata
+      description: "Corrupt PebbleDB CURRENT — 256 bytes while running"
+      target: bor_4
+      type: file_corrupt
+      params:
+        target_path: "/var/lib/bor/bor/chaindata/CURRENT"
+        corrupt_bytes: 256
+        method: random
+        backup_first: true
+
+    # Phase 2: Kill and restart to force PebbleDB to re-read corrupted CURRENT
+    - phase: kill_restart_bor
+      description: "SIGKILL Bor 4 — forces re-open with destroyed CURRENT"
       target: bor_4
       type: container_kill
       params:
         signal: SIGKILL
-        restart: false
-
-    # Phase 2: Corrupt the CURRENT file (256 bytes — likely destroys the
-    # MANIFEST filename reference, forcing PebbleDB to fail open)
-    - phase: corrupt_metadata
-      description: "Corrupt PebbleDB CURRENT — 256 bytes random overwrite"
-      target: bor_4
-      type: file_corrupt
-      params:
-        target_path: "/var/lib/bor/data/bor/chaindata/CURRENT"
-        corrupt_bytes: 256
-        method: random
-        backup_first: true
+        restart: true
+        restart_delay: 5
       delay: 10s
-
-    # Phase 3: Restart — PebbleDB must handle corrupted metadata
-    - phase: restart_bor
-      description: "Restart Bor 4 — test metadata recovery"
-      target: bor_4
-      type: container_restart
-      params:
-        grace_period: 0
-        restart_delay: 0
-      delay: 20s
 
   success_criteria:
     # Critical: other validators unaffected

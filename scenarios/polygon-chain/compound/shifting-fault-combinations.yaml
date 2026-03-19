@@ -117,7 +117,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 200
-        target_path: "/var/lib/bor/data/bor/chaindata"
+        target_path: "/var/lib/bor/bor/chaindata"
         operation: all
       delay: 45s
 
@@ -127,7 +127,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 200
-        target_path: "/var/lib/bor/data/bor/chaindata"
+        target_path: "/var/lib/bor/bor/chaindata"
         operation: all
       delay: 45s
 

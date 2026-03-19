@@ -47,36 +47,29 @@ spec:
   cooldown: 4m
 
   faults:
-    # Phase 1: Stop Bor to corrupt files safely
-    - phase: stop_bor
-      description: "SIGKILL Bor 4 — stop before corrupting data files"
+    # Phase 1: Corrupt CURRENT file while Bor is running.
+    # CURRENT is read at DB open time, so corruption on disk won't take
+    # effect until the next restart. This mirrors a real disk bitflip.
+    - phase: corrupt_current_file
+      description: "Corrupt PebbleDB CURRENT file — 16 random bytes while running"
+      target: bor_4
+      type: file_corrupt
+      params:
+        target_path: "/var/lib/bor/bor/chaindata/CURRENT"
+        corrupt_bytes: 16
+        method: random
+        backup_first: true
+
+    # Phase 2: Kill and restart to force PebbleDB to re-read CURRENT
+    - phase: kill_restart_bor
+      description: "SIGKILL Bor 4 — forces PebbleDB to re-open with corrupted CURRENT"
       target: bor_4
       type: container_kill
       params:
         signal: SIGKILL
-        restart: false
-
-    # Phase 2: Corrupt the PebbleDB CURRENT file (small, critical metadata)
-    - phase: corrupt_current_file
-      description: "Corrupt PebbleDB CURRENT file — 16 random bytes"
-      target: bor_4
-      type: file_corrupt
-      params:
-        target_path: "/var/lib/bor/data/bor/chaindata/CURRENT"
-        corrupt_bytes: 16
-        method: random
-        backup_first: true
+        restart: true
+        restart_delay: 5
       delay: 10s
-
-    # Phase 3: Restart and observe recovery behavior
-    - phase: restart_bor
-      description: "Restart Bor 4 with corrupted CURRENT file"
-      target: bor_4
-      type: container_restart
-      params:
-        grace_period: 0
-        restart_delay: 0
-      delay: 20s
 
   success_criteria:
     # Critical: other validators unaffected
