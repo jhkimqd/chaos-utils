@@ -50,7 +50,7 @@ spec:
       target: bor_4
       type: disk_fill
       params:
-        target_path: "/var/lib/bor/data"
+        target_path: "/var/lib/bor"
         fill_percent: 90
 
   success_criteria:

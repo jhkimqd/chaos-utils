@@ -51,51 +51,36 @@ spec:
   cooldown: 5m
 
   faults:
-    # Phase 1: Kill the validator cleanly before wiping data
-    - phase: stop_bor
-      description: "SIGKILL Bor 4 — stop before chaindata wipe"
-      target: bor_4
-      type: container_kill
-      params:
-        signal: SIGKILL
-        restart: false
-
-    - phase: stop_heimdall
-      description: "SIGKILL Heimdall 4 — stop before state wipe"
-      target: heimdall_4
-      type: container_kill
-      params:
-        signal: SIGKILL
-        restart: false
-
-    # Phase 2: Wipe Bor chaindata (PebbleDB directory)
+    # Phase 1: Wipe Bor chaindata while running — PebbleDB loses its
+    # data directory underneath it, causing immediate read/write failures
     - phase: wipe_bor_chaindata
-      description: "Delete Bor chaindata directory — simulate total disk loss"
+      description: "Delete Bor chaindata directory while running — simulate disk failure"
       target: bor_4
       type: file_delete
       params:
-        target_path: "/var/lib/bor/data/bor/chaindata"
+        target_path: "/var/lib/bor/bor/chaindata"
         recursive: true
+
+    # Phase 2: Kill and restart both layers to force clean resync from peers
+    - phase: kill_restart_bor
+      description: "SIGKILL Bor 4 — restart with empty chaindata, must resync"
+      target: bor_4
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
       delay: 10s
 
-    # Phase 3: Restart with empty state — must resync from peers
-    - phase: restart_bor
-      description: "Restart Bor 4 with empty chaindata — begin resync from peers"
-      target: bor_4
-      type: container_restart
-      params:
-        grace_period: 0
-        restart_delay: 0
-      delay: 20s
-
-    - phase: restart_heimdall
-      description: "Restart Heimdall 4"
+    - phase: kill_restart_heimdall
+      description: "SIGKILL Heimdall 4 — restart alongside Bor"
       target: heimdall_4
-      type: container_restart
+      type: container_kill
       params:
-        grace_period: 0
-        restart_delay: 0
-      delay: 20s
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 10s
 
   success_criteria:
     # Critical: wiped validator comes back online
