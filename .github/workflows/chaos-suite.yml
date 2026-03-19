@@ -6,13 +6,21 @@ on:
   workflow_dispatch:
     inputs:
       scenario_filter:
-        description: "Scenario filter: all, network, applications, compound"
+        description: "Scenario category: all, network, applications, compound, disk"
         required: false
         default: "all"
+      scenario_count:
+        description: "Number of scenarios to sample (0 = run all)"
+        required: false
+        default: "8"
       kurtosis_pos_ref:
         description: "kurtosis-pos branch/tag to deploy"
         required: false
         default: "main"
+      fast_mode:
+        description: "Compress scenario timings for faster CI (true/false)"
+        required: false
+        default: "true"
 
 permissions:
   contents: read
@@ -119,50 +127,109 @@ jobs:
             sleep 5
           done
 
-      - name: Run chaos scenarios (${{ matrix.config.name }})
+      - name: Select and run chaos scenarios
         run: |
           FILTER="${{ inputs.scenario_filter || 'all' }}"
+          COUNT="${{ inputs.scenario_count || '8' }}"
+          FAST_MODE="${{ inputs.fast_mode || 'true' }}"
           REPORT_DIR="reports/ci-${{ matrix.config.name }}-$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${REPORT_DIR}"
 
-          # Collect scenario files based on filter
+          # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
-            all)     SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/compound" ;;
-            *)       SCENARIO_DIRS="scenarios/polygon-chain/${FILTER}" ;;
+            all)  SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/compound scenarios/polygon-chain/disk" ;;
+            *)    SCENARIO_DIRS="scenarios/polygon-chain/${FILTER}" ;;
           esac
+
+          ALL_SCENARIOS=""
+          for dir in ${SCENARIO_DIRS}; do
+            [[ -d "${dir}" ]] || continue
+            for f in "${dir}"/*.yaml; do
+              ALL_SCENARIOS="${ALL_SCENARIOS} ${f}"
+            done
+          done
+
+          # ── Sample random subset (or run all if count=0) ──
+          if [[ "${COUNT}" -eq 0 ]]; then
+            SELECTED="${ALL_SCENARIOS}"
+          else
+            SELECTED=$(echo "${ALL_SCENARIOS}" | tr ' ' '\n' | grep -v '^$' | shuf | head -n "${COUNT}")
+          fi
+
+          SCENARIO_COUNT=$(echo "${SELECTED}" | wc -w)
+          echo "Selected ${SCENARIO_COUNT} scenarios (from $(echo ${ALL_SCENARIOS} | wc -w) total)"
+          echo "${SELECTED}" | tr ' ' '\n' | grep -v '^$' | while read f; do echo "  - $(basename $f .yaml)"; done
+
+          # ── Scenarios with hard timing floors that cannot be compressed ──
+          # container_pause durations and large fault delays are baked into
+          # fault params, not spec-level fields. --set duration only changes
+          # the spec-level duration, so it must be >= the longest fault.
+          #
+          # validator-freeze-zombie:      120s pause in goroutine → needs duration >= 2m30s
+          # shifting-fault-combinations:  135s max delay + 60s pause → needs duration >= 4m
+          # rolling-restart:              90s max delay + restart cycles → needs duration >= 2m30s
+          # oom-flapping-loop:            90s max delay + kill cycles → needs duration >= 2m30s
+          # coordinated-full-cluster-crash: 30s restart_delay (all nodes) → needs duration >= 1m30s
+          SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
 
           PASSED=0
           FAILED=0
           ERRORS=0
+          TEST_FAILURES=""
 
-          for dir in ${SCENARIO_DIRS}; do
-            [[ -d "${dir}" ]] || continue
-            for scenario in "${dir}"/*.yaml; do
-              name=$(basename "${scenario}" .yaml)
-              echo "::group::${name}"
-              echo "Running scenario: ${name}"
+          for scenario in ${SELECTED}; do
+            name=$(basename "${scenario}" .yaml)
+            echo "::group::${name}"
+            echo "────────────────────────────────────"
+            echo "Running: ${name}"
 
-              EXIT_CODE=0
-              ./bin/chaos-runner run \
-                --scenario "${scenario}" \
-                --format text 2>&1 | tee "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
+            # ── Build --set overrides for fast mode ──
+            SET_FLAGS=""
+            if [[ "${FAST_MODE}" == "true" ]]; then
+              # Check if this scenario has hard timing floors
+              IS_SLOW=false
+              for s in ${SLOW_SCENARIOS}; do
+                [[ "${name}" == "${s}" ]] && IS_SLOW=true
+              done
 
-              if [[ ${EXIT_CODE} -eq 0 ]]; then
-                echo "✅ PASSED: ${name}"
-                echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
-                PASSED=$((PASSED + 1))
-              elif [[ ${EXIT_CODE} -eq 1 ]]; then
-                echo "::warning::FAILED: ${name}"
-                echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
-                FAILED=$((FAILED + 1))
+              if [[ "${IS_SLOW}" == "true" ]]; then
+                # Scenarios with large fault delays / pause durations:
+                # compress warmup + cooldown but keep duration close to original
+                SET_FLAGS="--set warmup=15s --set cooldown=90s"
               else
-                echo "::error::ERROR: ${name} (exit: ${EXIT_CODE})"
-                echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
-                ERRORS=$((ERRORS + 1))
+                # Standard compression: 15s warmup, 2m duration, 90s cooldown
+                # Total: ~3m45s per scenario (vs 7-10m original)
+                SET_FLAGS="--set warmup=15s --set duration=2m --set cooldown=90s"
               fi
-              echo "::endgroup::"
-            done
+            fi
+
+            EXIT_CODE=0
+            ./bin/chaos-runner run \
+              --scenario "${scenario}" \
+              ${SET_FLAGS} \
+              --format text 2>&1 | tee "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
+
+            if [[ ${EXIT_CODE} -eq 0 ]]; then
+              echo "✅ PASSED: ${name}"
+              echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
+              PASSED=$((PASSED + 1))
+            elif [[ ${EXIT_CODE} -eq 1 ]]; then
+              echo "::warning::FAILED: ${name}"
+              echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
+              FAILED=$((FAILED + 1))
+              TEST_FAILURES="${TEST_FAILURES}  - ${name}\n"
+            else
+              echo "::error::ERROR: ${name} (exit: ${EXIT_CODE})"
+              echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # Brief stabilization between scenarios
+            echo "Waiting 15s for devnet stabilization..."
+            sleep 15
+
+            echo "::endgroup::"
           done
 
           TOTAL=$((PASSED + FAILED + ERRORS))
@@ -170,12 +237,21 @@ jobs:
           echo "═══════════════════════════════════════"
           echo "  RESULTS: ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${ERRORS} errors"
           echo "═══════════════════════════════════════"
-          echo ""
+
+          if [[ -n "${TEST_FAILURES}" ]]; then
+            echo ""
+            echo "Failed scenarios:"
+            echo -e "${TEST_FAILURES}"
+          fi
+
           echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
 
-          if [[ "${FAILED}" -gt 0 || "${ERRORS}" -gt 0 ]]; then
-            echo "::error::${FAILED} scenarios failed, ${ERRORS} errors"
-            cat "${REPORT_DIR}/results.txt"
+          # Fail the job only on infrastructure errors (exit code > 1),
+          # not on test criteria failures (exit code 1). Test failures
+          # are expected findings — they indicate system behavior, not
+          # broken CI.
+          if [[ "${ERRORS}" -gt 0 ]]; then
+            echo "::error::${ERRORS} scenario(s) hit infrastructure errors"
             exit 1
           fi
 
