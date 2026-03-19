@@ -12,7 +12,7 @@ Chaos Runner helps you systematically test your Polygon Chain network by:
 
 ### Key Features
 
-- **Two execution modes**: `run` for declarative YAML scenarios, `fuzz` for randomized fault generation
+- **Declarative execution**: Define fault injection scenarios in YAML and execute with `run`
 - **Steady-state hypothesis**: Pre-fault health check verifies the system is healthy before injection; post-fault evaluation confirms recovery after faults are removed
 - **Prometheus-safe**: Prometheus is enforced as observability-only — any selector that resolves to a monitoring container is rejected at runtime
 - **Auto-Configuration**: Config auto-generated on first run
@@ -66,10 +66,9 @@ vim config.yaml
 
 ```
 chaos-utils/
-├── cmd/chaos-runner/          # CLI entry point (run + fuzz subcommands)
+├── cmd/chaos-runner/          # CLI entry point (run subcommand)
 ├── pkg/
 │   ├── core/orchestrator/     # State machine (PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT)
-│   ├── fuzz/                  # Randomized scenario generation and execution
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration & metrics collection
@@ -96,7 +95,7 @@ chaos-utils/
 - Automatic `comcast --stop` before each fault injection
 - Emergency stop via Ctrl+C (SIGINT/SIGTERM handling)
 - Cleanup verification ensures no tc/iptables rules remain
-- Prometheus is never a fault target — enforced at container resolution time for both `run` and `fuzz` modes
+- Prometheus is never a fault target — enforced at container resolution time
 - Prometheus misconfiguration is a hard failure — if success criteria are defined but Prometheus is unreachable, the experiment fails rather than silently passing
 
 ## Usage
@@ -115,58 +114,6 @@ chaos-utils/
 
 # Emergency stop: Ctrl+C
 ```
-
-### `fuzz` — Randomized fault injection
-
-```bash
-# Run 10 random fault rounds (default)
-./bin/chaos-runner fuzz --enclave pos
-
-# Compound mode: 2 simultaneous faults per round
-./bin/chaos-runner fuzz --enclave pos --compound-only
-
-# Up to 3 simultaneous faults
-./bin/chaos-runner fuzz --enclave pos --compound-only --max-faults 3
-
-# Inject only during active checkpoint signing
-./bin/chaos-runner fuzz --enclave pos --trigger checkpoint
-
-# Reproduce a specific run
-./bin/chaos-runner fuzz --enclave pos --seed 42 --rounds 5
-
-# Preview without executing
-./bin/chaos-runner fuzz --enclave pos --dry-run
-```
-
-**Fuzz flags:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--enclave` | — | Kurtosis enclave name (required) |
-| `--rounds` | 10 | Number of fuzz rounds |
-| `--compound-only` | false | Only generate multi-fault scenarios |
-| `--single-only` | false | Only generate single-fault scenarios |
-| `--max-faults` | 2 | Max simultaneous faults in compound mode |
-| `--trigger` | `any` | Prometheus condition before injecting |
-| `--seed` | 0 (auto) | Seed for reproducibility |
-| `--dry-run` | false | Print without executing |
-| `--log` | `reports/fuzz_log.jsonl` | JSONL run log path |
-
-**Available triggers:**
-
-| Trigger | Description |
-|---------|-------------|
-| `any` | Inject immediately (default) |
-| `checkpoint` | Wait for active Heimdall checkpoint signing |
-| `post_restart` | Wait until just after a service restart |
-| `high_load` | Wait for sustained Bor block production |
-
-**Session behaviour:**
-
-- Each round applies the same steady-state hypothesis as `run`: pre-fault health check → inject → monitor → teardown → post-fault evaluation
-- If a **critical** success criterion fails (e.g. block production stops), the session halts immediately and prints a reproduction command
-- Ctrl+C (SIGINT) cleanly stops the session after the current round completes cleanup
-- A session summary is written to `reports/fuzz_summary_<timestamp>.json` with per-round results, pass/fail counts, and a `--seed` reproduce command if any round failed
 
 ### Example: Validator Partition Test
 
@@ -316,24 +263,9 @@ rate(cometbft_consensus_block_interval_seconds_count[5m])
 Reports are auto-generated in `reports/`:
 
 ```bash
-# Single-run JSON report
+# JSON report per test run
 reports/test-20260128-154326-test-1769582606.json
 # Contains: test metadata, targets, faults injected, success criteria results, cleanup summary
-
-# Fuzz per-round JSONL log (one line per round, appended live)
-reports/fuzz_log.jsonl
-
-# Fuzz session summary (written at end of each fuzz session)
-reports/fuzz_summary_2026-02-19_16-13-09+09-00.json
-# Contains: seed, enclave, total/passed/failed rounds, per-round results, stop reason,
-#           reproduce command (if any round failed)
-```
-
-To reproduce a failed fuzz session exactly:
-
-```bash
-# Printed at end of session and included in fuzz_summary_*.json
-chaos-runner fuzz --enclave pos --seed 42 --rounds 10
 ```
 
 ## Configuration
@@ -492,10 +424,9 @@ cat scenarios/polygon-chain/network/validator-partition.yaml
 
 ```
 chaos-utils/
-├── cmd/chaos-runner/          # CLI entry point (run + fuzz subcommands)
+├── cmd/chaos-runner/          # CLI entry point (run subcommand)
 ├── pkg/
 │   ├── core/orchestrator/     # State machine: PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT
-│   ├── fuzz/                  # Randomized fault generation (sampler, generator, runner)
 │   ├── discovery/             # Kurtosis & Docker service discovery
 │   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
 │   ├── monitoring/            # Prometheus integration
