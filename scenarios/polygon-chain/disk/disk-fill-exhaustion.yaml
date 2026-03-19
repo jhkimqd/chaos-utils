@@ -1,0 +1,118 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: disk-fill-exhaustion
+  description: >
+    Fill the disk on a validator's chaindata volume to near capacity, forcing
+    PebbleDB to operate with minimal free space. This simulates a common
+    production failure where chaindata grows faster than expected and the
+    operator doesn't notice until the disk is nearly full.
+    Jepsen reference: related to "Unsafe Fsync Configuration" — tests system
+    behavior under resource exhaustion conditions. When disk space runs out,
+    writes fail, WAL entries can't be flushed, and compaction stalls.
+    Specific risks tested:
+    - PebbleDB write failure: when disk is full, WAL writes fail. Does PebbleDB
+      crash cleanly or enter an unrecoverable state?
+    - Compaction stall: PebbleDB needs temporary space for compaction. Full disk
+      prevents compaction, leading to read amplification and eventual write stall
+    - Graceful degradation: does the node stop accepting blocks and report the
+      error, or does it silently fall behind?
+    - Recovery after space freed: when disk fill is removed (during teardown),
+      does the node resume normal operation and catch up?
+    Uses disk_fill to consume space in the chaindata volume.
+  tags: [disk, fill, exhaustion, space, pebbledb]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Unsafe Fsync Configuration (resource exhaustion variant)"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  duration: 6m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Fill disk to 90% on Bor's data volume
+    - phase: fill_bor_disk
+      description: "Fill Bor 4 chaindata volume to 90% capacity"
+      target: bor_4
+      type: disk_fill
+      params:
+        target_path: "/var/lib/bor/data"
+        fill_percent: 90
+
+  success_criteria:
+    # Critical: other validators unaffected
+    - name: healthy_validators_continue
+      description: Other validators maintain block production during disk exhaustion
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m])[6m:1m]))
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    - name: consensus_continues
+      description: Consensus continues
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    # Critical: node recovers after disk fill removed
+    - name: node_recovers_after_fill_removed
+      description: >
+        Bor resumes block sync after disk fill is removed during teardown —
+        PebbleDB recovers from near-full state
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: Affected validator catches up after disk space freed
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 100"
+      critical: true
+      post_fault_only: true
+
+    # Informational: disk full errors in logs
+    - name: disk_full_errors_detected
+      description: Node reports disk full errors (expected — proves detection works)
+      type: log
+      pattern: "(no space|disk.*full|ENOSPC|write.*fail)"
+      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      absence: false
+      critical: false
+      during_fault: true
+
+    - name: no_unrecoverable_state
+      description: No unrecoverable PebbleDB state after disk exhaustion
+      type: log
+      pattern: "(unrecoverable|MANIFEST.*corrupt|fatal.*compaction)"
+      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

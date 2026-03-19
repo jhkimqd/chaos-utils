@@ -1,0 +1,170 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: two-phase-partition-escalation
+  description: >
+    Partition introduced in stages. Phase 1: partial partition — Bor P2P is
+    blocked but Heimdall consensus traffic remains open. Phase 2: full partition
+    — both Bor P2P and Heimdall consensus are blocked.
+    Jepsen reference: "Two-Phase Partition Escalation" — the first phase creates
+    a degraded state where the leader continues accepting writes while replication
+    falls behind. The second phase triggers a leadership transition from behind,
+    choosing a new leader that may be arbitrarily far behind.
+    Specific risks tested:
+    - Phase 1 degradation: Bor cannot propagate blocks via P2P, but Heimdall
+      consensus still includes the partitioned validators. The validators appear
+      healthy to Heimdall but are falling behind on Bor's chain head
+    - Asymmetric state: validators with Bor-only partition have consensus
+      participation but stale execution state. This creates a mismatch between
+      consensus height and execution height
+    - Phase 2 escalation: when Heimdall traffic is also cut, the validators
+      fully disconnect. The remaining validators must now achieve consensus
+      without them, potentially rolling back any tentative decisions that
+      included the partially-connected validators
+    - Recovery complexity: after healing, validators must reconcile both
+      Bor chain head and Heimdall consensus state independently
+  tags: [network, partition, escalation, two-phase, staged, iptables]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Two-Phase Partition Escalation"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-5-heimdall-v2-bor-validator"
+      alias: heimdall_5
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Phase 1 (t=0): Partial partition — block Bor P2P only
+    # Heimdall consensus remains connected
+    - phase: phase1_bor_3
+      description: "Phase 1 — block Bor 3 P2P only (Heimdall still connected)"
+      target: bor_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: phase1_bor_5
+      description: "Phase 1 — block Bor 5 P2P only"
+      target: bor_5
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    # Phase 2 (t=60s): Full partition — also block Heimdall consensus
+    - phase: phase2_heimdall_3
+      description: "Phase 2 — escalate: block Heimdall 3 consensus traffic"
+      target: heimdall_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+      delay: 60s
+
+    - phase: phase2_heimdall_5
+      description: "Phase 2 — escalate: block Heimdall 5 consensus traffic"
+      target: heimdall_5
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+      delay: 60s
+
+  success_criteria:
+    # Critical: majority keeps producing through both phases
+    - name: majority_produces_blocks
+      description: 6/8 non-partitioned validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124678]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Consensus continues with 6/8 validators after full escalation
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Critical: convergence after healing
+    - name: chain_head_converges
+      description: >
+        All validators converge after two-phase partition heals —
+        Bor chain and Heimdall consensus both reconcile correctly
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: partitioned_validators_resync
+      description: Partitioned validators fully resync both Bor and Heimdall
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[35]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_rejoins
+      description: Partitioned Heimdall validators rejoin consensus
+      type: prometheus
+      query: min(rate(cometbft_consensus_height{job=~"l2-cl-[35]-heimdall-v2-bor-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    # Informational: detect asymmetric state during phase 1
+    - name: phase1_asymmetry_detected
+      description: >
+        During phase 1, partitioned validators participate in Heimdall
+        consensus but fall behind on Bor chain — detects asymmetric state
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[124678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[35]-bor-heimdall-v2-validator"})
+      threshold: "> 10"
+      critical: false
+      during_fault: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up

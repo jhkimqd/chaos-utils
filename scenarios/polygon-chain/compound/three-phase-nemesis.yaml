@@ -1,0 +1,237 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: three-phase-nemesis
+  description: >
+    Structured three-phase fault sequence: (1) isolate 2 validators via network
+    partition and apply CPU stress to degrade their performance, (2) after state
+    diverges, kill the isolated validators, (3) heal the partition and restart —
+    testing whether the system selects the legitimate majority-side data.
+    Jepsen reference: "Three-Phase Nemesis (Isolate, Kill, Recover)" —
+    systematically creates conditions for state divergence. The isolation phase
+    allows the partitioned validators to fall behind, the kill phase forces a
+    fresh election, and recovery reveals whether the system correctly selects
+    the majority-side chain.
+    Note: the original Jepsen nemesis uses clock skew in phase 1, but Docker
+    containers share the host kernel clock (date -s affects ALL containers),
+    making per-container clock manipulation impossible. We substitute CPU
+    stress to create similar state divergence — stressed+isolated validators
+    fall further behind due to slower processing.
+    Specific risks tested:
+    - Phase 1 (Isolate + Stress): isolated validators accumulate stale state.
+      CPU stress ensures they fall further behind than isolation alone.
+    - Phase 2 (Kill): isolated validators are crashed. The majority must not
+      have been affected by the stale validators' participation attempts
+    - Phase 3 (Recover): killed validators restart and must rejoin by syncing
+      from majority. Tests whether stale state from the isolated period is
+      correctly discarded
+    - Election safety: the majority-side chain must be authoritative
+  tags: [compound, nemesis, three-phase, partition, stress, kill, recovery]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Three-Phase Nemesis (Isolate, Kill, Recover)"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 6m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # ============ PHASE 1: STRESS + KILL (listed first so connection_drop
+    # overwrites these in injectedFaults map for proper teardown cleanup) ============
+
+    # CPU stress on isolated validators (degrade processing, deepen state divergence)
+    - phase: stress_bor_3
+      description: "Phase 1 — CPU stress on isolated Bor 3 (deepen stale state)"
+      target: bor_3
+      type: cpu_stress
+      params:
+        cpu_percent: 90
+        cores: 2
+      delay: 5s
+
+    - phase: stress_bor_6
+      description: "Phase 1 — CPU stress on isolated Bor 6"
+      target: bor_6
+      type: cpu_stress
+      params:
+        cpu_percent: 90
+        cores: 2
+      delay: 5s
+
+    # ============ PHASE 2: KILL ISOLATED NODES (t=60s) ============
+    - phase: kill_bor_3
+      description: "Phase 2 — SIGKILL isolated+stressed Bor 3"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 15
+      delay: 60s
+
+    - phase: kill_heimdall_3
+      description: "Phase 2 — SIGKILL isolated Heimdall 3"
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 15
+      delay: 60s
+
+    - phase: kill_bor_6
+      description: "Phase 2 — SIGKILL isolated+stressed Bor 6"
+      target: bor_6
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 15
+      delay: 60s
+
+    - phase: kill_heimdall_6
+      description: "Phase 2 — SIGKILL isolated Heimdall 6"
+      target: heimdall_6
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 15
+      delay: 60s
+
+    # ============ PHASE 1 (continued): ISOLATE via connection_drop ============
+    # Listed LAST so connection_drop is the final tracked fault type per
+    # container in injectedFaults map — ensures iptables rules are removed
+    # at TEARDOWN (orchestrator tracks only one fault type per container)
+    - phase: isolate_bor_3
+      description: "Phase 1 — isolate Bor 3 from P2P"
+      target: bor_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_bor_6
+      description: "Phase 1 — isolate Bor 6 from P2P"
+      target: bor_6
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_heimdall_3
+      description: "Phase 1 — isolate Heimdall 3 from consensus"
+      target: heimdall_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_heimdall_6
+      description: "Phase 1 — isolate Heimdall 6 from consensus"
+      target: heimdall_6
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+    # Phase 3 (RECOVER) happens automatically:
+    # - Partition rules removed during TEARDOWN
+    # - CPU stress removed during TEARDOWN
+    # - Containers restarted by restart_delay=15
+
+  success_criteria:
+    # Critical: majority continues through all phases
+    - name: majority_block_production
+      description: 6/8 majority validators produce blocks through all 3 phases
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m])[6m:1m]))
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    - name: consensus_continues
+      description: Consensus advances throughout
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 6m
+      critical: true
+
+    # Critical: recovery convergence
+    - name: recovered_validators_resync
+      description: Killed validators resync after Phase 3 recovery
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[36]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: >
+        All validators converge — majority chain is authoritative, stale
+        isolated state is discarded
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_rejoins
+      description: Recovered Heimdall validators rejoin consensus
+      type: prometheus
+      query: min(rate(cometbft_consensus_height{job=~"l2-cl-[36]-heimdall-v2-bor-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: no_db_corruption
+      description: No PebbleDB corruption from stress+kill combination
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up
+    - go_goroutines

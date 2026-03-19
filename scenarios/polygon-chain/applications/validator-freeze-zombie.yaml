@@ -3,21 +3,25 @@ kind: ChaosScenario
 metadata:
   name: validator-freeze-zombie
   description: >
-    Pause (SIGSTOP) 2 validators for 45s to create "zombie" nodes. Unlike a
-    container restart (which triggers TCP RST and immediate peer removal), a
-    paused container holds TCP connections open but never responds. Peers must
-    wait for frameReadTimeout (30s, p2p/server.go:57) before detecting the
-    failure. This tests:
-    1. syncChallengeTimeout (15s, eth/handler.go:72) — peers send required
-       block challenges that time out, triggering removePeer()
-    2. P2P frame timeout cascade — 30s read timeout means peers are blocked
-       for up to 30s per zombie connection before cleanup
-    3. Peer jail mechanism (p2p/server.go:116) — after disconnect, the peer
-       is jailed and must wait before reconnection
-    4. Recovery after unpause — do jailed peers reconnect promptly?
-    The 45s pause exceeds both the 15s sync challenge and 30s frame timeout,
-    ensuring both detection paths fire.
-  tags: [applications, container-pause, zombie, peer-timeout, frame-timeout, recovery]
+    Pause (SIGSTOP) 2 validators for 120s to create "zombie" nodes that exceed
+    ALL system timeout thresholds. Unlike a container restart (which triggers
+    TCP RST and immediate peer removal), a paused container holds TCP
+    connections open but never responds. Peers must wait for frameReadTimeout
+    (30s, p2p/server.go:57) before detecting the failure.
+    Jepsen reference: "Process Pause (SIGSTOP/SIGCONT)" — the paused node
+    doesn't exchange heartbeats, causing a new leader to be elected. When the
+    paused node wakes, it briefly processes in-flight requests as if it's still
+    the legal leader, creating a window for stale reads and lost writes.
+    The 120s pause exceeds all timeout thresholds:
+    1. syncChallengeTimeout (15s, eth/handler.go:72) — fires at ~15s
+    2. P2P frame timeout (30s, p2p/server.go:57) — fires at ~30s
+    3. CometBFT session expiry — fully expires during 120s pause
+    4. TCP keepalive intervals — most expire within 120s
+    5. Peer jail + reconnection — tests recovery after extended jail period
+    Also tests stale leader window: if the paused node was the block producer,
+    after unpause it may attempt to produce blocks before realizing it's been
+    replaced.
+  tags: [applications, container-pause, zombie, peer-timeout, frame-timeout, recovery, vm-migration]
   author: DevTools
   version: "0.1.0"
 
@@ -44,9 +48,9 @@ spec:
         pattern: "l2-cl-6-heimdall-v2-bor-validator"
       alias: heimdall_6
 
-  duration: 3m
+  duration: 5m
   warmup: 30s
-  cooldown: 2m
+  cooldown: 3m
 
   faults:
     - phase: freeze_bor_3
@@ -54,37 +58,37 @@ spec:
       target: bor_3
       type: container_pause
       params:
-        duration: 45
+        duration: 120s
 
     - phase: freeze_bor_6
-      description: Pause Bor validator 6
+      description: Pause Bor validator 6 — 120s exceeds all timeout thresholds
       target: bor_6
       type: container_pause
       params:
-        duration: 45
+        duration: 120s
 
     - phase: freeze_heimdall_3
-      description: Pause Heimdall validator 3
+      description: Pause Heimdall validator 3 — CometBFT session fully expires
       target: heimdall_3
       type: container_pause
       params:
-        duration: 45
+        duration: 120s
 
     - phase: freeze_heimdall_6
       description: Pause Heimdall validator 6
       target: heimdall_6
       type: container_pause
       params:
-        duration: 45
+        duration: 120s
 
   success_criteria:
     # Critical: remaining 6/8 validators keep producing
     - name: block_production_continues
       description: 6/8 unfrozen validators maintain block production
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m])[3m:1m]))
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
       threshold: "> 0"
-      window: 3m
+      window: 5m
       critical: true
 
     - name: consensus_continues
@@ -92,8 +96,19 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 3m
+      window: 5m
       critical: true
+
+    - name: no_stale_leader_blocks
+      description: >
+        No evidence of paused validator producing blocks after unpause while
+        still thinking it's the producer (Jepsen stale leader scenario)
+      type: log
+      pattern: "(unauthorized.*block|invalid.*producer|wrong.*signer)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
 
     - name: no_span_rotation
       description: 2/8 frozen validators must not trigger span rotation
@@ -135,7 +150,7 @@ spec:
       type: prometheus
       query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 10.0"
-      window: 3m
+      window: 5m
       critical: false
 
   metrics:
