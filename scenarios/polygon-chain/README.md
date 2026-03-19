@@ -63,32 +63,3 @@ Last run: 2026-03-19 (8-validator Kurtosis PoS devnet)
 | `pebbledb-metadata-corruption-minor` | Corrupt 16 bytes in PebbleDB CURRENT file, expect detection or clean crash | PENDING | Jepsen: Single-Bit File Corruption. Targets CURRENT file (metadata pointer). Uses `backup_first: true` for teardown restoration. |
 | `pebbledb-metadata-corruption-severe` | Corrupt 256 bytes in PebbleDB CURRENT file, expect crash and recovery or resync from peers | PENDING | Jepsen: File Truncation. Larger corruption (256 bytes) destroys MANIFEST reference entirely. |
 | `disk-fill-exhaustion` | Fill Bor data volume to 90% capacity, expect graceful degradation and recovery after fill removed | PENDING | Jepsen: Unsafe Fsync Configuration (resource exhaustion). Tests PebbleDB behavior when compaction and WAL writes fail from ENOSPC. |
-
-## Known Issues & Audit Notes
-
-### Dry-run validation limitations
-`--dry-run` validates YAML structure, field presence, target alias references, and network fault param ranges. It does **NOT** validate: fault param value types against injector type assertions, Prometheus query syntax, runtime path existence, multi-fault teardown conflicts, or any actual fault injection behavior. All runtime bugs found in this audit (container_pause duration type, file_corrupt on directories, clock_skew host contamination) were caught through code-level audit, not dry-run.
-
-### Silent no-op: `container_pause` duration parameter (FIXED)
-The `injectContainerPause` function only checks `fault.Params["duration"].(string)`. YAML `duration: 45` (bare integer) parses as Go `int`, failing the string type assertion silently — duration stays 0 and the container pauses then immediately unpauses (~0ms). **Fixed** by changing all pause durations to string format (e.g., `duration: 120s`). The previous `validator-freeze-zombie` result (PASS) was invalid — the pause never actually fired; all critical criteria passed because they checked non-paused validators.
-
-### Heimdall P2P recovery after complete isolation is extremely slow
-`single-node-isolation` revealed that after dropping all Heimdall consensus traffic (port 26656), Heimdall does not rejoin consensus even after 6+ minutes. Heimdall's exponential backoff (`initialResolveDelay=60s`, max `1hr`) makes peer rediscovery extremely slow after complete disconnection. This was never caught by existing tests because `bor-partition-recovery-speed` only blocked Bor P2P (port 30303). Requires manual container restart to recover. This affects all scenarios that block Heimdall consensus traffic.
-
-### Multi-fault teardown tracking
-The orchestrator tracks faults in `map[string]string` (containerID → faultType), storing only ONE type per container. When multiple faults target the same container, only the last-written type is removed at TEARDOWN. Scenarios with multi-type faults (`three-phase-nemesis`, `partition-induced-crash`) have been reordered so `connection_drop` (which needs iptables cleanup) is listed last in YAML, ensuring it's the tracked type.
-
-### Clock skew not implementable
-Docker containers share the host kernel clock. `date -s` inside a container either fails (no SYS_TIME capability) or changes the clock for ALL containers on the host. Per-container clock manipulation is impossible. All clock_skew-based Jepsen techniques (Instantaneous Clock Offset, Gradual Clock Drift, Targeted Clock Skew on Isolated Primaries) cannot be implemented at this infrastructure level.
-
-### Selective network partitions not implementable
-`connection_drop` (iptables) and `network` (tc/netem) operate at the port level, not the destination-IP level. Cannot create topologies where node A talks to node B but not node C. Nontransitive (bridge) partitions and true majority/minority splits with internal minority connectivity are not possible.
-
-### Disk I/O path inconsistency
-Existing compound scenarios (`disk-io-plus-network-latency`, `kill-during-disk-io-delay`, `db-corruption-recovery`) use `/var/lib/bor/bor/chaindata`. New scenarios use `/var/lib/bor/data/bor/chaindata`. Both paths may be valid depending on the Kurtosis devnet configuration. The existing scenarios passed with the shorter path on the 2026-03-18 devnet.
-
-### `container_pause` during_fault criteria timing
-Container_pause with a duration is self-contained — the goroutine pauses, blocks for the duration, then unpauses. The orchestrator's MONITOR phase (where `during_fault: true` criteria are evaluated) only starts after `wg.Wait()` completes, meaning after ALL pauses have already ended. Criteria with `during_fault: true` cannot observe the paused state. Use `post_fault_only: true` criteria or check Prometheus data retroactively instead.
-
-### Stale unit tests (pre-existing)
-`io_delay_test.go` and `stress_wrapper_test.go` reference old `lsof`/`pgrep` implementations that were refactored to use `dd` loops and `/proc` scanning. These test failures are pre-existing and unrelated to scenario changes.
