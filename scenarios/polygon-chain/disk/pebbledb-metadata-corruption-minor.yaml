@@ -1,0 +1,135 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: pebbledb-metadata-corruption-minor
+  description: >
+    Random byte corruption on a validator's PebbleDB CURRENT file — the file
+    that points PebbleDB to its active MANIFEST. Corrupting this small critical
+    file simulates cosmic ray interference, storage media degradation, or
+    firmware bugs that damage metadata rather than bulk data.
+    Jepsen reference: "Single-Bit File Corruption (Bitflips)" — tests whether
+    checksums, redundant storage, and error-correction codes actually detect
+    and recover from corruption. In some systems, corruption of a single
+    metadata file can cause permanent split-brain or node crashes.
+    Infrastructure note: file_corrupt uses `dd if=/dev/urandom` to overwrite
+    bytes at a random offset. The target_path must be a FILE, not a directory
+    (wc -c fails on directories). We target the CURRENT file because it's
+    always present in PebbleDB and is a critical metadata pointer.
+    Specific risks tested:
+    - PebbleDB CURRENT file corruption: this file contains the name of the
+      active MANIFEST. If corrupted, PebbleDB cannot find its MANIFEST and
+      cannot open the database at all
+    - Clean crash vs silent corruption: does PebbleDB crash with a clear error
+      message, or does it silently serve corrupt state?
+    - Recovery path: after detecting corruption, can the node recover by
+      resyncing from peers, or is manual intervention required?
+  tags: [disk, corruption, bitflip, checksum, pebbledb]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Single-Bit File Corruption (Bitflips)"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  duration: 8m
+  warmup: 30s
+  cooldown: 4m
+
+  faults:
+    # Phase 1: Stop Bor to corrupt files safely
+    - phase: stop_bor
+      description: "SIGKILL Bor 4 — stop before corrupting data files"
+      target: bor_4
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: false
+
+    # Phase 2: Corrupt the PebbleDB CURRENT file (small, critical metadata)
+    - phase: corrupt_current_file
+      description: "Corrupt PebbleDB CURRENT file — 16 random bytes"
+      target: bor_4
+      type: file_corrupt
+      params:
+        target_path: "/var/lib/bor/data/bor/chaindata/CURRENT"
+        corrupt_bytes: 16
+        method: random
+        backup_first: true
+      delay: 10s
+
+    # Phase 3: Restart and observe recovery behavior
+    - phase: restart_bor
+      description: "Restart Bor 4 with corrupted CURRENT file"
+      target: bor_4
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 0
+      delay: 20s
+
+  success_criteria:
+    # Critical: other validators unaffected
+    - name: healthy_validators_continue
+      description: Other 7 validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus continues
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Informational: corrupted node behavior (may crash or recover)
+    - name: corrupted_node_online
+      description: >
+        Corrupted node process is running (may be in error state).
+        PebbleDB should crash cleanly if it can't read CURRENT file.
+      type: prometheus
+      query: up{job="l2-el-4-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      critical: false
+      post_fault_only: true
+
+    - name: corruption_detected
+      description: >
+        PebbleDB detects the corruption — proves data integrity validation
+        is working. Expected: error opening database.
+      type: log
+      pattern: "(CURRENT|MANIFEST|corrupt|pebble.*error|open.*database.*fail)"
+      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      absence: false
+      critical: false
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: Corrupted node catches up if it recovers (via backup restoration)
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 100"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

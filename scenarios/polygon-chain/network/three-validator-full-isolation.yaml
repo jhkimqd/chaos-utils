@@ -1,0 +1,198 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: three-validator-full-isolation
+  description: >
+    Simultaneously isolate 3 validators from the entire network on both the Bor
+    P2P and Heimdall consensus layers. Each isolated node loses ALL connectivity
+    (not just to the majority — also to each other), creating 3 independently
+    isolated validators plus a 5-node connected majority.
+    Jepsen reference: "Symmetric Network Partition (Majority/Minority)" — forces
+    leader/primary elections. The minority side cannot replicate, and the majority
+    continues with reduced validator set.
+    Infrastructure limitation: connection_drop (iptables) operates at the port
+    level and cannot target specific destination IPs. This means the 3 "minority"
+    nodes are each fully isolated (cannot communicate with each other), which is
+    actually a STRICTER test than a true majority/minority split where the
+    minority retains internal connectivity.
+    Specific risks tested:
+    - 3/8 validators simultaneously lose ALL connectivity on both layers
+    - Majority (5/8) must maintain consensus — 5/8 = 62.5%, tests whether this
+      is sufficient for CometBFT BFT (requires >2/3 = 66.7%, so 5/8 may be
+      INSUFFICIENT for Heimdall, revealing the actual threshold)
+    - Bor block production with 5/8 validators — tests sprint continuity when
+      3 validators drop out simultaneously
+    - Recovery: all 3 isolated validators must resync and converge after
+      partition heals, without forking
+  tags: [network, partition, multi-node-isolation, iptables]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Symmetric Network Partition (Majority/Minority)"
+
+spec:
+  targets:
+    # 3 validators to isolate (both layers)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-5-heimdall-v2-bor-validator"
+      alias: heimdall_5
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Isolate Bor P2P on all 3 validators
+    - phase: isolate_bor_1
+      description: "Isolate Bor 1 — drop all P2P traffic"
+      target: bor_1
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_bor_3
+      description: "Isolate Bor 3"
+      target: bor_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_bor_5
+      description: "Isolate Bor 5"
+      target: bor_5
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    # Isolate Heimdall consensus on all 3 validators
+    - phase: isolate_heimdall_1
+      description: "Isolate Heimdall 1 — drop CometBFT P2P"
+      target: heimdall_1
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_heimdall_3
+      description: "Isolate Heimdall 3"
+      target: heimdall_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_heimdall_5
+      description: "Isolate Heimdall 5"
+      target: heimdall_5
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+  success_criteria:
+    # Critical: majority keeps producing
+    - name: majority_produces_blocks
+      description: >
+        Majority-side validators (2,4,6,7,8) continue producing blocks.
+        5/8 may be insufficient for Heimdall BFT (>2/3 needed) — this test
+        validates the actual threshold behavior.
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[24678]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    # Critical: partition heals and all nodes converge
+    - name: chain_head_converges
+      description: All 8 validators converge after partition heals
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    # Critical: consensus resumes with all validators
+    - name: full_consensus_resumes
+      description: Heimdall consensus resumes with all 8 validators after healing
+      type: prometheus
+      query: min(rate(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    # Critical: isolated nodes resync
+    - name: isolated_nodes_resync
+      description: Isolated nodes resume block sync after partition heals
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[135]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: peer_count_recovers
+      description: All validators reconnect peers after partition heals
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "> 3"
+      critical: false
+      post_fault_only: true
+
+    - name: no_fork
+      description: No fork or reorg detected
+      type: log
+      pattern: "(fork.*detected|conflicting.*chain|reorgani)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up

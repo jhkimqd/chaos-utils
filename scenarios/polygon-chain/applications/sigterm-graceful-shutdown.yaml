@@ -1,0 +1,223 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: sigterm-graceful-shutdown
+  description: >
+    SIGTERM (polite shutdown) instead of SIGKILL — tests the graceful shutdown
+    codepath. When an operator runs "docker stop" or "systemctl stop bor", the
+    process receives SIGTERM and has a window to flush buffers, close DB handles,
+    and send farewell messages to peers.
+    Jepsen reference: "Polite Process Shutdown (SIGTERM)" — some systems still
+    lose data during SIGTERM if their shutdown handler has bugs, takes too long,
+    or doesn't flush all pending writes.
+    Specific risks tested:
+    - PebbleDB graceful close: does the shutdown handler correctly flush the WAL
+      and complete in-progress compactions before the Docker kill timeout?
+    - Heimdall CometBFT shutdown: does the consensus state machine persist its
+      last committed height before the process exits?
+    - Race between SIGTERM handler and Docker's 10s grace period: if the shutdown
+      handler takes longer than the grace period, Docker sends SIGKILL, creating
+      a hybrid shutdown state where some subsystems closed cleanly and others didn't
+    - Bor→Heimdall gRPC connection teardown: does the Bor client handle the
+      graceful disconnect differently from a hard crash?
+    Tests 2 validators with back-to-back SIGTERM cycles to stress the shutdown
+    handler under repeated invocation.
+  tags: [applications, sigterm, graceful-shutdown, operator-error, pebbledb]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Polite Process Shutdown (SIGTERM)"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-7-heimdall-v2-bor-validator"
+      alias: heimdall_7
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Round 1 — SIGTERM with standard grace period (10s default)
+    - phase: sigterm_bor_3
+      description: "SIGTERM Bor 3 — tests graceful shutdown handler"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+
+    - phase: sigterm_heimdall_3
+      description: "SIGTERM Heimdall 3 — tests CometBFT graceful exit"
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+
+    - phase: sigterm_bor_7
+      description: "SIGTERM Bor 7"
+      target: bor_7
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+
+    - phase: sigterm_heimdall_7
+      description: "SIGTERM Heimdall 7"
+      target: heimdall_7
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+
+    # Round 2 — SIGTERM again 30s later, kill during post-recovery sync
+    - phase: sigterm_bor_3_round2
+      description: "Second SIGTERM Bor 3 — shutdown during recovery sync"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+    - phase: sigterm_heimdall_3_round2
+      description: "Second SIGTERM Heimdall 3 — shutdown during CometBFT replay"
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+    - phase: sigterm_bor_7_round2
+      description: "Second SIGTERM Bor 7"
+      target: bor_7
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+    - phase: sigterm_heimdall_7_round2
+      description: "Second SIGTERM Heimdall 7"
+      target: heimdall_7
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+  success_criteria:
+    - name: validators_recover
+      description: Both validators come back online after double SIGTERM
+      type: prometheus
+      query: min(up{job=~"l2-el-[37]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    - name: block_sync_resumes
+      description: Recovered Bor nodes resume block sync — graceful shutdown preserved DB state
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_consensus_rejoined
+      description: Heimdall validators rejoin consensus after graceful restart
+      type: prometheus
+      query: min(rate(cometbft_consensus_height{job=~"l2-cl-[37]-heimdall-v2-bor-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: No fork from SIGTERM restarts — all validators converge
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: healthy_validators_unaffected
+      description: Non-faulted validators maintain block production
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124568]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances throughout
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: no_shutdown_timeout
+      description: >
+        No evidence that SIGTERM handler exceeded grace period (which causes
+        Docker to escalate to SIGKILL, defeating the graceful path)
+      type: log
+      pattern: "(shutdown.*timeout|killing.*container|forced.*kill)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+    - name: no_db_corruption
+      description: No PebbleDB corruption — graceful shutdown should close DB cleanly
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+    - name: no_incomplete_wal
+      description: No incomplete WAL entries — SIGTERM handler should flush before exit
+      type: log
+      pattern: "(incomplete.*wal|truncated.*entry|wal.*recovery.*failed)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_latestspan_valid
+    - client_requests_latestspan_invalid

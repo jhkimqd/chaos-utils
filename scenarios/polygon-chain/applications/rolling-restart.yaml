@@ -1,0 +1,254 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rolling-restart
+  description: >
+    Rolling restart of validators one at a time — the standard operator pattern
+    for deploying upgrades or configuration changes. Each validator is killed and
+    restarted before moving to the next, with overlap where one validator is still
+    recovering while the next is being killed.
+    Jepsen reference: Covers "Version Upgrades Mid-Test" (rolling upgrade pattern)
+    and "Dynamic Membership Changes" (effective membership changes as nodes cycle
+    through unavailability).
+    Specific risks tested:
+    - Quorum margin erosion: as each validator restarts, the effective quorum
+      shrinks. If a recovering validator hasn't fully rejoined consensus before
+      the next is killed, the network may temporarily lose quorum
+    - Bor sprint disruption cascade: killing validators sequentially may disrupt
+      multiple consecutive producer sprints, causing block production gaps that
+      compound across the rolling window
+    - Heimdall re-proposal storm: each killed validator triggers missed proposals
+      and potential round skips. Sequential kills create a continuous stream of
+      consensus perturbations
+    - State sync bottleneck: each recovering validator tries to state sync from
+      remaining healthy nodes. Sequential recoveries concentrate sync load on
+      fewer healthy peers
+    - Cumulative peer churn: the P2P layer sees a continuous stream of
+      disconnections and reconnections, potentially exhausting connection slots
+      or triggering peer banning
+  tags: [applications, rolling-restart, upgrade, operator-error, sequential]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Version Upgrades Mid-Test"
+    - "Jepsen: Dynamic Membership Changes"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-5-heimdall-v2-bor-validator"
+      alias: heimdall_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-7-heimdall-v2-bor-validator"
+      alias: heimdall_7
+
+  duration: 8m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Validator 1 — restart at t=0
+    - phase: rolling_bor_1
+      description: "Rolling restart 1/4 — SIGKILL Bor 1"
+      target: bor_1
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    - phase: rolling_heimdall_1
+      description: "Rolling restart 1/4 — SIGKILL Heimdall 1"
+      target: heimdall_1
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    # Validator 3 — restart at t=30s (validator 1 may still be recovering)
+    - phase: rolling_bor_3
+      description: "Rolling restart 2/4 — SIGKILL Bor 3 (validator 1 still recovering)"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+    - phase: rolling_heimdall_3
+      description: "Rolling restart 2/4 — SIGKILL Heimdall 3"
+      target: heimdall_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+    # Validator 5 — restart at t=60s
+    - phase: rolling_bor_5
+      description: "Rolling restart 3/4 — SIGKILL Bor 5"
+      target: bor_5
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 60s
+
+    - phase: rolling_heimdall_5
+      description: "Rolling restart 3/4 — SIGKILL Heimdall 5"
+      target: heimdall_5
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 60s
+
+    # Validator 7 — restart at t=90s
+    - phase: rolling_bor_7
+      description: "Rolling restart 4/4 — SIGKILL Bor 7"
+      target: bor_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 90s
+
+    - phase: rolling_heimdall_7
+      description: "Rolling restart 4/4 — SIGKILL Heimdall 7"
+      target: heimdall_7
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 90s
+
+  success_criteria:
+    # Critical: block production never stops — at least 6/8 validators always online
+    - name: continuous_block_production
+      description: >
+        Block production continues throughout rolling restart — quorum is
+        maintained at every point in the sequence
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: consensus never stops
+    - name: continuous_consensus
+      description: Heimdall consensus advances at every point during rolling restart
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: all validators recover by end
+    - name: all_validators_online
+      description: All 4 restarted validators fully recovered by end of test
+      type: prometheus
+      query: min(up{job=~"l2-el-[1357]-bor-heimdall-v2-validator"})
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    # Critical: chain convergence
+    - name: chain_head_converges
+      description: All validators converge after rolling restart completes
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    # Critical: peer mesh stability
+    - name: peer_count_healthy
+      description: >
+        All validators maintain adequate peer count throughout — cumulative
+        churn doesn't exhaust connection slots or trigger peer banning
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "> 3"
+      critical: true
+      post_fault_only: true
+
+    # Informational: block intervals
+    - name: block_intervals_acceptable
+      description: Block intervals stay bounded during rolling restart
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 8m
+      critical: false
+
+    - name: no_db_corruption
+      description: No PebbleDB corruption across any restarted validator
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+    - name: span_api_healthy
+      description: Span API remains healthy despite sequential validator cycling
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[5m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[5m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up
+    - go_goroutines
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total

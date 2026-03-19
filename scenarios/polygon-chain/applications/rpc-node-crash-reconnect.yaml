@@ -1,0 +1,137 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rpc-node-crash-reconnect
+  description: >
+    Crash and restart the RPC/witness-sync node (non-validator) that downstream
+    clients depend on, then verify it reconnects to the validator mesh and
+    resumes syncing without data gaps.
+    Jepsen reference: "Client Crash and Reconnect" — tests client session
+    management, connection recovery, and whether reconnected clients get
+    correct state. Stale client state may cause duplicate operations; new
+    clients may miss in-flight data.
+    In Polygon PoS, the "client" is the RPC node (el-9) that serves external
+    queries. Crashing it tests:
+    - Witness sync recovery: the RPC node syncs blocks via the witness protocol.
+      After crash, it must re-establish witness subscriptions with validators
+      and fill any block gap from the downtime
+    - P2P reconnection: the RPC node must reconnect to the P2P mesh and
+      rediscover peers. Tests whether it gets jailed after abrupt disconnect
+    - State consistency: after recovery, the RPC node's state must match the
+      validator chain — no missing blocks, no stale state served to clients
+    - Validator impact: crashing an RPC node should have ZERO impact on
+      validator block production or consensus
+  tags: [applications, client-crash, rpc, reconnect, witness-sync]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Client Crash and Reconnect"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-9-bor-heimdall-v2-rpc"
+      alias: rpc_9
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    # Crash cycle 1 — SIGKILL RPC node
+    - phase: crash_rpc_1
+      description: "SIGKILL RPC node — simulate client crash"
+      target: rpc_9
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    # Crash cycle 2 — kill again during recovery to test reconnection stability
+    - phase: crash_rpc_2
+      description: "Second SIGKILL RPC node — crash during recovery/resync"
+      target: rpc_9
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+    # Crash cycle 3 — third crash to stress session management
+    - phase: crash_rpc_3
+      description: "Third SIGKILL RPC node — stress reconnection logic"
+      target: rpc_9
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 60s
+
+  success_criteria:
+    # Critical: RPC node comes back online
+    - name: rpc_recovers
+      description: RPC node comes back online after 3 crash cycles
+      type: prometheus
+      query: up{job=~"l2-el-9-bor-heimdall-v2-rpc"}
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+    # Critical: RPC node resumes syncing
+    - name: rpc_resumes_sync
+      description: RPC node resumes block sync — witness subscriptions re-established
+      type: prometheus
+      query: rate(chain_head_block{job=~"l2-el-9-bor-heimdall-v2-rpc"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    # Critical: RPC catches up to validators
+    - name: rpc_catches_up
+      description: >
+        RPC node chain head within 30 blocks of validators — no permanent
+        data gap from crash/reconnect cycles
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - chain_head_block{job=~"l2-el-9-bor-heimdall-v2-rpc"}
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    # Critical: validators completely unaffected
+    - name: validators_unaffected
+      description: Validator block production completely unaffected by RPC crash
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: consensus_unaffected
+      description: Heimdall consensus unaffected by RPC node crash
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Informational: peer recovery
+    - name: rpc_peers_recover
+      description: RPC node re-establishes peer connections
+      type: prometheus
+      query: cometbft_p2p_peers{job=~"l2-cl-9-heimdall-v2-bor-rpc"} or vector(5)
+      threshold: "> 2"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

@@ -1,0 +1,137 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: single-node-isolation
+  description: >
+    A single validator is completely cut off from all other nodes while the
+    remaining 7 validators stay fully connected. The simplest possible network
+    failure scenario.
+    Jepsen reference: "Single-Node Isolation" — tests whether a single isolated
+    node correctly steps down from leadership and whether clients connected to
+    it receive errors rather than stale data. Even this minimal failure is
+    sufficient to cause data loss in many systems.
+    Specific risks tested:
+    - Isolated node behavior: does it continue attempting to produce blocks?
+      In PoS it should not be able to commit, but it may still generate and
+      broadcast tentative blocks
+    - Bor P2P timeout handling: the isolated node has zero peers. Tests whether
+      Bor correctly enters a "no peers" state and pauses block production
+    - Heimdall consensus with 7/8: CometBFT should easily maintain consensus
+      with 7/8 validators (well above 2/3 threshold)
+    - Recovery after isolation: when connectivity restores, the node must
+      resync without forking. Tests whether it correctly discards any
+      tentative state built during isolation
+    - RPC behavior during isolation: if clients query the isolated node's RPC,
+      they should get errors or stale data warnings, not false confirmations
+  tags: [network, partition, single-node, isolation, iptables]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Single-Node Isolation"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 4m
+
+  faults:
+    - phase: isolate_bor_4
+      description: "Completely isolate Bor 4 — drop all P2P traffic"
+      target: bor_4
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_heimdall_4
+      description: "Completely isolate Heimdall 4 — drop all CometBFT P2P"
+      target: heimdall_4
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+  success_criteria:
+    # Critical: remaining 7 validators continue producing
+    - name: majority_continues
+      description: 7/8 validators maintain block production during isolation
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m])[4m:1m]))
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus continues with 7/8 (above 2/3 threshold)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    # Critical: isolated node stalls
+    - name: isolated_node_stalls
+      description: Isolated Bor node stops advancing — cannot produce alone
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      threshold: "< 0.5"
+      critical: false
+      during_fault: true
+
+    # Critical: recovery after isolation ends
+    - name: isolated_node_recovers
+      description: Isolated node resumes block sync after partition heals
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_rejoins
+      description: Isolated Heimdall rejoins consensus
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: Isolated node catches up — no fork
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: peer_count_recovers
+      description: Isolated node reconnects to peers after healing
+      type: prometheus
+      query: cometbft_p2p_peers{job="l2-cl-4-heimdall-v2-bor-validator"}
+      threshold: "> 3"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up

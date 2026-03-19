@@ -1,0 +1,190 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: progressive-partition-expansion
+  description: >
+    Staggered progressive isolation — validators are partitioned one at a time
+    at 30s intervals, creating an expanding isolation zone. By the final phase,
+    3 validators are simultaneously partitioned.
+    Jepsen reference: "Rapid-Cycle Partitions" — maximizes the number of
+    topology changes per unit time, stressing failure detection and leader
+    election under varying conditions.
+    Infrastructure note: the chaos-runner orchestrator only removes faults
+    during TEARDOWN, so faults from earlier phases persist when later phases
+    start. This means the partition is ADDITIVE (progressive expansion), not
+    true on/off cycling. Each new phase adds another isolated validator while
+    previous isolations remain active.
+    Specific risks tested:
+    - Progressive quorum erosion: at t=0 one validator is isolated (7/8 remain),
+      at t=30 two are isolated (6/8), at t=60 three are isolated (5/8). Tests
+      whether consensus degrades gracefully as more validators drop
+    - Continuous consensus perturbation: each new isolation triggers missed
+      proposals, round skips, and peer removal cascades
+    - Peer jail accumulation: validators isolated earlier accumulate longer
+      jail times, testing whether recovery speed degrades
+    - Recovery from maximum isolation: at TEARDOWN all 3 partitions heal
+      simultaneously, creating a burst of reconnection activity
+  tags: [network, partition, progressive, staggered, iptables]
+  author: DevTools
+  version: "0.1.0"
+  references:
+    - "Jepsen: Rapid-Cycle Partitions"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-5-heimdall-v2-bor-validator"
+      alias: heimdall_5
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-7-heimdall-v2-bor-validator"
+      alias: heimdall_7
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 3m
+
+  faults:
+    # Phase 1 (t=0): isolate validator 3
+    - phase: isolate_bor_3
+      description: "Phase 1 — isolate Bor 3 (1/3 isolated)"
+      target: bor_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: isolate_heimdall_3
+      description: "Phase 1 — isolate Heimdall 3"
+      target: heimdall_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+    # Phase 2 (t=30s): add validator 5 to isolation
+    - phase: isolate_bor_5
+      description: "Phase 2 — isolate Bor 5 (2/3 isolated, 6/8 remaining)"
+      target: bor_5
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+      delay: 30s
+
+    - phase: isolate_heimdall_5
+      description: "Phase 2 — isolate Heimdall 5"
+      target: heimdall_5
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+      delay: 30s
+
+    # Phase 3 (t=60s): add validator 7 to isolation (maximum isolation)
+    - phase: isolate_bor_7
+      description: "Phase 3 — isolate Bor 7 (3/3 isolated, 5/8 remaining)"
+      target: bor_7
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+      delay: 60s
+
+    - phase: isolate_heimdall_7
+      description: "Phase 3 — isolate Heimdall 7"
+      target: heimdall_7
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+      delay: 60s
+
+  success_criteria:
+    # Critical: block production continues through progressive isolation
+    - name: block_production_continues
+      description: Block production continues as validators are progressively isolated
+      type: prometheus
+      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[4m:1m]))
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    - name: consensus_continues
+      description: Consensus advances through progressive isolation
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      window: 4m
+      critical: true
+
+    # Critical: all nodes converge after simultaneous TEARDOWN
+    - name: chain_head_converges
+      description: All validators converge after all 3 partitions heal at TEARDOWN
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: all_peers_recover
+      description: All isolated validators recover peer connections
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-[357]-heimdall-v2-bor-validator"})
+      threshold: "> 3"
+      critical: true
+      post_fault_only: true
+
+    - name: block_intervals_bounded
+      description: Block intervals stay bounded during progressive isolation
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 15.0"
+      window: 4m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
