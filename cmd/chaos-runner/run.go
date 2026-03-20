@@ -189,8 +189,10 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 	progressReporter.ReportTestCompleted(report)
 
 	// Return error if test failed
+	// err != nil means infrastructure failure (sidecar creation, container errors, etc.)
+	// — exit code 2 so the CI treats it as a real breakage, not an expected test finding.
 	if err != nil {
-		return fmt.Errorf("chaos test failed: %w", err)
+		return NewInfraError("chaos test failed: %w", err)
 	}
 
 	if !result.Success {
