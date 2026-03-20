@@ -56,7 +56,7 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 	// Load configuration
 	cfg, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
+		return NewInfraError("failed to load configuration: %w", err)
 	}
 
 	// Override enclave if specified
@@ -71,7 +71,7 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 			cfg.Prometheus.URL = endpoint
 			fmt.Printf("Discovered Prometheus endpoint: %s\n", endpoint)
 		} else {
-			return fmt.Errorf("Prometheus is required but not reachable: auto-discovery failed: %w", err)
+			return NewInfraError("Prometheus is required but not reachable: auto-discovery failed: %w", err)
 		}
 	}
 
@@ -133,7 +133,7 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 	logger.Info("Creating orchestrator")
 	orch, err := orchestrator.New(cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create orchestrator: %w", err)
+		return NewInfraError("failed to create orchestrator: %w", err)
 	}
 
 	// Auto-discover Heimdall API endpoint from Kurtosis

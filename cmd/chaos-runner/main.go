@@ -1,11 +1,27 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 )
+
+// InfraError wraps infrastructure errors that should exit with code 2
+// (distinct from test criteria failures which exit with code 1).
+// The CI uses this distinction: exit 1 = test failure, exit 2+ = infra error.
+type InfraError struct {
+	Err error
+}
+
+func (e *InfraError) Error() string { return e.Err.Error() }
+func (e *InfraError) Unwrap() error { return e.Err }
+
+// NewInfraError creates an infrastructure error that will cause exit code 2.
+func NewInfraError(format string, a ...interface{}) *InfraError {
+	return &InfraError{Err: fmt.Errorf(format, a...)}
+}
 
 var (
 	// Global flags
@@ -39,6 +55,13 @@ func init() {
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		// Exit code 2 for infrastructure errors (config, connectivity, setup failures).
+		// Exit code 1 for test criteria failures (scenario ran but didn't meet thresholds).
+		// The CI workflow uses this distinction to separate infra breakage from expected test findings.
+		var infraErr *InfraError
+		if errors.As(err, &infraErr) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 }

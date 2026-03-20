@@ -64,3 +64,34 @@ Last run: 2026-03-19 (8-validator Kurtosis PoS devnet)
 | `pebbledb-metadata-corruption-severe` | Corrupt 256 bytes in PebbleDB CURRENT file, expect crash and recovery | FAIL | 2/4 criteria. Node crashed as expected (correct behavior — PebbleDB refuses corrupt metadata). `no_silent_data_loss` log criterion returned empty match — the log patterns don't match Bor's actual error format. The crash IS the correct response; this is a criteria tuning issue, not a system bug. |
 | `disk-fill-exhaustion` | Fill Bor data volume to 90% capacity, expect graceful degradation and recovery after fill removed | FAIL | **Finding**: after disk fill + removal, Bor does not resume block production (rate=0). PebbleDB may enter an unrecoverable state when disk fills — compaction failures and WAL write errors may require container restart to clear. Other validators unaffected. |
 
+## Known Issues & Findings
+
+### Heimdall P2P recovery after complete isolation is broken (HIGH SEVERITY)
+**Reproducible on multiple validators.** After dropping all CometBFT P2P traffic (port 26656) for 3+ minutes, Heimdall does not rejoin consensus even after 8+ minutes. Peer count stays at 0 permanently. Root cause: CometBFT's exponential backoff (`initialResolveDelay=60s`, max up to 1 hour) makes peer rediscovery extremely slow after complete disconnection. This was never caught by existing tests because `bor-partition-recovery-speed` only blocked Bor P2P (port 30303). Affects all scenarios that block Heimdall consensus traffic. Requires `docker restart` to recover. Every network partition scenario that isolates both layers (single-node-isolation, targeted-producer-isolation, three-validator-full-isolation, two-phase-partition-escalation, progressive-partition-expansion) hits this issue.
+
+### Bor cannot resync from empty chaindata
+After `rm -rf chaindata` + restart, Bor does not automatically reconstruct state from P2P peers. The chain head stays at 0. Bor likely requires either a state sync configuration, a snapshot download, or manual genesis initialization to recover from total data loss. This is a realistic operational risk — an operator who accidentally deletes chaindata cannot recover by simply restarting.
+
+### Bor does not auto-recover from disk exhaustion
+After the disk fill is removed during teardown, Bor's block production does not resume. PebbleDB's compaction and WAL write paths may enter a persistent error state when encountering ENOSPC. A container restart may be required to clear the error state and resume normal operation.
+
+### Bor data path
+The actual Bor chaindata path in the Kurtosis devnet is `/var/lib/bor/bor/chaindata/` (not `/var/lib/bor/data/bor/chaindata/`). All scenarios have been corrected to use the correct path.
+
+### Dry-run validation limitations
+`--dry-run` validates YAML structure only. It does NOT validate: fault param value types, Prometheus query syntax, runtime path existence, or any actual fault injection behavior. All runtime bugs found in this audit were caught through code-level analysis and live testing.
+
+### Silent no-op: `container_pause` duration parameter (FIXED)
+`injectContainerPause` only checks `fault.Params["duration"].(string)`. YAML `duration: 45` (bare integer) silently fails — duration stays 0, container pauses then immediately unpauses. Fixed to `duration: 120s` (string format). The previous `validator-freeze-zombie` PASS result was invalid.
+
+### `container_pause` during_fault criteria timing
+Container_pause with duration blocks in the goroutine and unpauses before MONITOR evaluates `during_fault` criteria. Use `post_fault_only: true` instead.
+
+### Multi-fault teardown tracking
+`injectedFaults` map stores only one fault type per container. Scenarios with multi-type faults have been reordered so cleanup-critical types (connection_drop) are listed last.
+
+### Clock skew not implementable
+Docker containers share the host kernel clock. Per-container clock manipulation is impossible.
+
+### Selective network partitions not implementable
+`connection_drop` and `network` (tc) operate at port level only, not destination IP. Cannot create topologies requiring selective link cutting.
