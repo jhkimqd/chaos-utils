@@ -201,6 +201,27 @@ func (c *Client) inspectToService(ctr types.ContainerJSON) (*discovery.Service, 
 	return svc, nil
 }
 
+// EnsureImage checks if an image exists locally and pulls it if not.
+// Returns an error if the image cannot be found or pulled.
+func (c *Client) EnsureImage(ctx context.Context, image string) error {
+	_, _, err := c.cli.ImageInspectWithRaw(ctx, image)
+	if err == nil {
+		return nil // image exists locally
+	}
+
+	fmt.Printf("Image %s not found locally, pulling...\n", image)
+	reader, pullErr := c.cli.ImagePull(ctx, image, types.ImagePullOptions{})
+	if pullErr != nil {
+		return fmt.Errorf("image %s not found locally and pull failed: %w", image, pullErr)
+	}
+	defer reader.Close()
+	// Drain the pull progress stream — ImagePull is not complete until EOF.
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return fmt.Errorf("error reading pull response for %s: %w", image, err)
+	}
+	return nil
+}
+
 // ContainerCreate creates a new container
 func (c *Client) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *specs.Platform, containerName string) (container.CreateResponse, error) {
 	return c.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, platform, containerName)
