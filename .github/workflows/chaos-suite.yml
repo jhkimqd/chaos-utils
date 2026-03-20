@@ -176,6 +176,9 @@ jobs:
                 cl_image: "${HV2_IMAGE}"
                 el_type: bor
                 el_image: "${BOR_IMAGE}"
+
+            additional_services:
+              - observability
           PARAMS
 
           echo "--- Generated params ---"
