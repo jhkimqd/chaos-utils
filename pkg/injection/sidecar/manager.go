@@ -36,8 +36,10 @@ func (m *Manager) CreateSidecar(ctx context.Context, targetContainerID string) (
 		return sidecarID, nil
 	}
 
-	// Pull sidecar image if needed
-	fmt.Printf("Ensuring sidecar image is available: %s\n", m.sidecarImage)
+	// Pull sidecar image if not available locally
+	if err := m.dockerClient.EnsureImage(ctx, m.sidecarImage); err != nil {
+		return "", fmt.Errorf("sidecar image unavailable: %w", err)
+	}
 
 	// Create sidecar container with network namespace sharing
 	sidecarName := fmt.Sprintf("chaos-sidecar-%s", targetContainerID[:12])
