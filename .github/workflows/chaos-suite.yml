@@ -221,6 +221,36 @@ jobs:
           REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${REPORT_DIR}"
 
+          # ── Resolve RPC URL once for health checks ──
+          VALIDATOR_RPC="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-1-bor-heimdall-v2-validator rpc)"
+          VALIDATOR_RPC="${VALIDATOR_RPC#http://}"
+          VALIDATOR_RPC="${VALIDATOR_RPC#https://}"
+          RPC_URL="http://${VALIDATOR_RPC}"
+
+          # ── Health gate: verify devnet is alive (blocks advancing) ──
+          # Returns 0 if healthy, 1 if not.
+          check_devnet_health() {
+            local block_before block_after
+            block_before=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
+            if [[ "${block_before}" == "0" ]]; then
+              echo "  ⚠ RPC unreachable"
+              return 1
+            fi
+            sleep 30
+            block_after=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
+            if [[ "${block_after}" == "0" ]]; then
+              echo "  ⚠ RPC unreachable after wait"
+              return 1
+            fi
+            local delta=$((block_after - block_before))
+            echo "  blocks: ${block_before} → ${block_after} (Δ${delta} in 30s)"
+            if [[ "${delta}" -le 0 ]]; then
+              echo "  ⚠ Chain is not advancing"
+              return 1
+            fi
+            return 0
+          }
+
           # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
@@ -256,12 +286,32 @@ jobs:
           PASSED=0
           FAILED=0
           ERRORS=0
+          SKIPPED=0
           TEST_FAILURES=""
+          DEVNET_HALTED=false
 
           for scenario in ${SELECTED}; do
             name=$(basename "${scenario}" .yaml)
             echo "::group::${name}"
             echo "────────────────────────────────────"
+
+            # ── Pre-flight health gate ──
+            echo "Pre-flight health check..."
+            if ! check_devnet_health; then
+              echo "Health check failed — waiting 60s for recovery..."
+              sleep 60
+              if ! check_devnet_health; then
+                echo "::error::Devnet is unrecoverable — halting test suite"
+                echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
+                SKIPPED=$((SKIPPED + 1))
+                DEVNET_HALTED=true
+                echo "::endgroup::"
+                break
+              fi
+              echo "Devnet recovered after retry"
+            fi
+            echo "Health check passed ✓"
+
             echo "Running: ${name}"
 
             # ── Build --set overrides for fast mode ──
@@ -304,17 +354,23 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
 
-            # Brief stabilization between scenarios
-            echo "Waiting 15s for devnet stabilization..."
-            sleep 15
-
             echo "::endgroup::"
           done
 
-          TOTAL=$((PASSED + FAILED + ERRORS))
+          # ── Mark remaining scenarios as skipped if halted ──
+          if [[ "${DEVNET_HALTED}" == "true" ]]; then
+            REMAINING=$(echo "${SELECTED}" | tr ' ' '\n' | grep -v '^$' | tail -n +$((PASSED + FAILED + ERRORS + SKIPPED + 1)))
+            for scenario in ${REMAINING}; do
+              name=$(basename "${scenario}" .yaml)
+              echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
+              SKIPPED=$((SKIPPED + 1))
+            done
+          fi
+
+          TOTAL=$((PASSED + FAILED + ERRORS + SKIPPED))
           echo ""
           echo "═══════════════════════════════════════"
-          echo "  RESULTS: ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${ERRORS} errors"
+          echo "  RESULTS: ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${ERRORS} errors, ${SKIPPED} skipped"
           echo "═══════════════════════════════════════"
 
           if [[ -n "${TEST_FAILURES}" ]]; then
@@ -323,14 +379,21 @@ jobs:
             echo -e "${TEST_FAILURES}"
           fi
 
+          if [[ "${DEVNET_HALTED}" == "true" ]]; then
+            echo ""
+            echo "⚠ Suite halted early: devnet became unrecoverable"
+          fi
+
           echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
 
-          # Fail the job only on infrastructure errors (exit code > 1),
-          # not on test criteria failures (exit code 1). Test failures
-          # are expected findings — they indicate system behavior, not
-          # broken CI.
+          # Fail the job on infrastructure errors (exit code > 1) or
+          # if the devnet became unrecoverable mid-suite.
           if [[ "${ERRORS}" -gt 0 ]]; then
             echo "::error::${ERRORS} scenario(s) hit infrastructure errors"
+            exit 1
+          fi
+          if [[ "${DEVNET_HALTED}" == "true" ]]; then
+            echo "::error::Devnet became unrecoverable — ${SKIPPED} scenario(s) skipped"
             exit 1
           fi
 
