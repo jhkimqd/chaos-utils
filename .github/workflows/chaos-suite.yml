@@ -221,34 +221,80 @@ jobs:
           REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${REPORT_DIR}"
 
-          # ── Resolve RPC URL once for health checks ──
-          VALIDATOR_RPC="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-1-bor-heimdall-v2-validator rpc)"
-          VALIDATOR_RPC="${VALIDATOR_RPC#http://}"
-          VALIDATOR_RPC="${VALIDATOR_RPC#https://}"
-          RPC_URL="http://${VALIDATOR_RPC}"
+          # ── Resolve RPC URLs for health checks ──
+          # Check validators 1, 3, 6 — spread across the set so a single
+          # faulted validator doesn't false-alarm the gate.
+          HEALTH_CHECK_VALIDATORS="1 3 6"
+          declare -A VALIDATOR_RPCS
+          for v in ${HEALTH_CHECK_VALIDATORS}; do
+            raw="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator rpc 2>/dev/null || echo "")"
+            raw="${raw#http://}"; raw="${raw#https://}"
+            if [[ -n "${raw}" ]]; then
+              VALIDATOR_RPCS[${v}]="http://${raw}"
+            fi
+          done
 
           # ── Health gate: verify devnet is alive (blocks advancing) ──
-          # Returns 0 if healthy, 1 if not.
+          # Checks multiple validators; returns 0 if ANY show block advancement.
+          # On total failure, dumps last 50 log lines from each checked validator.
           check_devnet_health() {
-            local block_before block_after
-            block_before=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
-            if [[ "${block_before}" == "0" ]]; then
-              echo "  ⚠ RPC unreachable"
-              return 1
-            fi
+            local any_advanced=false
+            local failed_validators=""
+
+            # Snapshot block heights
+            declare -A blocks_before
+            for v in ${HEALTH_CHECK_VALIDATORS}; do
+              local url="${VALIDATOR_RPCS[${v}]:-}"
+              if [[ -z "${url}" ]]; then
+                blocks_before[${v}]="0"
+                continue
+              fi
+              blocks_before[${v}]=$(cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+            done
+
             sleep 30
-            block_after=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
-            if [[ "${block_after}" == "0" ]]; then
-              echo "  ⚠ RPC unreachable after wait"
-              return 1
+
+            # Re-check and compare
+            for v in ${HEALTH_CHECK_VALIDATORS}; do
+              local url="${VALIDATOR_RPCS[${v}]:-}"
+              local before="${blocks_before[${v}]}"
+              if [[ -z "${url}" || "${before}" == "0" ]]; then
+                echo "  validator ${v}: ⚠ RPC unreachable"
+                failed_validators="${failed_validators} ${v}"
+                continue
+              fi
+              local after
+              after=$(cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+              if [[ "${after}" == "0" ]]; then
+                echo "  validator ${v}: ⚠ RPC unreachable after wait"
+                failed_validators="${failed_validators} ${v}"
+                continue
+              fi
+              local delta=$((after - before))
+              echo "  validator ${v}: blocks ${before} → ${after} (Δ${delta} in 30s)"
+              if [[ "${delta}" -gt 0 ]]; then
+                any_advanced=true
+              else
+                failed_validators="${failed_validators} ${v}"
+              fi
+            done
+
+            if [[ "${any_advanced}" == "true" ]]; then
+              return 0
             fi
-            local delta=$((block_after - block_before))
-            echo "  blocks: ${block_before} → ${block_after} (Δ${delta} in 30s)"
-            if [[ "${delta}" -le 0 ]]; then
-              echo "  ⚠ Chain is not advancing"
-              return 1
-            fi
-            return 0
+
+            # Total failure — dump recent logs for diagnosis
+            echo ""
+            echo "  ╔══════════════════════════════════════════════════════╗"
+            echo "  ║  ALL HEALTH-CHECK VALIDATORS UNRESPONSIVE           ║"
+            echo "  ╚══════════════════════════════════════════════════════╝"
+            for v in ${failed_validators}; do
+              echo ""
+              echo "  ── last 50 lines: l2-el-${v}-bor-heimdall-v2-validator ──"
+              kurtosis service logs ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator 2>/dev/null | tail -50 || echo "  (logs unavailable)"
+            done
+            echo ""
+            return 1
           }
 
           # ── Collect all candidate scenario files ──
