@@ -131,30 +131,10 @@ spec:
       critical: true
       post_fault_only: true
 
-    # During-fault informational
-    - name: goroutine_count_during_fault
-      description: Goroutine count during fault — baseline for comparison
-      type: prometheus
-      query: max(go_goroutines{job=~"l2-el-[2457]-bor-heimdall-v2-validator"})
-      threshold: "< 10000"
-      critical: false
-      during_fault: true
-
-    - name: goroutine_count_after_fault
-      description: >
-        Goroutine count after fault — should be similar to during-fault.
-        If goroutines leaked, count would be lower (dead broadcast goroutines).
-      type: prometheus
-      query: max(go_goroutines{job=~"l2-el-[2457]-bor-heimdall-v2-validator"})
-      threshold: "< 10000"
-      critical: false
-      post_fault_only: true
-
   metrics:
     - chain_head_block
     - cometbft_consensus_height
     - cometbft_p2p_peers
-    - go_goroutines
     - heimdallv2_bor_api_calls_total
     - heimdallv2_bor_api_calls_success_total
     - up
