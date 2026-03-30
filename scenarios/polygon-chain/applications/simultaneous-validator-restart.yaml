@@ -27,7 +27,8 @@ spec:
 
   duration: 2m
   warmup: 20s  # Ensure clean state before restart
-  cooldown: 1m  # Longer cooldown to ensure recovery
+  cooldown: 3m  # Extended cooldown: all 8 validators restart simultaneously so peer
+                # re-discovery and consensus re-establishment takes longer than a single-node restart
 
   # Restart all validators simultaneously
   faults:
@@ -82,11 +83,18 @@ spec:
       threshold: "== 0"
       critical: false
 
-    # Fault effectiveness: restart causes brief period of missing validators
+    # Fault effectiveness: restart causes validators to briefly go offline
+    # Uses the Prometheus-generated `up` metric (set to 0 on failed scrapes) rather than
+    # cometbft_consensus_missing_validators, which requires a *running* Heimdall instance to
+    # report. When all validators restart simultaneously no surviving instance can emit that
+    # metric, so max_over_time always returns 0. `up` is recorded by the Prometheus server
+    # itself and correctly captures the downtime window even during a full simultaneous outage.
+    # The 8m look-back covers the full test timeline: warmup(20s) + inject(~90s) + monitor(2m)
+    # + cooldown(3m) ≈ 6.5 min, so 8m safely reaches back to the start of the restart.
     - name: restart_causes_brief_outage
-      description: Simultaneous restart causes all validators to briefly disappear from consensus
+      description: Simultaneous restart causes all validators to briefly go offline (captured via Prometheus scrape failures)
       type: prometheus
-      query: max_over_time(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[5m])
+      query: max(1 - min_over_time(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[8m]))
       threshold: "> 0"
       critical: false
 

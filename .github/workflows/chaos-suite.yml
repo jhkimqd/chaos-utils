@@ -329,6 +329,13 @@ jobs:
           # the spec-level duration, so it must be >= the longest fault.
           SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
 
+          # ── Scenarios that need their full YAML cooldown for post-fault recovery ──
+          # These restart the entire validator set simultaneously; after the fault clears,
+          # all 8 nodes must re-discover peers and re-establish CometBFT consensus before
+          # the next scenario can safely run. The standard 90 s cooldown is too short —
+          # the YAML sets 3 m, which must not be compressed.
+          LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart"
+
           PASSED=0
           FAILED=0
           ERRORS=0
@@ -368,10 +375,19 @@ jobs:
                 [[ "${name}" == "${s}" ]] && IS_SLOW=true
               done
 
+              IS_LONG_COOLDOWN=false
+              for s in ${LONG_COOLDOWN_SCENARIOS}; do
+                [[ "${name}" == "${s}" ]] && IS_LONG_COOLDOWN=true
+              done
+
               if [[ "${IS_SLOW}" == "true" ]]; then
                 # Scenarios with large fault delays / pause durations:
                 # compress warmup + cooldown but keep duration close to original
                 SET_FLAGS="--set warmup=15s --set cooldown=90s"
+              elif [[ "${IS_LONG_COOLDOWN}" == "true" ]]; then
+                # Scenarios that need the full YAML cooldown for post-fault recovery:
+                # only compress warmup and duration, leave cooldown at its YAML value
+                SET_FLAGS="--set warmup=15s --set duration=2m"
               else
                 # Standard compression: 15s warmup, 2m duration, 90s cooldown
                 # Total: ~3m45s per scenario (vs 7-10m original)
