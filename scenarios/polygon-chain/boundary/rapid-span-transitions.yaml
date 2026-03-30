@@ -1,0 +1,95 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rapid-span-transitions
+  description: >
+    Run CPU stress + disk I/O on 1 validator while the chain crosses multiple
+    span transitions. At span=128s, a 10-minute test covers ~4-5 spans.
+    Tests span cache memory growth, snapshot accumulation, and span store
+    correctness under slow processing.
+
+    Target code paths:
+    - span_store.go — LRU cache across many span transitions
+    - snapshot.go — checkpoint storage at sprint boundaries
+    - bor.go:checkAndCommitSpan() — commit at boundary blocks
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [boundary, span, cache, memory]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-4-bor-heimdall-v2-validator"
+      alias: bor_4
+
+  duration: 5m
+  warmup: 20s
+  cooldown: 30s
+
+  faults:
+    - phase: cpu_stress_bor_4
+      description: "30% CPU stress on Bor 4 — slower span processing"
+      target: bor_4
+      type: cpu_stress
+      params:
+        cpu_percent: 30
+        cores: 1
+
+    - phase: disk_io_bor_4
+      description: "50ms disk I/O latency — stress snapshot writes"
+      target: bor_4
+      type: disk_io
+      params:
+        io_latency_ms: 50
+
+  success_criteria:
+    - name: all_validators_producing
+      description: "All validators produce blocks through 4+ span transitions"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_convergence
+      description: "All validators stay in sync"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+
+    - name: goroutine_count_bounded
+      description: "Goroutine count stable across span transitions"
+      type: prometheus
+      query: max(system_cpu_goroutines{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 3000"
+      critical: false
+
+    - name: span_api_success
+      description: "Span API calls succeed through all transitions"
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid[2m])) / clamp_min(sum(rate(client_requests_span_valid[2m])) + sum(rate(client_requests_span_invalid[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.95"
+      critical: false
+
+    - name: no_db_corruption
+      description: "No PebbleDB corruption from I/O stress"
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - system_cpu_goroutines
+    - go_memstats_alloc_bytes
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid

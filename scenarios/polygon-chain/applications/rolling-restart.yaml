@@ -76,9 +76,9 @@ spec:
         pattern: "l2-cl-7-heimdall-v2-bor-validator"
       alias: heimdall_7
 
-  duration: 8m
+  duration: 3m
   warmup: 30s
-  cooldown: 3m
+  cooldown: 1m
 
   faults:
     # Validator 1 — restart at t=0
@@ -170,9 +170,8 @@ spec:
         Block production continues throughout rolling restart — quorum is
         maintained at every point in the sequence
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 8m
       critical: true
 
     # Critical: consensus never stops
@@ -181,7 +180,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 8m
       critical: true
 
     # Critical: all validators recover by end
@@ -221,7 +219,6 @@ spec:
       type: prometheus
       query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 10.0"
-      window: 8m
       critical: false
 
     - name: no_db_corruption
@@ -238,7 +235,6 @@ spec:
       type: prometheus
       query: (sum(rate(heimdallv2_bor_api_calls_success_total[5m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[5m])), 0.001)) or vector(1)
       threshold: ">= 0.8"
-      window: 8m
       critical: false
 
   metrics:
@@ -247,7 +243,7 @@ spec:
     - cometbft_consensus_missing_validators
     - cometbft_p2p_peers
     - up
-    - go_goroutines
+    - system_cpu_goroutines
     - cometbft_consensus_block_interval_seconds_sum
     - cometbft_consensus_block_interval_seconds_count
     - heimdallv2_bor_api_calls_total

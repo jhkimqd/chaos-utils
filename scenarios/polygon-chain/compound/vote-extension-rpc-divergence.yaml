@@ -1,0 +1,97 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: vote-extension-rpc-divergence
+  description: >
+    Inject 2s latency on Bor RPC (port 8545) for 2/4 validators. During
+    ExtendVote, Heimdall calls GetBorChainBlock() (milestone/abci.go:48)
+    against the local Bor RPC. Slow validators see stale chain heads and
+    produce different vote extensions.
+
+    There is also a suspected non-determinism bug in vote_ext_utils.go:338-343
+    where map iteration without sorting may cause different block hash
+    selection when multiple hashes exceed 2/3 threshold.
+
+    Target code paths:
+    - milestone/abci.go:48 — GetBorChainBlock() inside ExtendVote
+    - vote_ext_utils.go:338-343 — unsorted map in FilterVoteExtensions
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, vote-extension, rpc-divergence, milestone, non-determinism]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: rpc_latency_bor_1
+      description: "2s RPC latency on Bor 1 (port 8545) — stale chain head in ExtendVote"
+      target: bor_1
+      type: network
+      params:
+        latency: 2000
+        target_ports: "8545"
+        target_proto: tcp
+
+    - phase: rpc_latency_bor_2
+      description: "2s RPC latency on Bor 2"
+      target: bor_2
+      type: network
+      params:
+        latency: 2000
+        target_ports: "8545"
+        target_proto: tcp
+
+  success_criteria:
+    - name: heimdall_consensus_continues
+      description: "Heimdall consensus advances despite slow Bor RPC on 2 validators"
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: bor_block_production
+      description: "Bor produces blocks (RPC latency only affects Heimdall reads)"
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+
+    - name: no_consensus_failure
+      description: "No CONSENSUS FAILURE panic from VE divergence"
+      type: log
+      pattern: "(CONSENSUS FAILURE|panic|vote.*extension.*mismatch)"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    - name: block_times_acceptable
+      description: "Block intervals reasonable despite RPC latency"
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 15.0"
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_late_votes
+    - up
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count

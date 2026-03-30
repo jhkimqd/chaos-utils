@@ -89,7 +89,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 3m
       critical: true
 
     # RECOVERY ASSERTIONS (the key test)

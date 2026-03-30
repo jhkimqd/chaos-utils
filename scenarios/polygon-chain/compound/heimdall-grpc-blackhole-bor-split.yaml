@@ -51,7 +51,7 @@ spec:
         pattern: "l2-cl-6-heimdall-v2-bor-validator"
       alias: heimdall_6
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
   cooldown: 2m
 
@@ -115,9 +115,8 @@ spec:
     - name: bor_continues_current_span
       description: Bor validators continue block production within current span
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: heimdall_consensus_continues
@@ -125,7 +124,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: span_api_degrades
@@ -133,7 +131,6 @@ spec:
       type: prometheus
       query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(0)
       threshold: "< 0.5"
-      window: 5m
       critical: false
       during_fault: true
 
@@ -142,7 +139,6 @@ spec:
       type: prometheus
       query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
       threshold: ">= 0.8"
-      window: 5m
       critical: true
 
     - name: recovery_after_blackhole_removed

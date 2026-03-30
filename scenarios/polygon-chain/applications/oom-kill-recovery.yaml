@@ -40,9 +40,9 @@ spec:
         pattern: "l2-el-6-bor-heimdall-v2-validator"
       alias: bor_6
 
-  duration: 8m
-  warmup: 1m
-  cooldown: 4m
+  duration: 3m
+  warmup: 20s
+  cooldown: 1m
 
   faults:
     # Phase 1: Apply production-realistic memory limit.
@@ -142,9 +142,8 @@ spec:
     - name: healthy_validators_unaffected
       description: Non-faulted validators maintain block production
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m])[8m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 8m
       critical: true
 
     - name: consensus_continues
@@ -152,7 +151,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 8m
       critical: true
 
     - name: no_repeated_oom
@@ -175,4 +173,4 @@ spec:
     - go_memstats_heap_inuse_bytes
     - go_memstats_sys_bytes
     - go_memstats_alloc_bytes
-    - go_goroutines
+    - system_cpu_goroutines

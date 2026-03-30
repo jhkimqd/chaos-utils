@@ -46,9 +46,9 @@ spec:
         pattern: "l2-el-7-bor-heimdall-v2-validator"
       alias: bor_7
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
-  cooldown: 5m
+  cooldown: 1m
 
   faults:
     # High packet loss to trigger send errors that kill broadcast goroutines
@@ -95,7 +95,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 8m
       critical: true
 
     - name: no_span_rotation

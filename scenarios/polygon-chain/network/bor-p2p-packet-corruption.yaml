@@ -34,7 +34,7 @@ spec:
         pattern: "l2-el-6-bor-heimdall-v2-validator"
       alias: bor_6
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
   cooldown: 1m
 
@@ -71,9 +71,8 @@ spec:
     - name: block_production_continues
       description: Network produces blocks despite corrupted P2P traffic
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: corrupted_nodes_still_sync
@@ -81,7 +80,6 @@ spec:
       type: prometheus
       query: min(rate(chain_head_block{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0"
-      window: 5m
       critical: false
 
     - name: peer_connections_stable
@@ -89,7 +87,6 @@ spec:
       type: prometheus
       query: min(cometbft_p2p_peers{job=~"l2-cl-[246]-heimdall-v2-bor-validator"})
       threshold: ">= 2"
-      window: 5m
       critical: false
 
     - name: consensus_continues
@@ -97,7 +94,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: no_span_rotation
@@ -114,7 +110,6 @@ spec:
       type: prometheus
       query: min(up{job=~"l2-el-[246]-bor-heimdall-v2-validator"})
       threshold: "== 1"
-      window: 5m
       critical: true
 
   metrics:

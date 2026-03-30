@@ -1,0 +1,109 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: fork-transition-under-partition
+  description: >
+    Fully partition 1/4 validators across fork activation blocks. The
+    partitioned validator misses fork activation while isolated. After
+    heal, it must accept majority post-fork blocks without consensus errors.
+
+    Deploy fresh devnet and run before block 200. At 1s/block the 8-minute
+    duration covers rio=256, madhugiri=320, madhugiriPro=384, dandeli=448.
+
+    Target code paths:
+    - params/forks/ — fork activation by block number
+    - consensus/bor/bor.go:VerifyHeader() — fork-aware validation
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+    IMPORTANT: run on fresh devnet before block 200.
+  tags: [compound, fork-transition, partition, split-brain, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+
+  duration: 3m
+  warmup: 20s
+  cooldown: 1m
+
+  faults:
+    - phase: partition_bor_1
+      description: "Fully partition Bor 1 through all fork transitions"
+      target: bor_1
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: partition_heimdall_1
+      description: "Fully partition Heimdall 1"
+      target: heimdall_1
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656"
+        target_proto: tcp
+        probability: 1.0
+
+  success_criteria:
+    - name: majority_block_production
+      description: "3/4 majority validators produce blocks through all forks"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[234]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_converges
+      description: "All validators converge — partitioned side accepts majority fork state"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: partitioned_validator_resync
+      description: "Partitioned validator syncs past all fork activation blocks"
+      type: prometheus
+      query: chain_head_block{job="l2-el-1-bor-heimdall-v2-validator"}
+      threshold: "> 448"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_consensus_resumes
+      description: "Heimdall consensus resumes after partition heals"
+      type: prometheus
+      query: rate(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: no_fork_errors
+      description: "No fork validation errors after partition heals"
+      type: log
+      pattern: "(invalid.*fork|bad.*block|consensus.*mismatch|wrong.*block.*version)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up

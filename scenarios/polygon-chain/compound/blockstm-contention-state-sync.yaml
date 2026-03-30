@@ -1,0 +1,95 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: blockstm-contention-state-sync
+  description: >
+    CPU stress + disk I/O on 1 validator to slow BlockSTM execution during
+    sprint boundaries. BlockSTM has no max incarnation retry limit
+    (executor.go:466), and state sync TXs have no priority over regular TXs
+    (parallel_state_processor.go:95-151).
+
+    Target code paths:
+    - core/blockstm/executor.go:466 — txIncarnations[tx]++ with no limit
+    - core/parallel_state_processor.go:95-151 — state sync in BlockSTM
+    - core/blockstm/mvhashmap.go:132 — panic on incarnation order violation
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, blockstm, contention, state-sync, parallel-execution]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  duration: 3m
+  warmup: 20s
+  cooldown: 2m
+
+  faults:
+    - phase: cpu_stress_bor_2
+      description: "70% CPU stress — slow BlockSTM goroutines"
+      target: bor_2
+      type: cpu_stress
+      params:
+        cpu_percent: 70
+        cores: 2
+
+    - phase: disk_io_bor_2
+      description: "100ms disk I/O — slow state commits and MVHashMap flushes"
+      target: bor_2
+      type: disk_io
+      params:
+        io_latency_ms: 100
+
+  success_criteria:
+    - name: majority_block_production
+      description: "3 healthy validators keep producing blocks"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: stressed_validator_produces
+      description: "Stressed validator still produces blocks (slower OK, stopped not)"
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: false
+
+    - name: no_blockstm_panic
+      description: "No panic from MVHashMap incarnation ordering"
+      type: log
+      pattern: "(panic|mvhashmap.*panic|incarnation.*order|blockstm.*fatal)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: chain_head_converges
+      description: "All validators converge after stress removed"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: no_db_corruption
+      description: "No PebbleDB corruption from I/O stress during BlockSTM"
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+    - system_cpu_goroutines
+    - go_memstats_alloc_bytes

@@ -1,0 +1,125 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: checkpoint-noack-rotation-storm
+  description: >
+    Block L1 DNS resolution on all 4 Heimdall validators so every checkpoint
+    submission fails, triggering NoAck → proposer rotation. With 4 validators
+    the rotation storm cycles all proposers rapidly. Tests whether Heimdall
+    consensus survives sustained L1 outage and recovers.
+
+    Target code paths:
+    - x/checkpoint/keeper/ — NoAck triggers proposer rotation (no backoff)
+    - bridge/processor/checkpoint.go — L1 submission
+    - bridge/listener/rootchain.go — L1 event listening
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, checkpoint, noack, proposer-rotation, l1-outage, liveness]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  duration: 2m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    - phase: block_l1_heimdall_1
+      description: "Block DNS from Heimdall 1 — prevents L1 RPC"
+      target: heimdall_1
+      type: dns
+      params:
+        delay_ms: 30000
+        failure_rate: 1.0
+
+    - phase: block_l1_heimdall_2
+      description: "Block DNS from Heimdall 2"
+      target: heimdall_2
+      type: dns
+      params:
+        delay_ms: 30000
+        failure_rate: 1.0
+
+    - phase: block_l1_heimdall_3
+      description: "Block DNS from Heimdall 3"
+      target: heimdall_3
+      type: dns
+      params:
+        delay_ms: 30000
+        failure_rate: 1.0
+
+    - phase: block_l1_heimdall_4
+      description: "Block DNS from Heimdall 4"
+      target: heimdall_4
+      type: dns
+      params:
+        delay_ms: 30000
+        failure_rate: 1.0
+
+  success_criteria:
+    - name: heimdall_consensus_continues
+      description: "Heimdall consensus height advances despite L1 outage"
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: bor_block_production
+      description: "Bor block production unaffected by checkpoint failures"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: checkpoint_activity_resumes
+      description: "Checkpoint API calls resume after DNS restored (non-critical: needs time after DNS restore)"
+      type: prometheus
+      query: sum(rate(heimdallv2_checkpoint_api_calls_total[2m])) or vector(0)
+      threshold: "> 0"
+      critical: false
+      post_fault_only: true
+
+    - name: block_times_acceptable
+      description: "Block intervals stay reasonable during rotation storm"
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 20.0"
+      critical: false
+
+    - name: no_panics
+      description: "No panics from checkpoint rotation storm"
+      type: log
+      pattern: "(panic|fatal|CONSENSUS FAILURE)"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+    - heimdallv2_checkpoint_api_calls_total
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count

@@ -1,0 +1,93 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: sprint-end-producer-kill
+  description: >
+    SIGKILL a single block producer at sprint boundaries where state sync
+    injection occurs. Sprint=16 blocks at 1s/block = 16s per sprint.
+    The 90s fault window crosses ~5 sprint boundaries, maximizing chance of
+    killing an active producer exactly at IsSprintStart() where Finalize()
+    injects state sync TXs.
+
+    Target code paths:
+    - bor.go:Finalize() — state sync injection at IsSprintStart()
+    - bor.go:CommitStates() — Heimdall state sync fetch at sprint boundary
+    - parallel_state_processor.go — BlockSTM executing state sync TXs
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [boundary, sprint, producer-kill, state-sync, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  duration: 90s
+  warmup: 20s
+  cooldown: 90s
+
+  faults:
+    - phase: kill_bor_2
+      description: "Repeated SIGKILL — 8s cycle crosses sprint boundaries"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+  success_criteria:
+    - name: majority_block_production
+      description: "3 healthy validators keep producing blocks"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_converges
+      description: "All validators converge — no state sync divergence"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: killed_validator_resync
+      description: "Killed validator resumes block production"
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: no_db_corruption
+      description: "No PebbleDB corruption from SIGKILL during state sync write"
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic|state.*sync.*fail)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+      post_fault_only: true
+
+    - name: span_api_healthy
+      description: "Span fetches stay healthy during kill cycles"
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid[1m])) / clamp_min(sum(rate(client_requests_span_valid[1m])) + sum(rate(client_requests_span_invalid[1m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total

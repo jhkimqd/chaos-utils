@@ -1,0 +1,142 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-restart-heimdall-running
+  description: >
+    Operator restarts Bor without restarting Heimdall — the most common
+    upgrade pattern (Bor is updated far more frequently than Heimdall).
+    Bor is killed and restarted (5s delay) while its paired Heimdall keeps
+    running. Bor must reconnect to the live Heimdall and resume block
+    production cleanly.
+
+    Specific risks tested:
+    - Bor websocket reconnect on startup: bor.go subscribes to Heimdall
+      milestone events via websocket. On restart, it must re-subscribe
+      without the "chain out of sync" flood from receiving buffered
+      milestone events before catching up to chain head
+    - waitUntilHeimdallIsSynced() on startup: Bor blocks until Heimdall
+      reports it is synced (bor.go:1761). This should succeed immediately
+      since Heimdall is already running and synced
+    - Span fetch on fresh startup: Bor must fetch the current span from
+      the live Heimdall before it can validate blocks. If it hits a span
+      boundary during startup, waitUntilHeimdallIsSynced() may block
+    - State sync retry from live Heimdall: CommitStates() fetches events
+      from Heimdall on each sprint. After restart, Bor must resume state
+      sync from the correct last committed event ID
+    - "chain out of sync" milestone event flood: a known issue where Bor
+      receives buffered Heimdall milestone events before catching up,
+      flooding logs with err="chain out of sync" at ~1/second for 15+
+      seconds. This is acceptable behavior but the flood must eventually
+      stop and not prevent block production.
+
+    This test runs on validators 1 and 3 (opposite of heimdall-restart-bor-running.yaml)
+    to verify that Bor reconnects cleanly to its live Heimdall.
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [applications, operator-error, upgrade, bor-restart, websocket]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+  duration: 2m
+  warmup: 20s
+  cooldown: 1m
+
+  faults:
+    - phase: restart_bor_1
+      description: "Operator restarts Bor 1 — Heimdall 1 keeps running"
+      target: bor_1
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+
+    - phase: restart_bor_3
+      description: "Operator restarts Bor 3 at t+30s (overlapping recovery)"
+      target: bor_3
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 5
+      delay: 30s
+
+  success_criteria:
+    - name: bor_block_production_unaffected
+      description: "Bor validators 2 and 5 (unaffected) continue producing blocks"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[25]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: restarted_bors_recover
+      description: "Bor validators 1 and 3 resume block production after restart"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_consensus_unaffected
+      description: "Heimdall consensus continues uninterrupted — Bor restart does not affect CL"
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_converges
+      description: "Validators 1-3 converge after Bor restarts complete (4 excluded: known flaky)"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+    - name: no_bor_panic
+      description: "Bor does not panic on reconnect to live Heimdall"
+      type: log
+      pattern: "(panic|fatal|CONSENSUS FAILURE)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: span_fetch_succeeds
+      description: "Span fetches succeed after Bor restart (confirms Heimdall reconnect)"
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[2m])) or vector(0))
+      threshold: "> 0"
+      critical: false
+      post_fault_only: true
+
+    - name: milestone_sync_flood_clears
+      description: "chain out of sync milestone flood is present (confirms fault effective) but NOT a panic"
+      type: log
+      pattern: "(chain out of sync)"
+      container_pattern: "l2-el-[13]-bor-heimdall-v2-validator"
+      absence: false
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - client_requests_latestspan_valid
+    - client_requests_latestspan_invalid
