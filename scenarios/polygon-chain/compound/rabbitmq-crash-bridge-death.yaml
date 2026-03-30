@@ -1,0 +1,98 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: rabbitmq-crash-bridge-death
+  description: >
+    Kill the RabbitMQ sidecar containers (l2-cl-{N}-rabbitmq) for 2 out of
+    4 validators. RabbitMQ runs as a separate container per validator, and
+    bridge/queue/connector.go:62-70 never reads the error channel — the bridge
+    worker crashes silently with no metric or alert.
+
+    After kill, the Heimdall bridge processor stops consuming L1 events
+    silently. After restart, tests whether events are replayed or lost.
+
+    Target code paths:
+    - bridge/queue/connector.go:62-70 — error channel never read
+    - bridge/listener/ — continues polling but can't enqueue
+    - bridge/processor/ — stops consuming silently
+
+    Network: 4 validators, RabbitMQ at l2-cl-{N}-rabbitmq (separate container)
+  tags: [compound, bridge, rabbitmq, silent-failure, event-loss, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    # Target the SEPARATE RabbitMQ containers, not Heimdall itself
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-rabbitmq"
+      alias: rabbitmq_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-rabbitmq"
+      alias: rabbitmq_2
+
+  duration: 2m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: kill_rabbitmq_1
+      description: "Kill RabbitMQ 1 — bridge worker dies silently on Heimdall 1"
+      target: rabbitmq_1
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 30
+
+    - phase: kill_rabbitmq_2
+      description: "Kill RabbitMQ 2 — bridge worker dies silently on Heimdall 2"
+      target: rabbitmq_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 30
+
+  success_criteria:
+    - name: heimdall_consensus_continues
+      description: "Heimdall consensus advances despite bridge failure"
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: bor_block_production
+      description: "Bor block production unaffected by bridge outage"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: bridge_recovers
+      description: "Bridge API calls resume after RabbitMQ restarts"
+      type: prometheus
+      query: sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[12]-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: bridge_errors_logged
+      description: "Bridge/AMQP errors appear in logs (not silently swallowed)"
+      type: log
+      pattern: "(AMQP|rabbitmq|queue.*error|dial.*tcp.*5672|connection.*refused)"
+      container_pattern: "l2-cl-[12]-heimdall-v2-bor-validator"
+      absence: false
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - heimdallv2_checkpoint_api_calls_total

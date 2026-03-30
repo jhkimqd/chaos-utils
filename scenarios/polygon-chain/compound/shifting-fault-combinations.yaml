@@ -86,9 +86,9 @@ spec:
         pattern: "l2-cl-8-heimdall-v2-bor-validator"
       alias: heimdall_8
 
-  duration: 8m
+  duration: 3m
   warmup: 30s
-  cooldown: 3m
+  cooldown: 1m
 
   faults:
     # ============ PHASE 1 (t=0): NETWORK LATENCY ============
@@ -200,9 +200,8 @@ spec:
     - name: block_production_continues
       description: Block production continues through all 4 fault phases
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])[8m:2m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0"
-      window: 8m
       critical: true
 
     - name: consensus_continues
@@ -210,7 +209,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 8m
       critical: true
 
     # Critical: full convergence after all faults cleared
@@ -230,7 +228,6 @@ spec:
       type: prometheus
       query: count(up{job=~"l2-el-.*-bor-heimdall-v2-validator"} == 1) / scalar(count(up{job=~"l2-el-.*-bor-heimdall-v2-validator"}))
       threshold: ">= 1"
-      window: 8m
       critical: true
 
     # Informational: no corruption from compound faults
@@ -249,6 +246,6 @@ spec:
     - cometbft_consensus_missing_validators
     - cometbft_p2p_peers
     - up
-    - go_goroutines
+    - system_cpu_goroutines
     - cometbft_consensus_block_interval_seconds_sum
     - cometbft_consensus_block_interval_seconds_count

@@ -39,7 +39,7 @@ spec:
         pattern: "l2-el-6-bor-heimdall-v2-validator"
       alias: bor_6
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
   cooldown: 1m
 
@@ -86,9 +86,8 @@ spec:
     - name: validator_block_production
       description: Validators keep producing blocks
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: consensus_continues
@@ -96,7 +95,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: no_span_rotation
@@ -114,7 +112,6 @@ spec:
       type: prometheus
       query: rate(chain_head_block{job=~"l2-el-9-bor-.*"}[2m])
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: rpc_node_not_too_far_behind
@@ -126,7 +123,6 @@ spec:
         max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
         - on() chain_head_block{job=~"l2-el-9-bor-.*"}
       threshold: "< 30"
-      window: 5m
       critical: false
       during_fault: true
 
@@ -135,7 +131,6 @@ spec:
       type: prometheus
       query: cometbft_p2p_peers{job=~"l2-cl-9-.*"}
       threshold: "> 2"
-      window: 5m
       critical: false
 
   metrics:

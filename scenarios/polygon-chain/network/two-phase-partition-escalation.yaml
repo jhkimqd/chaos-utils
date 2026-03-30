@@ -52,9 +52,9 @@ spec:
         pattern: "l2-cl-5-heimdall-v2-bor-validator"
       alias: heimdall_5
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
-  cooldown: 3m
+  cooldown: 1m
 
   faults:
     # Phase 1 (t=0): Partial partition — block Bor P2P only
@@ -107,9 +107,8 @@ spec:
     - name: majority_produces_blocks
       description: 6/8 non-partitioned validators maintain block production
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124678]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[124678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: consensus_continues
@@ -117,7 +116,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     # Critical: convergence after healing

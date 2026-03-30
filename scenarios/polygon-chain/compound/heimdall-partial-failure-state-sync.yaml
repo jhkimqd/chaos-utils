@@ -1,0 +1,103 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: heimdall-partial-failure-state-sync
+  description: >
+    Inject HTTP 500 errors on Heimdall gRPC (port 1317) for 2/4 validators.
+    bor.go:1764-1768 silently returns empty state sync on error — if 2
+    validators get empty lists and 2 get full lists, their state roots diverge.
+
+    Target code paths:
+    - bor.go:1764-1768 — StateSyncEvents() error → empty list (silent)
+    - heimdall/client.go:101-145 — paginated event fetch
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, state-sync, divergence, silent-failure, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+
+  duration: 2m
+  warmup: 20s
+  cooldown: 1m
+
+  faults:
+    - phase: http_fault_heimdall_1
+      description: "50% HTTP 500 on Heimdall 1 gRPC — silent state sync failure"
+      target: heimdall_1
+      type: http_fault
+      params:
+        target_port: 1317
+        abort_code: 500
+        abort_percent: 50
+
+    - phase: http_fault_heimdall_2
+      description: "50% HTTP 500 on Heimdall 2 gRPC"
+      target: heimdall_2
+      type: http_fault
+      params:
+        target_port: 1317
+        abort_code: 500
+        abort_percent: 50
+
+  success_criteria:
+    - name: chain_head_converges
+      description: "All validators on same chain — no state sync divergence"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 20"
+      critical: true
+      post_fault_only: true
+
+    - name: majority_block_production
+      description: "Block production continues despite partial Heimdall failures"
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+
+    - name: state_sync_errors_logged
+      description: "State sync fetch errors logged (confirms fault injection works)"
+      type: log
+      pattern: "(Error occurred when fetching state sync events|state.*sync.*error)"
+      container_pattern: "l2-el-[12]-bor-heimdall-v2-validator"
+      absence: false
+      critical: false
+
+    - name: affected_validators_resync
+      description: "Affected validators resync after HTTP faults removed"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[12]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: no_permanent_fork
+      description: "No permanent chain split from state sync divergence"
+      type: log
+      pattern: "(fork.*detected|conflicting.*chain)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total

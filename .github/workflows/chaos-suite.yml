@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario_filter:
-        description: "Scenario category: all, network, applications, compound, disk"
+        description: "Scenario category: all, network, applications, boundary, compound, disk"
         required: false
         default: "all"
       scenario_count:
@@ -85,7 +85,7 @@ jobs:
       - name: Summary
         run: |
           echo "### Chaos Suite Image Resolution" >> "$GITHUB_STEP_SUMMARY"
-          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Bor | \`${{ steps.resolve.outputs.bor-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Heimdall-v2 | \`${{ steps.resolve.outputs.heimdall-v2-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
@@ -300,7 +300,7 @@ jobs:
           # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
-            all)  SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/compound scenarios/polygon-chain/disk" ;;
+            all)  SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/boundary scenarios/polygon-chain/compound scenarios/polygon-chain/disk" ;;
             *)    SCENARIO_DIRS="scenarios/polygon-chain/${FILTER}" ;;
           esac
 
@@ -390,7 +390,7 @@ jobs:
               echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
               PASSED=$((PASSED + 1))
             elif [[ ${EXIT_CODE} -eq 1 ]]; then
-              echo "::warning::FAILED: ${name}"
+              echo "::error::FAILED: ${name} — one or more critical success criteria did not pass"
               echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
               FAILED=$((FAILED + 1))
               TEST_FAILURES="${TEST_FAILURES}  - ${name}\n"
@@ -432,8 +432,28 @@ jobs:
 
           echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
 
-          # Fail the job on infrastructure errors (exit code > 1) or
-          # if the devnet became unrecoverable mid-suite.
+          # Write job summary
+          {
+            echo "### Chaos Suite Results"
+            echo "| Status | Count |"
+            echo "|--------|-------|"
+            echo "| ✅ Passed | ${PASSED} |"
+            echo "| ❌ Failed (critical criteria) | ${FAILED} |"
+            echo "| ⚠️ Errors (infra) | ${ERRORS} |"
+            echo "| ⏭️ Skipped | ${SKIPPED} |"
+            if [[ -n "${TEST_FAILURES}" ]]; then
+              echo ""
+              echo "**Failed scenarios:**"
+              echo -e "${TEST_FAILURES}" | sed 's/^/- /'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail the job on test failures (critical criteria), infrastructure
+          # errors (exit code > 1), or if the devnet became unrecoverable.
+          if [[ "${FAILED}" -gt 0 ]]; then
+            echo "::error::${FAILED} scenario(s) failed critical success criteria — these are real test failures, not infra issues"
+            exit 1
+          fi
           if [[ "${ERRORS}" -gt 0 ]]; then
             echo "::error::${ERRORS} scenario(s) hit infrastructure errors"
             exit 1

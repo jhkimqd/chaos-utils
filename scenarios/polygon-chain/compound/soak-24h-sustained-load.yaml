@@ -1,0 +1,97 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: soak-24h-sustained-load
+  description: >
+    Sustained load soak test: mild background faults for an extended period
+    to catch goroutine/memory/FD leaks. CI default is 3 minutes (quick smoke
+    test). Override with --set duration=30m for a quick soak (~14 span
+    transitions) or --set duration=1440m for full 24h coverage.
+
+    With sprint=16 and span=128, a 30m window covers ~14 spans and ~112
+    sprint boundaries — enough to expose boundary-related leaks.
+
+    Specific risks tested:
+    - Goroutine leak in BlockSTM workers
+    - Span store LRU cache unbounded growth
+    - File descriptor leak from gRPC/WebSocket connections
+    - Snapshot accumulation at sprint boundaries
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [soak, long-running, resource-leak, observability]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    - phase: mild_latency_bor_3
+      description: "50ms P2P background noise — not disruptive, exposes leaks over time"
+      target: bor_3
+      type: network
+      params:
+        latency: 50
+        target_ports: "30303"
+        target_proto: tcp
+
+  success_criteria:
+    - name: all_validators_producing
+      description: "All validators produce blocks throughout"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: goroutine_count_bounded
+      description: "Goroutine count does not grow monotonically (no leak)"
+      type: prometheus
+      query: max(system_cpu_goroutines{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 5000"
+      critical: true
+
+    - name: heimdall_consensus_continues
+      description: "Heimdall consensus advances throughout"
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[5m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_convergence
+      description: "Validators stay in sync throughout"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: false
+
+    - name: no_db_corruption
+      description: "No PebbleDB corruption over 30 minutes"
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - system_cpu_goroutines
+    - go_memstats_alloc_bytes
+    - go_memstats_sys_bytes
+    - process_open_fds
+    - process_max_fds
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid

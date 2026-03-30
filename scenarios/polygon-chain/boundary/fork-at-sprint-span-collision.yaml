@@ -1,0 +1,98 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: fork-at-sprint-span-collision
+  description: >
+    Inject network degradation across ALL fork activation blocks on the
+    devnet. On feat/execution-specs: rio=256, madhugiri=320, madhugiriPro=384,
+    dandeli=448, lisovo=512, lisovoPro=576, giugliano=640. All are sprint
+    boundaries (divisible by 16). Blocks 256, 384, 512, 640 are ALSO span
+    boundaries (span=128), so fork + span commit + state sync collide.
+
+    IMPORTANT: Deploy a fresh devnet and start this scenario before block 200.
+    At 1s/block the 8-minute duration covers blocks ~120 to ~600.
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [boundary, fork-transition, sprint, span, collision, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+
+  duration: 3m
+  warmup: 20s
+  cooldown: 1m
+
+  faults:
+    - phase: degrade_bor_2
+      description: "200ms latency + 20% loss on Bor 2 through all fork transitions"
+      target: bor_2
+      type: network
+      params:
+        latency: 200
+        packet_loss: 20
+        target_ports: "30303"
+        target_proto: tcp
+
+    - phase: degrade_heimdall_2
+      description: "200ms latency + 20% loss on Heimdall 2"
+      target: heimdall_2
+      type: network
+      params:
+        latency: 200
+        packet_loss: 20
+        target_ports: "26656"
+        target_proto: tcp
+
+  success_criteria:
+    - name: majority_block_production
+      description: "3/4 validators produce blocks through all fork transitions"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_converges
+      description: "All validators on same chain after all fork transitions"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: degraded_validator_resync
+      description: "Degraded validator converges post-fault"
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: no_fork_errors
+      description: "No consensus errors at fork activation boundaries"
+      type: log
+      pattern: "(invalid.*fork|wrong.*block.*version|unsupported.*opcode)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid

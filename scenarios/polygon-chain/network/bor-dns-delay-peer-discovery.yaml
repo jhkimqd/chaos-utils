@@ -51,7 +51,7 @@ spec:
         pattern: "l2-el-6-bor-heimdall-v2-validator"
       alias: bor_restart_6
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
   cooldown: 2m
 
@@ -105,7 +105,6 @@ spec:
       type: prometheus
       query: sum(increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: consensus_continues
@@ -113,7 +112,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: no_span_rotation

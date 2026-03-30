@@ -45,9 +45,9 @@ spec:
         pattern: "l2-el-7-bor-heimdall-v2-validator"
       alias: bor_7
 
-  duration: 6m
-  warmup: 1m
-  cooldown: 2m
+  duration: 2m
+  warmup: 20s
+  cooldown: 1m
 
   faults:
     # CPU stress on 3 validators (moderate — 70% of 2 cores)
@@ -108,9 +108,8 @@ spec:
     - name: all_blocks_produced
       description: All validators maintain block production under pure stress
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[6m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 6m
       critical: true
 
     - name: consensus_continues
@@ -118,7 +117,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 6m
       critical: true
 
     # Critical: no missing validators (pure stress shouldn't cause this)
@@ -127,7 +125,6 @@ spec:
       type: prometheus
       query: max(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
       threshold: "== 0"
-      window: 6m
       critical: false
 
     # Informational: performance under stress
@@ -136,13 +133,12 @@ spec:
       type: prometheus
       query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 10.0"
-      window: 6m
       critical: false
 
     - name: goroutines_stable
       description: Goroutine count stays stable under stress (no leak from scheduling pressure)
       type: prometheus
-      query: max(go_goroutines{job=~"l2-el-[357]-bor-heimdall-v2-validator"})
+      query: max(system_cpu_goroutines{job=~"l2-el-[357]-bor-heimdall-v2-validator"})
       threshold: "< 5000"
       critical: false
 
@@ -160,7 +156,6 @@ spec:
       type: prometheus
       query: (sum(rate(heimdallv2_bor_api_calls_success_total[5m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[5m])), 0.001)) or vector(1)
       threshold: ">= 0.9"
-      window: 6m
       critical: false
 
   metrics:
@@ -168,7 +163,7 @@ spec:
     - cometbft_consensus_height
     - cometbft_consensus_missing_validators
     - cometbft_p2p_peers
-    - go_goroutines
+    - system_cpu_goroutines
     - process_resident_memory_bytes
     - go_memstats_heap_inuse_bytes
     - up

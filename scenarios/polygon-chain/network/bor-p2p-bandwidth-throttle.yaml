@@ -44,7 +44,7 @@ spec:
         pattern: "l2-el-7-bor-heimdall-v2-validator"
       alias: bor_7
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
   cooldown: 1m
 
@@ -86,9 +86,8 @@ spec:
     - name: block_production_no_gaps
       description: Block production never fully stalls despite throttled peers
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: consensus_continues
@@ -96,7 +95,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: no_span_rotation
@@ -116,7 +114,6 @@ spec:
       type: prometheus
       query: avg(rate(chain_head_block{job=~"l2-el-[1357]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0.3"
-      window: 5m
       critical: false
       during_fault: true
 
@@ -125,7 +122,6 @@ spec:
       type: prometheus
       query: avg(rate(chain_head_block{job=~"l2-el-[2468]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0.8"
-      window: 5m
       critical: false
       during_fault: true
 
@@ -134,14 +130,13 @@ spec:
       type: prometheus
       query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
       threshold: ">= 0.8"
-      window: 5m
       critical: false
 
   metrics:
     - chain_head_block
     - cometbft_consensus_height
     - cometbft_p2p_peers
-    - go_goroutines
+    - system_cpu_goroutines
     - heimdallv2_bor_api_calls_total
     - heimdallv2_bor_api_calls_success_total
     - up

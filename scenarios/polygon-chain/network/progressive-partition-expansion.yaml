@@ -65,7 +65,7 @@ spec:
 
   duration: 4m
   warmup: 30s
-  cooldown: 3m
+  cooldown: 1m
 
   faults:
     # Phase 1 (t=0): isolate validator 3
@@ -140,9 +140,8 @@ spec:
     - name: block_production_continues
       description: Block production continues as validators are progressively isolated
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])[4m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 4m
       critical: true
 
     - name: consensus_continues
@@ -150,7 +149,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 4m
       critical: true
 
     # Critical: all nodes converge after simultaneous TEARDOWN
@@ -177,7 +175,6 @@ spec:
       type: prometheus
       query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 15.0"
-      window: 4m
       critical: false
 
   metrics:

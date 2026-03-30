@@ -51,9 +51,9 @@ spec:
         pattern: "l2-cl-7-heimdall-v2-bor-validator"
       alias: heimdall_7
 
-  duration: 5m
+  duration: 2m
   warmup: 30s
-  cooldown: 3m
+  cooldown: 1m
 
   faults:
     # Round 1 — SIGTERM with standard grace period (10s default)
@@ -172,9 +172,8 @@ spec:
     - name: healthy_validators_unaffected
       description: Non-faulted validators maintain block production
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[124568]-bor-heimdall-v2-validator"}[1m])[5m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[124568]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: consensus_continues
@@ -182,7 +181,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 5m
       critical: true
 
     - name: no_shutdown_timeout

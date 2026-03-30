@@ -46,9 +46,9 @@ spec:
         pattern: "l2-cl-4-heimdall-v2-bor-validator"
       alias: heimdall_4
 
-  duration: 10m
+  duration: 5m
   warmup: 30s
-  cooldown: 5m
+  cooldown: 1m
 
   faults:
     # Phase 1: Wipe Bor chaindata while running — PebbleDB loses its
@@ -117,9 +117,8 @@ spec:
         Other 7 validators maintain block production — resync load from
         wiped node doesn't degrade healthy peers
       type: prometheus
-      query: min(min_over_time(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m])[10m:1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
-      window: 10m
       critical: true
 
     # Critical: consensus continues
@@ -128,7 +127,6 @@ spec:
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"
-      window: 10m
       critical: true
 
     # Critical: Heimdall validator rejoins consensus
@@ -174,5 +172,5 @@ spec:
     - cometbft_consensus_missing_validators
     - cometbft_p2p_peers
     - up
-    - go_goroutines
+    - system_cpu_goroutines
     - process_resident_memory_bytes

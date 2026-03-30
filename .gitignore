@@ -27,6 +27,7 @@ _testmain.go
 # Output files
 *output.log
 *.log
+*.txt
 
 # Build artifacts
 /bin/

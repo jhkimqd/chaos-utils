@@ -1,0 +1,141 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: heimdall-blackhole-at-span-fetch
+  description: >
+    Blackhole Heimdall gRPC (port 1317) on all 4 validators, blocking Bor's
+    span and state sync fetches. waitUntilHeimdallIsSynced() at bor.go:1761
+    has no timeout — block production stalls at the next span commit point.
+
+    With span=128 and sprint=16, span commit triggers at block
+    (spanEnd - sprint + 1) = spanEnd - 15. The 2-minute blackhole guarantees
+    we cross at least 1 span boundary and trigger the stall.
+
+    Target code paths:
+    - bor.go:1761 — waitUntilHeimdallIsSynced() — no timeout
+    - bor.go:CommitStates() — Heimdall state sync fetch
+    - span_store.go — span fetch, cache miss
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [boundary, span, heimdall, grpc, blackhole, stall, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  duration: 2m
+  warmup: 20s
+  cooldown: 1m
+
+  faults:
+    - phase: blackhole_heimdall_1_grpc
+      description: "Blackhole Heimdall 1 gRPC port 1317"
+      target: heimdall_1
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: blackhole_heimdall_2_grpc
+      description: "Blackhole Heimdall 2 gRPC port 1317"
+      target: heimdall_2
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: blackhole_heimdall_3_grpc
+      description: "Blackhole Heimdall 3 gRPC port 1317"
+      target: heimdall_3
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317"
+        target_proto: tcp
+        probability: 1.0
+
+    - phase: blackhole_heimdall_4_grpc
+      description: "Blackhole Heimdall 4 gRPC port 1317"
+      target: heimdall_4
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "1317"
+        target_proto: tcp
+        probability: 1.0
+
+  success_criteria:
+    - name: block_production_resumes
+      description: "All validators resume after Heimdall gRPC restored"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: "All validators converge — no missing state sync"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_consensus_continues
+      description: "Heimdall consensus continues — gRPC port 1317 ≠ consensus port 26656"
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: span_fetch_failures
+      description: "Span fetches fail during blackhole (validates test is effective)"
+      type: prometheus
+      query: sum(rate(client_requests_span_invalid[1m])) or vector(0)
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    - name: no_empty_state_sync_blocks
+      description: "State sync errors are logged (not silently swallowed)"
+      type: log
+      pattern: "(Error occurred when fetching state sync events)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: false
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
