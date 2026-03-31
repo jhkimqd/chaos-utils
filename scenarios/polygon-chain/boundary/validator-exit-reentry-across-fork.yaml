@@ -1,0 +1,114 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: validator-exit-reentry-across-fork
+  description: >
+    Stop a validator 10 blocks before a fork activation, then restart it 10 blocks
+    after the fork. The validator must:
+      1. Miss the fork activation entirely (was stopped)
+      2. Re-sync across the fork boundary using snap or full sync
+      3. Apply post-fork rules correctly when rejoining consensus
+
+    This tests the re-entry path: does a node that missed the fork correctly
+    identify the fork block from the chain headers it downloads, apply the right
+    state transition rules, and arrive at the same stateRoot as nodes that were
+    live through the fork?
+
+    A divergence here means the fork activation check in VerifyHeader / Finalize
+    is not applied correctly to synced (vs live) blocks.
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Start BEFORE fork block - 20 to allow warmup.
+  tags: [boundary, fork-transition, validator, restart, re-sync, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+
+  # 40s covers roughly 20 blocks before fork + fork + 20 blocks after fork at 1s/block
+  duration: 40s
+  warmup: 10s
+  # Long cooldown to allow the stopped validator to re-sync and catch up
+  cooldown: 180s
+
+  faults:
+    - phase: stop_validator_before_fork
+      description: "Stop validator 2 (Bor + Heimdall) before fork activation"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 40   # restart after ~40s (past the fork + 20 blocks)
+
+    - phase: stop_validator_before_fork
+      description: "Stop Heimdall 2 alongside Bor 2"
+      target: heimdall_2
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 40
+
+  success_criteria:
+    - name: remaining_validators_produce_blocks
+      description: "3 remaining validators continue producing blocks through fork"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: no_fork_errors_on_live_nodes
+      description: "Live validators have no fork activation errors"
+      type: log
+      pattern: "(invalid.*fork|wrong.*block.*version|unsupported.*opcode)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: stopped_validator_resyncs
+      description: "Stopped validator resumes block production after restart"
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges_post_restart
+      description: "All 4 validators converge after stopped validator re-syncs"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: post_chaos_state_root_consensus
+      description: >
+        All 4 validators — including the one that missed the fork and re-synced —
+        agree on stateRoot after recovery. This is the primary check: a node that
+        applies fork rules incorrectly during re-sync will diverge here.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid

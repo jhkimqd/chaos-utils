@@ -1,0 +1,134 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: heimdall-lag-during-fork
+  description: >
+    Inject 5-second latency on all Heimdall consensus P2P ports (26656) and RPC ports (1317)
+    across a fork activation window (blocks fork-20 to fork+20).
+
+    Heimdall lag forces Bor to stall span/validator-set fetches exactly when fork rules
+    change. If Bor falls back to stale span data and then fetches a fresh span after the
+    fork, different nodes may apply the validator set at different blocks, causing a
+    silent state divergence.
+
+    Target code paths:
+    - consensus/bor/bor.go: GetCurrentValidators() span fetch at sprint start
+    - consensus/bor/heimdall/span_store.go: LRU cache expiry during lag
+    - consensus/bor/bor.go: Finalize() state sync injection timing
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Start BEFORE fork block - 30 to cover the lag window.
+  tags: [boundary, fork-transition, heimdall, lag, validator-set, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  # 60s covers ~60 blocks at 1s/block — the fork window (fork-20 to fork+20) plus buffer.
+  duration: 60s
+  warmup: 10s
+  cooldown: 120s
+
+  faults:
+    - phase: lag_heimdall_consensus
+      description: "5s latency on all Heimdall consensus and API ports across the fork window"
+      target: heimdall_1
+      type: network
+      params:
+        latency: 5000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    - phase: lag_heimdall_consensus
+      description: "5s latency on all Heimdall consensus and API ports across the fork window"
+      target: heimdall_2
+      type: network
+      params:
+        latency: 5000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    - phase: lag_heimdall_consensus
+      description: "5s latency on all Heimdall consensus and API ports across the fork window"
+      target: heimdall_3
+      type: network
+      params:
+        latency: 5000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    - phase: lag_heimdall_consensus
+      description: "5s latency on all Heimdall consensus and API ports across the fork window"
+      target: heimdall_4
+      type: network
+      params:
+        latency: 5000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+  success_criteria:
+    - name: bor_keeps_producing_during_lag
+      description: "Bor validators continue producing blocks despite slow Heimdall"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: chain_head_converges_post_lag
+      description: "All validators converge after Heimdall lag is removed"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: no_fork_errors_during_lag
+      description: "No fork validation errors caused by stale span data"
+      type: log
+      pattern: "(invalid.*fork|wrong.*block.*version|span.*fetch.*fail|validator.*set.*mismatch)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: post_chaos_state_root_consensus
+      description: >
+        All Bor validators agree on stateRoot after Heimdall lag across the fork boundary.
+        Stale span data during fork transition is the primary vector for silent
+        validator-set divergence — this check catches it.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
