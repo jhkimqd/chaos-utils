@@ -54,6 +54,7 @@ spec:
         operation: write
 
     # Phase 2: SIGKILL while I/O is backed up — maximum data loss
+    # delay: 60s ensures I/O contention is fully established before kill
     - phase: kill_bor_2
       description: SIGKILL Bor 2 during I/O contention
       target: bor_2
@@ -62,6 +63,7 @@ spec:
         signal: SIGKILL
         restart: true
         restart_delay: 5
+      delay: 60s
 
     - phase: kill_bor_6
       description: SIGKILL Bor 6 during I/O contention
@@ -71,6 +73,7 @@ spec:
         signal: SIGKILL
         restart: true
         restart_delay: 5
+      delay: 60s
 
   success_criteria:
     - name: killed_validators_recover

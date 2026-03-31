@@ -1,0 +1,177 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: operator-restart-while-peers-degraded
+  description: >
+    Graceful SIGTERM restart of a validator while its primary peers have 30%
+    packet loss applied simultaneously.
+
+    Production story: An operator notices validator 2 is lagging and SSHes in to
+    restart it ("systemctl restart bor"). What the operator doesn't know: the
+    cloud provider's network is degraded, causing 30% packet loss between nodes
+    in the same AZ. Validators 1 and 3 — the natural P2P peers of validator 2 —
+    are affected. When validator 2 comes back up, its span fetch and block sync
+    both go through lossy peer connections.
+
+    This differs from kill-resync-under-peer-loss in two important ways:
+    1. The shutdown is graceful (SIGTERM → clean DB close), so no risk of partial
+       writes or state corruption. The interesting failure modes are in the
+       reconnection and span-re-acquisition logic.
+    2. The packet loss is on the PEERS, not on the restarting node. Validator 2
+       sees its peers as unreliable rather than itself having outgoing loss.
+
+    Target code paths:
+    - consensus/bor/bor.go: GetCurrentValidators() span fetch on startup — races
+      with Heimdall 2 also restarting (same restart). Does Bor correctly fall
+      back to a cached or fetched span when Heimdall is briefly unavailable?
+    - consensus/bor/heimdall/span_store.go: LRU cache — is the span cache
+      correctly pre-loaded on restart or must a fresh fetch succeed?
+    - p2p/server.go: peer discovery after restart through lossy network — are
+      enough peers found to enable fast-sync?
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, operator-restart, peer-loss, sigterm, span-fetch, production-pattern]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: bor_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+  duration: 60s
+  warmup: 20s
+  cooldown: 120s
+
+  faults:
+    # Graceful restart: SIGTERM → Bor flushes state, closes PebbleDB cleanly.
+    # Restart after 15s (enough time for a clean shutdown + Kurtosis restart).
+    - phase: restart_validator_2
+      description: "Operator-initiated graceful Bor restart (SIGTERM)"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 15
+
+    # Restart Heimdall 2 alongside Bor 2 — realistic for an operator doing a
+    # full validator restart (e.g. configuration change, image upgrade).
+    - phase: restart_validator_2
+      description: "Operator-initiated graceful Heimdall restart (SIGTERM)"
+      target: heimdall_2
+      type: container_kill
+      params:
+        signal: SIGTERM
+        restart: true
+        restart_delay: 15
+
+    # 30% packet loss on Bor 1 P2P — applied simultaneously with restart.
+    # Simulates the AZ-wide network degradation that prompted the restart.
+    - phase: degrade_peers
+      description: "30% P2P packet loss on Bor 1 (simulates degraded AZ)"
+      target: bor_1
+      type: network
+      params:
+        loss: 30
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    # 30% packet loss on Bor 3 P2P — same AZ degradation.
+    - phase: degrade_peers
+      description: "30% P2P packet loss on Bor 3 (simulates degraded AZ)"
+      target: bor_3
+      type: network
+      params:
+        loss: 30
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: non_restarted_validators_produce
+      description: "Validators 1 and 3 keep producing despite P2P degradation"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: restarted_validator_rejoins
+      description: >
+        Validator 2 resumes block production after restart through degraded peers.
+        The span fetch and P2P peer discovery must both succeed despite packet loss
+        on validators 1 and 3.
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: span_fetch_succeeds_post_restart
+      description: >
+        Validator 2's Bor span API calls succeed after restart.
+        A persistent failure here means the span cache was not correctly
+        re-populated from Heimdall 2 (which also restarted) through lossy peers.
+      type: prometheus
+      query: >
+        rate(client_requests_span_valid{job="l2-el-2-bor-heimdall-v2-validator"}[2m])
+        / clamp_min(rate(client_requests_span_valid{job="l2-el-2-bor-heimdall-v2-validator"}[2m])
+        + rate(client_requests_span_invalid{job="l2-el-2-bor-heimdall-v2-validator"}[2m]), 0.001)
+      threshold: ">= 0.8"
+      critical: false
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: "All validators converge after fault clears"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: no_span_errors_on_restart
+      description: "No persistent span fetch failures caused by peer unavailability during restart"
+      type: log
+      pattern: "(span.*fetch.*fail|validator.*set.*mismatch|failed to update.*span)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+
+    - name: post_chaos_state_root_consensus
+      description: >
+        All validators agree on stateRoot after validator 2 rejoins through
+        degraded peers. A mismatch could mean the span cache race on restart
+        caused validator 2 to apply a different validator set than others.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total

@@ -8,8 +8,9 @@ metadata:
     has no timeout — block production stalls at the next span commit point.
 
     With span=128 and sprint=16, span commit triggers at block
-    (spanEnd - sprint + 1) = spanEnd - 15. The 2-minute blackhole guarantees
-    we cross at least 1 span boundary and trigger the stall.
+    (spanEnd - sprint + 1) = spanEnd - 15. The 3-minute blackhole guarantees
+    crossing at least 1 span boundary regardless of start offset within span
+    (span=128s, worst case: fault starts at block 1 after last span commit).
 
     Target code paths:
     - bor.go:1761 — waitUntilHeimdallIsSynced() — no timeout
@@ -44,7 +45,7 @@ spec:
         pattern: "l2-cl-4-heimdall-v2-bor-validator"
       alias: heimdall_4
 
-  duration: 2m
+  duration: 3m
   warmup: 20s
   cooldown: 1m
 

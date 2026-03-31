@@ -17,6 +17,9 @@ metadata:
     - span_store.go — LRU cache not invalidated on reorg after reunite
     - snapshot.go:apply() — validator set at sprint-end
 
+    Note: duration must exceed span length (128s). 3-minute fault guarantees
+    crossing at least 1 span boundary regardless of start offset within span.
+
     Network: 4 validators, sprint=16, span=128, block_time=1s
   tags: [boundary, span, partition, cache-divergence, high-severity]
   author: DevTools
@@ -45,9 +48,12 @@ spec:
         pattern: "l2-cl-2-heimdall-v2-bor-validator"
       alias: heimdall_2
 
-  duration: 2m
+  duration: 3m
   warmup: 20s
-  cooldown: 30s
+  # 2m cooldown: enough time for state_root_consensus to evaluate after partition heals.
+  # Heimdall CometBFT P2P reconnect after 50% partition can take minutes (known finding);
+  # heimdall_consensus_resumes is non-critical for this reason.
+  cooldown: 2m
 
   faults:
     - phase: partition_bor_1
