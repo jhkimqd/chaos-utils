@@ -221,12 +221,15 @@ jobs:
           REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${REPORT_DIR}"
 
-          # ── Resolve RPC URLs for health checks ──
-          # Check validators 1, 3, 6 — spread across the set so a single
-          # faulted validator doesn't false-alarm the gate.
+          # ── Resolve RPC URLs for health checks and recovery ──
+          # Health gate checks validators 1, 3, 6 — spread across the set so a
+          # single faulted validator doesn't false-alarm.
+          # Recovery scan resolves all 8 upfront so it can identify and restart
+          # exactly the stuck nodes, regardless of which scenario caused the issue.
           HEALTH_CHECK_VALIDATORS="1 3 6"
+          ALL_VALIDATORS="1 2 3 4 5 6 7 8"
           declare -A VALIDATOR_RPCS
-          for v in ${HEALTH_CHECK_VALIDATORS}; do
+          for v in ${ALL_VALIDATORS}; do
             raw="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator rpc 2>/dev/null || echo "")"
             raw="${raw#http://}"; raw="${raw#https://}"
             if [[ -n "${raw}" ]]; then
@@ -297,6 +300,57 @@ jobs:
             return 1
           }
 
+          # ── Recovery: scan all validators and docker-restart unresponsive ones ──
+          # Called when the health gate fails. Scans all 8 validators, identifies
+          # which are unreachable (RPC returns 0), and docker-restarts those
+          # containers. Works for any scenario — no hardcoded validator list.
+          # Restarting also clears stale in-memory CometBFT state or any lingering
+          # iptables rules that may be blocking peer reconnection.
+          recover_unresponsive_validators() {
+            echo "  Scanning all validators for responsiveness..."
+            local unresponsive=""
+
+            for v in ${ALL_VALIDATORS}; do
+              local url="${VALIDATOR_RPCS[${v}]:-}"
+              if [[ -z "${url}" ]]; then
+                continue
+              fi
+              local height
+              height=$(cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+              if [[ "${height}" == "0" ]]; then
+                echo "  validator ${v}: ✗ unreachable"
+                unresponsive="${unresponsive} ${v}"
+              else
+                echo "  validator ${v}: ✓ responsive (block ${height})"
+              fi
+            done
+
+            if [[ -z "$(echo "${unresponsive}" | tr -d ' ')" ]]; then
+              echo "  All validators reachable — waiting 60s for consensus recovery..."
+              sleep 60
+              return 0
+            fi
+
+            echo "  Restarting unresponsive validators:${unresponsive}"
+            for v in ${unresponsive}; do
+              for svc in "l2-el-${v}-bor-heimdall-v2-validator" "l2-cl-${v}-heimdall-v2-bor-validator"; do
+                ctr=$(docker ps -a -q --filter "name=${{ env.ENCLAVE_NAME }}--${svc}" 2>/dev/null | head -1)
+                # Fallback: plain name (older kurtosis versions omit the enclave prefix)
+                [[ -z "${ctr}" ]] && ctr=$(docker ps -a -q --filter "name=${svc}" 2>/dev/null | head -1)
+                if [[ -n "${ctr}" ]]; then
+                  echo "  → restarting ${svc} (${ctr})"
+                  docker restart "${ctr}" 2>/dev/null \
+                    || echo "  ⚠ restart failed for ${svc}"
+                else
+                  echo "  ⚠ container not found: ${svc}"
+                fi
+              done
+            done
+
+            echo "  Waiting 90s for restarted validators to rejoin network..."
+            sleep 90
+          }
+
           # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
@@ -330,11 +384,13 @@ jobs:
           SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
 
           # ── Scenarios that need their full YAML cooldown for post-fault recovery ──
-          # These restart the entire validator set simultaneously; after the fault clears,
+          # These scenarios either restart the entire validator set simultaneously, or
+          # cause a network-wide consensus stall (e.g. isolating 3/8 validators drops
+          # the active set below CometBFT's 2/3 BFT threshold). After the fault clears,
           # all 8 nodes must re-discover peers and re-establish CometBFT consensus before
           # the next scenario can safely run. The standard 90 s cooldown is too short —
           # the YAML sets 3 m, which must not be compressed.
-          LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart"
+          LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart three-validator-full-isolation"
 
           PASSED=0
           FAILED=0
@@ -351,8 +407,8 @@ jobs:
             # ── Pre-flight health gate ──
             echo "Pre-flight health check..."
             if ! check_devnet_health; then
-              echo "Health check failed — waiting 60s for recovery..."
-              sleep 60
+              echo "Health check failed — scanning for unresponsive validators..."
+              recover_unresponsive_validators
               if ! check_devnet_health; then
                 echo "::error::Devnet is unrecoverable — halting test suite"
                 echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
@@ -361,7 +417,7 @@ jobs:
                 echo "::endgroup::"
                 break
               fi
-              echo "Devnet recovered after retry"
+              echo "Devnet recovered after restart"
             fi
             echo "Health check passed ✓"
 
