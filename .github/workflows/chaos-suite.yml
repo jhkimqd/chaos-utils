@@ -94,7 +94,7 @@ jobs:
   run-chaos-tests:
     needs: resolve-images
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - name: Checkout chaos-utils
         uses: actions/checkout@v6
