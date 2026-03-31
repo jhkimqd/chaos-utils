@@ -79,7 +79,7 @@ spec:
         target_path: "/etc/heimdall/data"
         operation: all
 
-    # Phase 2: SIGKILL during slow I/O
+    # Phase 2: SIGKILL during slow I/O (delay: 30s so disk I/O is established)
     - phase: kill_bor_3
       description: SIGKILL Bor 3 while I/O is delayed
       target: bor_3
@@ -88,6 +88,7 @@ spec:
         signal: SIGKILL
         restart: true
         restart_delay: 5
+      delay: 30s
 
     - phase: kill_bor_7
       target: bor_7
@@ -96,6 +97,7 @@ spec:
         signal: SIGKILL
         restart: true
         restart_delay: 5
+      delay: 30s
 
     - phase: kill_heimdall_3
       target: heimdall_3
@@ -104,6 +106,7 @@ spec:
         signal: SIGKILL
         restart: true
         restart_delay: 5
+      delay: 30s
 
     - phase: kill_heimdall_7
       target: heimdall_7
@@ -112,6 +115,7 @@ spec:
         signal: SIGKILL
         restart: true
         restart_delay: 5
+      delay: 30s
 
   success_criteria:
     - name: validators_recover

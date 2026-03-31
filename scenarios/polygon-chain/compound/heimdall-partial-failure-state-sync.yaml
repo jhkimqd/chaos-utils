@@ -66,7 +66,7 @@ spec:
     - name: majority_block_production
       description: "Block production continues despite partial Heimdall failures"
       type: prometheus
-      query: rate(chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}[1m])
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 

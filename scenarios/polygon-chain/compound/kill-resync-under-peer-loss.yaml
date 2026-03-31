@@ -1,0 +1,126 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: kill-resync-under-peer-loss
+  description: >
+    SIGKILL a validator AND apply 25% P2P packet loss to its outbound connections
+    simultaneously. When the node restarts (10s after kill), it immediately tries
+    to resync from peers over a lossy link.
+
+    Production story: A validator gets OOM-killed due to memory pressure. The
+    same cloud-provider network issue that caused the memory spike (traffic flood,
+    packet storms) is still active when the node comes back up. The node must
+    resync through an impaired network.
+
+    Target code path — Bor's sync/downloader:
+    - When Bor restarts with local chain at block N and peers are at block N+K,
+      the downloader does a binary-search findAncestor back toward block 1.
+    - If peers drop mid-search (due to packet loss), the downloader re-tries with
+      the next peer. If ALL peers drop before common ancestor is found, the
+      downloader routes through insertSideChain for blocks the node already has.
+    - core/blockchain.go: insertSideChain() checks if canonical.Root()==block.Root()
+      and incorrectly triggers "sidechain ghost-state attack" even though hashes
+      match — a false positive that drops every peer and deadlocks sync permanently.
+
+    This scenario is a regression test: it should FAIL on Bor builds where the
+    ghost-state detection logic does not correctly skip the sideroot==canonroot
+    case. A PASS means the node correctly resyncs through peer-loss without
+    deadlocking.
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, kill, resync, peer-loss, ghost-state, regression-test, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  duration: 90s
+  warmup: 20s
+  # Long cooldown: ghost-state deadlock manifests as sustained sync failure.
+  # 3 minutes gives enough time to observe deadlock OR successful resync.
+  cooldown: 180s
+
+  faults:
+    # SIGKILL: simulates OOM-kill, watchdog kill, or hardware failure.
+    # Restart after 10s (short enough to still be within the lossy window).
+    - phase: kill_and_degrade
+      description: "OOM-style SIGKILL with 10s restart delay"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 10
+
+    # 25% P2P packet loss: injected simultaneously on the same container.
+    # When Bor 2 restarts, it immediately faces this loss on ALL P2P traffic.
+    # This simulates the network condition that caused the kill still being active.
+    - phase: kill_and_degrade
+      description: "25% P2P packet loss active during kill + resync window"
+      target: bor_2
+      type: network
+      params:
+        loss: 25
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: healthy_validators_produce_blocks
+      description: "Validators 1 and 3 continue producing blocks through kill + resync"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: killed_validator_resyncs
+      description: >
+        Validator 2 must resume block production after restart.
+        Failure here indicates sync deadlock (ghost-state false positive or
+        similar resync regression under peer loss).
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: "All validators converge within 30 blocks after recovery"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: no_sync_corruption
+      description: "No PebbleDB or state corruption from SIGKILL under I/O"
+      type: log
+      pattern: "(corruption|MANIFEST.*error|pebble.*panic|state.*corrupt)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: post_chaos_state_root_consensus
+      description: >
+        All validators agree on stateRoot after validator 2 resyncs through
+        peer loss. A divergence here means the resync applied fork rules or
+        state sync incorrectly — a symptom of ghost-state or similar corruption.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid

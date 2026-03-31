@@ -3,18 +3,22 @@ kind: ChaosScenario
 metadata:
   name: sigkill-mid-write
   description: >
-    Sends SIGKILL to Bor containers while actively writing blocks to PebbleDB,
-    then immediately restarts them. This is the exact sequence that happens
-    when the OOM killer fires or an operator runs "kill -9" — the process dies
+    Sends SIGKILL to Bor containers during active block production, then
+    immediately restarts them. This is the exact sequence that happens when
+    the OOM killer fires or an operator runs "kill -9" — the process dies
     instantly with no chance to flush WAL or close the database cleanly.
     PebbleDB in NoSync mode (Bor's default) relies on the OS page cache for
     durability between explicit flushes. SIGKILL during a memtable flush or
     compaction can leave partially written SST files. On restart, PebbleDB must
     detect and recover from this state using its WAL replay mechanism.
+    Note on timing: the kill is not synchronized to a specific I/O operation.
+    PebbleDB's continuous background I/O (memtable flushes, compaction) makes
+    it statistically likely — but not guaranteed — that each kill interrupts an
+    active write. Tests 2 validators to increase the probability of hitting the
+    corruption window. Two kill cycles increase coverage of the write state space.
     Uses container_kill (not process_kill) because Kurtosis containers have
     restart policy "no" — process_kill would leave the container exited with
     no auto-restart. container_kill explicitly restarts after killing.
-    Tests 2 validators to increase the chance of hitting the corruption window.
   tags: [applications, sigkill, crash-recovery, pebbledb, operator-error]
   author: DevTools
   version: "0.1.0"

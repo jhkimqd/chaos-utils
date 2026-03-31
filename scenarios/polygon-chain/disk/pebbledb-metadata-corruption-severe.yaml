@@ -90,12 +90,15 @@ spec:
 
     # Informational: recovery behavior
     - name: metadata_corruption_detected
-      description: Evidence of metadata error in logs (expected behavior)
+      description: >
+        Evidence of metadata error in logs (expected behavior). Critical because
+        silent recovery (no error logged) means PebbleDB silently ignored the
+        256-byte CURRENT file corruption and may be serving inconsistent state.
       type: log
       pattern: "(CURRENT|MANIFEST|corrupt|pebble.*error|open.*database)"
       container_pattern: "l2-el-4-bor-heimdall-v2-validator"
       absence: false
-      critical: false
+      critical: true
       post_fault_only: true
 
     - name: no_silent_data_loss

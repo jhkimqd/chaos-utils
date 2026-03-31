@@ -21,8 +21,11 @@ metadata:
     - Double-sign risk: if the killed producer restarts quickly and doesn't
       realize it's no longer the producer, it may attempt to produce blocks
       concurrently with the new producer
-    Targets all validators with exclude_producer=false to ensure we hit the
-    active producer. Two kill cycles to test producer failover twice.
+    Targets validators 3 and 5 with exclude_producer=false. These are static
+    targets chosen to span two likely producers across a sprint. Dynamic
+    producer identification (via Heimdall API at runtime) is not implemented
+    in this framework; the 2-validator static target increases the probability
+    of hitting the active producer. Two kill cycles test failover twice.
   tags: [applications, targeted-kill, block-producer, leader-kill, operator-error, span-rotation]
   author: DevTools
   version: "0.1.0"
@@ -31,10 +34,10 @@ metadata:
 
 spec:
   targets:
-    # Target a specific validator — the scenario runner should identify
-    # the current block producer via Heimdall API and target it.
-    # We target two validators to increase the probability of hitting
-    # the active producer in any given span.
+    # Static targets: validators 3 and 5. With 4 producers in the span
+    # and 2 targets, statistically 50% chance of hitting the active producer
+    # at any given kill time. exclude_producer=false on each kill confirms
+    # no producer-avoidance logic is applied.
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"

@@ -1,0 +1,202 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: heimdall-lag-producer-kill
+  description: >
+    Apply 3-second latency to ALL Heimdall consensus + API ports simultaneously
+    with a SIGKILL of the current sprint producer (Bor 2).
+
+    Production story: A cloud storage provider's I/O issue causes Heimdall's
+    RocksDB writes to back up, spiking API response times to 3s. The resulting
+    request queue causes Bor 2 to hit its process memory limit and get OOM-killed
+    by the OS. The remaining validators must:
+      1. Detect that validator 2 is missing its sprint-producer turn
+      2. Fetch the current validator set from a slow Heimdall (3s per call)
+      3. Skip the dead producer and continue block production
+      4. Accept validator 2 when it restarts and resyncs through still-slow Heimdall
+
+    Target code paths:
+    - consensus/bor/bor.go: GetCurrentValidators() is called at every sprint
+      boundary (every 16 blocks). With a 3s Heimdall API lag and a 1s block
+      time, the sprint-boundary call now takes 3x the block interval. Does Bor
+      time out, skip the call (use cached validators), or stall block production?
+    - consensus/bor/bor.go: IsSprintStart() → CommitStates() — state sync calls
+      to Heimdall API are also affected by the 3s lag. At sprint starts, Bor must
+      commit state AND fetch the validator set; both go through the lagged API.
+    - Heimdall's CometBFT consensus: with 3s consensus P2P lag, Heimdall rounds
+      slow dramatically. If Heimdall falls behind Bor by >1 span (128 blocks),
+      Bor's span fetch returns stale data — validator 2's absence from the set
+      might not be reflected in time.
+
+    The interesting failure modes:
+    - If Bor times out on GetCurrentValidators() and falls back to a stale cached
+      set, it may produce blocks signed by a validator set that no longer matches
+      Heimdall's view — causing a signer-set mismatch at the next checkpoint.
+    - If validator 2 restarts and fetches the span through a 3s-lag Heimdall, the
+      span it gets may be 1-2 spans stale (due to CometBFT also lagging), leading
+      to it trying to produce blocks for the wrong epoch.
+
+    Network: 4 validators, sprint=16, span=128, block_time=1s
+  tags: [compound, heimdall-lag, producer-kill, validator-set, sprint-boundary, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: heimdall_1
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  # 90s covers ~5-6 sprint boundaries (every 16 blocks × 1s).
+  # This ensures GetCurrentValidators() is called multiple times during the fault.
+  duration: 90s
+  warmup: 20s
+  # Long cooldown: allow Heimdall lag to fully clear and Bor 2 to resync
+  # through a now-recovering Heimdall API.
+  cooldown: 150s
+
+  faults:
+    # 3s lag on ALL Heimdall consensus P2P and API ports.
+    # Consensus port (26656): slows CometBFT rounds, Heimdall may fall behind.
+    # API port (1317): slows Bor's GetCurrentValidators() and CommitStates() calls.
+    - phase: lag_all_heimdall
+      description: "3s latency on Heimdall consensus + API (storage pressure simulation)"
+      target: heimdall_1
+      type: network
+      params:
+        latency: 3000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    - phase: lag_all_heimdall
+      target: heimdall_2
+      type: network
+      params:
+        latency: 3000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    - phase: lag_all_heimdall
+      target: heimdall_3
+      type: network
+      params:
+        latency: 3000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    - phase: lag_all_heimdall
+      target: heimdall_4
+      type: network
+      params:
+        latency: 3000
+        target_ports: "26656,1317"
+        target_proto: tcp
+
+    # SIGKILL the sprint producer (Bor 2) simultaneously with Heimdall lag.
+    # restart_delay=30s: long enough that the remaining validators have had to
+    # handle multiple GetCurrentValidators() calls through the lagged API without
+    # validator 2 present.
+    - phase: kill_producer
+      description: "OOM-kill sprint producer (Bor 2) during Heimdall lag"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 30
+
+  success_criteria:
+    - name: remaining_validators_produce_blocks
+      description: >
+        Validators 1 and 3 must keep producing blocks through the Heimdall lag
+        AND the absence of validator 2. Failure means GetCurrentValidators() is
+        blocking block production for too long.
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: no_validator_set_errors
+      description: >
+        No signer-set mismatch errors. If GetCurrentValidators() returns a stale
+        set due to lag and validator 2's cached set diverges from the majority,
+        this pattern will appear at the next checkpoint.
+      type: log
+      pattern: "(Signer.*not.*producer|validator.*set.*mismatch|invalid.*signer)"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: killed_validator_resyncs
+      description: >
+        Validator 2 resumes block production after restart. Must resync through
+        a still-lagged Heimdall API — tests whether the span fetch on startup
+        correctly handles slow responses without timing out permanently.
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-2-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: "All validators converge within 30 blocks after fault clears"
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+      threshold: "< 30"
+      critical: true
+      post_fault_only: true
+
+    - name: heimdall_consensus_recovers
+      description: >
+        Heimdall consensus height advances post-fault. Non-critical: CometBFT
+        reconnect can take minutes after 3s lag is removed.
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[123]-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      critical: false
+      post_fault_only: true
+
+    - name: post_chaos_state_root_consensus
+      description: >
+        All validators — including the one that restarted through slow Heimdall —
+        agree on stateRoot after recovery. A divergence here means the lag caused
+        validator 2 to apply a different span/validator-set than the majority,
+        resulting in different state sync outcomes.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total

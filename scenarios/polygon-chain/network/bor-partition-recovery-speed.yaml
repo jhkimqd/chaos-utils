@@ -102,8 +102,12 @@ spec:
       critical: true
       post_fault_only: true
 
-    - name: all_peers_reconnect
-      description: All validators reconnect to 5+ peers after partition heals
+    - name: heimdall_peers_reconnect
+      description: >
+        Heimdall consensus P2P peers recover on validator nodes 2, 5, 7 after
+        fault heals. Bor has no Prometheus P2P peer count metric, so Heimdall
+        CometBFT peer recovery serves as a network-layer proxy — if CometBFT
+        can re-peer, the underlying network path is restored.
       type: prometheus
       query: min(cometbft_p2p_peers{job=~"l2-cl-[257]-heimdall-v2-bor-validator"})
       threshold: "> 4"

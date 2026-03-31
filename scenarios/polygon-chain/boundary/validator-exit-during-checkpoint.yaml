@@ -91,6 +91,18 @@ spec:
       threshold: "< 15.0"
       critical: false
 
+    - name: post_chaos_state_root_consensus
+      description: >
+        All validators — including the one that restarted mid-checkpoint — agree
+        on stateRoot after recovery. A divergence would indicate the kill
+        interrupted an EndBlocker validator-set update in a way that left
+        validator 2 applying a different validator set than the remaining 3,
+        causing different state sync outcomes.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
   metrics:
     - chain_head_block
     - cometbft_consensus_height

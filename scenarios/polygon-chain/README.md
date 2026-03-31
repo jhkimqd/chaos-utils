@@ -30,7 +30,6 @@ Last run: 2026-03-19 (8-validator Kurtosis PoS devnet)
 | --- | --- | --- | --- |
 | `kill-during-disk-io-delay` | SIGKILL while disk I/O is degraded, expect recovery despite widened corruption window | PASS | |
 | `db-corruption-recovery` | I/O contention + SIGKILL, expect Bor re-syncs lost blocks from peers | PASS | |
-| `cascading-partition-kill-restart` | Network partition followed by kill/restart, expect convergence | PASS | |
 | `disk-io-plus-network-latency` | Disk I/O delay + network latency combined, expect continued operation | PASS | |
 | `heimdall-grpc-blackhole-bor-split` | gRPC blackhole between Heimdall and Bor, expect retry recovery | PASS | |
 | `three-phase-nemesis` | Three-phase nemesis: isolate + CPU stress, then SIGKILL, then recover. Expect majority chain authoritative | PASS | 6/6 criteria. Majority continues through all phases, killed validators resync, chain converges, Heimdall rejoins. |
