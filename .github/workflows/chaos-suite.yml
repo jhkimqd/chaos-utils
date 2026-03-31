@@ -380,6 +380,36 @@ jobs:
             sleep 90
           }
 
+          # ── Escalation: force-restart ALL validators to clear stale consensus state ──
+          # Called when recover_unresponsive_validators() did not restore block production.
+          # That function handles the case where some nodes are unreachable (RPC = 0) but
+          # does nothing when ALL nodes are reachable yet consensus is stalled — it just
+          # sleeps 60s and returns. This escalation covers that gap: restarting every node
+          # clears stale in-memory CometBFT consensus state and any lingering iptables rules
+          # left behind by the previous chaos scenario. All 16 containers (8 Bor + 8 Heimdall)
+          # are restarted simultaneously, so the wait is 120s instead of 90s to account for
+          # the thundering-herd P2P reconnect delay when the entire cluster cold-starts together.
+          force_restart_all_validators() {
+            echo "  Force-restarting ALL validators to clear stale CometBFT state..."
+            for v in ${ALL_VALIDATORS}; do
+              for svc in "l2-el-${v}-bor-heimdall-v2-validator" "l2-cl-${v}-heimdall-v2-bor-validator"; do
+                ctr=$(docker ps -a -q --filter "name=${{ env.ENCLAVE_NAME }}--${svc}" 2>/dev/null | head -1)
+                # Fallback: plain name (older kurtosis versions omit the enclave prefix)
+                [[ -z "${ctr}" ]] && ctr=$(docker ps -a -q --filter "name=${svc}" 2>/dev/null | head -1)
+                if [[ -n "${ctr}" ]]; then
+                  echo "  → restarting ${svc} (${ctr})"
+                  docker restart "${ctr}" 2>/dev/null \
+                    || echo "  ⚠ restart failed for ${svc}"
+                else
+                  echo "  ⚠ container not found: ${svc}"
+                fi
+              done
+            done
+
+            echo "  Waiting 120s for full cluster cold-start and CometBFT P2P mesh re-establishment..."
+            sleep 120
+          }
+
           # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
@@ -454,12 +484,16 @@ jobs:
               echo "Health check failed — scanning for unresponsive validators..."
               recover_unresponsive_validators
               if ! check_devnet_health; then
-                echo "::error::Devnet is unrecoverable — halting test suite"
-                echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
-                SKIPPED=$((SKIPPED + 1))
-                DEVNET_HALTED=true
-                echo "::endgroup::"
-                break
+                echo "Consensus still stalled — force-restarting all validators..."
+                force_restart_all_validators
+                if ! check_devnet_health; then
+                  echo "::error::Devnet is unrecoverable — halting test suite"
+                  echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
+                  SKIPPED=$((SKIPPED + 1))
+                  DEVNET_HALTED=true
+                  echo "::endgroup::"
+                  break
+                fi
               fi
               echo "Devnet recovered after restart"
             fi
