@@ -29,6 +29,10 @@ on:
         description: "Heimdall-v2 Docker image (leave empty to auto-detect latest release)"
         required: false
         default: ""
+      erigon_image:
+        description: "Erigon Docker image (leave empty to auto-detect latest release)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -50,6 +54,7 @@ jobs:
     outputs:
       bor-image: ${{ steps.resolve.outputs.bor-image }}
       heimdall-v2-image: ${{ steps.resolve.outputs.heimdall-v2-image }}
+      erigon-image: ${{ steps.resolve.outputs.erigon-image }}
     steps:
       - name: Resolve bor and heimdall-v2 images
         id: resolve
@@ -82,6 +87,19 @@ jobs:
             fi
           fi
 
+          # Erigon keeps the 'v' prefix in image tags (unlike bor/heimdall which strip it)
+          if [[ -n "${{ inputs.erigon_image }}" ]]; then
+            echo "erigon-image=${{ inputs.erigon_image }}" >> "$GITHUB_OUTPUT"
+          else
+            erigon_tag=$(gh api repos/0xPolygon/erigon/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+            if [[ -n "$erigon_tag" && "$erigon_tag" != "null" ]]; then
+              echo "erigon-image=0xpolygon/erigon:${erigon_tag}" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Failed to fetch erigon release, using 'v3.5.0'."
+              echo "erigon-image=0xpolygon/erigon:v3.5.0" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Summary
         run: |
           echo "### Chaos Suite Image Resolution" >> "$GITHUB_STEP_SUMMARY"
@@ -89,6 +107,7 @@ jobs:
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Bor | \`${{ steps.resolve.outputs.bor-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Heimdall-v2 | \`${{ steps.resolve.outputs.heimdall-v2-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Erigon | \`${{ steps.resolve.outputs.erigon-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| kurtosis-pos ref | \`${{ env.KURTOSIS_POS_REF }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   run-chaos-tests:
@@ -149,12 +168,15 @@ jobs:
         run: |
           BOR_IMAGE="${{ needs.resolve-images.outputs.bor-image }}"
           HV2_IMAGE="${{ needs.resolve-images.outputs.heimdall-v2-image }}"
+          ERIGON_IMAGE="${{ needs.resolve-images.outputs.erigon-image }}"
 
           echo "Bor:         ${BOR_IMAGE}"
           echo "Heimdall-v2: ${HV2_IMAGE}"
+          echo "Erigon:      ${ERIGON_IMAGE}"
 
-          # 8 validators + 1 RPC node for chaos testing.
-          # Chaos scenarios reference validators l2-el-[1-8] and RPC l2-el-9.
+          # 8 validators + 1 Bor RPC node + 1 Erigon RPC node for chaos testing.
+          # Chaos scenarios reference validators l2-el-[1-8], Bor RPC l2-el-9,
+          # and Erigon RPC l2-el-10.
           cat > /tmp/chaos-params.yml <<PARAMS
           polygon_pos_package:
             participants:
@@ -172,6 +194,13 @@ jobs:
                 cl_image: "${HV2_IMAGE}"
                 el_type: bor
                 el_image: "${BOR_IMAGE}"
+
+              - kind: rpc
+                count: 1
+                cl_type: heimdall-v2
+                cl_image: "${HV2_IMAGE}"
+                el_type: erigon
+                el_image: "${ERIGON_IMAGE}"
 
             additional_services:
               - observability
