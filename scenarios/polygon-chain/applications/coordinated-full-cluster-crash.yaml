@@ -52,7 +52,9 @@ spec:
 
   duration: 2m
   warmup: 20s
-  cooldown: 1m
+  cooldown: 3m  # Extended cooldown: all 16 containers (8 Bor + 8 Heimdall) restart
+                # simultaneously after SIGKILL. CometBFT cold-start P2P mesh
+                # re-establishment + consensus catch-up requires more than 90s.
 
   faults:
     # SIGKILL all Heimdall validators simultaneously — consensus layer first
