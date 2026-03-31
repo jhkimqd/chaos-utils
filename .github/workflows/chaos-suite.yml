@@ -413,13 +413,28 @@ jobs:
           SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
 
           # ── Scenarios that need their full YAML cooldown for post-fault recovery ──
-          # These scenarios either restart the entire validator set simultaneously, or
-          # cause a network-wide consensus stall (e.g. isolating 3/8 validators drops
-          # the active set below CometBFT's 2/3 BFT threshold). After the fault clears,
-          # all 8 nodes must re-discover peers and re-establish CometBFT consensus before
+          # These scenarios either restart the entire validator set simultaneously,
+          # cause a network-wide consensus stall, or have explicitly long cooldowns
+          # whose observation window must not be truncated. After the fault clears,
+          # nodes must re-discover peers and re-establish CometBFT consensus before
           # the next scenario can safely run. The standard 90 s cooldown is too short —
-          # the YAML sets 3 m, which must not be compressed.
-          LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart three-validator-full-isolation"
+          # the YAML cooldown must not be compressed.
+          #
+          # simultaneous-validator-restart / three-validator-full-isolation:
+          #   Full validator-set restart or 3-node isolation — CometBFT P2P reconnect
+          #   takes minutes (known finding). YAML sets 3 m.
+          # coordinated-full-cluster-crash:
+          #   SIGKILL all 16 containers (8 Bor + 8 Heimdall) simultaneously —
+          #   same thundering-herd recovery constraint. YAML sets 3 m.
+          # span-boundary-partition:
+          #   2/8 partition across span boundary — YAML author explicitly set 2 m
+          #   for CometBFT P2P reconnect (documented in the YAML). Compress would
+          #   truncate post-fault checks before partition heals.
+          # kill-resync-under-peer-loss:
+          #   Ghost-state regression test — YAML author explicitly set 3 m observation
+          #   window to detect sustained sync failure vs successful resync. Compressing
+          #   to 90 s halves the window and may miss the deadlock signal.
+          LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart three-validator-full-isolation coordinated-full-cluster-crash span-boundary-partition kill-resync-under-peer-loss"
 
           PASSED=0
           FAILED=0

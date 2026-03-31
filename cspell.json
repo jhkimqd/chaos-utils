@@ -19,6 +19,8 @@
     "sigkill",
     "SIGKILL",
     "GHCR",
-    "ghcr"
+    "ghcr",
+    "elif",
+    "cooldowns"
   ]
 }
