@@ -1,12 +1,18 @@
 package detector
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dockertypes "github.com/docker/docker/api/types"
@@ -30,6 +36,7 @@ type FailureDetector struct {
 	logTargets   []LogTarget
 	logSince     time.Time
 	results      map[string]*CriterionResult
+	mu           sync.RWMutex
 }
 
 // CriterionResult represents the evaluation result of a success criterion
@@ -66,12 +73,14 @@ func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.Succ
 	}
 
 	// Initialize if not exists
+	fd.mu.Lock()
 	if _, exists := fd.results[criterion.Name]; !exists {
 		fd.results[criterion.Name] = result
 	} else {
 		result = fd.results[criterion.Name]
 		result.LastChecked = time.Now()
 	}
+	fd.mu.Unlock()
 
 	result.Evaluations++
 
@@ -85,6 +94,9 @@ func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.Succ
 
 	case "log":
 		return fd.evaluateLog(ctx, criterion, result)
+
+	case "state_root_consensus":
+		return fd.evaluateStateRootConsensus(ctx, criterion, result)
 
 	default:
 		result.Passed = false
@@ -308,6 +320,229 @@ func (fd *FailureDetector) discoverContainersByPattern(ctx context.Context, patt
 	return targets, nil
 }
 
+// evaluateStateRootConsensus checks that all Bor nodes matching ContainerPattern
+// agree on the stateRoot of their common latest block after chaos recovery.
+//
+// It queries each node via JSON-RPC on port 8545 (container-network IP).
+// Waits up to 2 minutes for all nodes to converge to within 5 blocks of each other,
+// then asserts that every node reports the same stateRoot for their common block.
+//
+// Use this criterion with post_fault_only: true so it runs after faults are removed
+// and nodes have had a chance to re-sync.
+func (fd *FailureDetector) evaluateStateRootConsensus(ctx context.Context, criterion scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
+	if fd.dockerClient == nil {
+		result.Passed = false
+		result.Message = "docker client not configured — cannot perform state root consensus check"
+		return result, nil
+	}
+
+	pattern := criterion.ContainerPattern
+	if pattern == "" {
+		pattern = "bor-heimdall-v2-validator"
+	}
+
+	// Discover target containers
+	targets, err := fd.discoverContainersByPattern(ctx, pattern)
+	if err != nil {
+		result.Passed = false
+		result.Message = fmt.Sprintf("container discovery failed: %v", err)
+		result.Failures++
+		return result, nil
+	}
+	if len(targets) < 2 {
+		result.Passed = false
+		result.Message = fmt.Sprintf("need at least 2 nodes for consensus check, found %d matching %q", len(targets), pattern)
+		result.Failures++
+		return result, nil
+	}
+
+	// Resolve container IPs via Docker inspect
+	type nodeInfo struct {
+		name   string
+		rpcURL string
+	}
+	var nodes []nodeInfo
+	for _, t := range targets {
+		svc, err := fd.dockerClient.GetContainerByID(ctx, t.ContainerID)
+		if err != nil {
+			fmt.Printf("    [state_root] warning: failed to inspect %s: %v\n", t.Name, err)
+			continue
+		}
+		if svc.IP == "" {
+			fmt.Printf("    [state_root] warning: no IP for container %s\n", t.Name)
+			continue
+		}
+		if net.ParseIP(svc.IP) == nil {
+			fmt.Printf("    [state_root] warning: invalid IP %q for container %s — skipping\n", svc.IP, t.Name)
+			continue
+		}
+		nodes = append(nodes, nodeInfo{
+			name:   t.Name,
+			rpcURL: fmt.Sprintf("http://%s:8545", svc.IP),
+		})
+	}
+	if len(nodes) < 2 {
+		result.Passed = false
+		result.Message = fmt.Sprintf("only %d/%d containers had resolvable IPs — cannot check consensus", len(nodes), len(targets))
+		result.Failures++
+		return result, nil
+	}
+
+	fmt.Printf("    [state_root] checking consensus across %d nodes...\n", len(nodes))
+
+	// Poll until all nodes are within 5 blocks of each other (max 2 minutes).
+	convergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	var commonBlock uint64
+	for {
+		var heights []uint64
+		for _, n := range nodes {
+			h, err := ethBlockNumber(convergeCtx, n.rpcURL)
+			if err != nil {
+				fmt.Printf("    [state_root] warning: failed to query block number from %s: %v\n", n.name, err)
+				continue
+			}
+			heights = append(heights, h)
+		}
+
+		if len(heights) >= len(nodes) {
+			var minH, maxH uint64
+			minH = heights[0]
+			maxH = heights[0]
+			for _, h := range heights[1:] {
+				if h < minH {
+					minH = h
+				}
+				if h > maxH {
+					maxH = h
+				}
+			}
+			if maxH-minH <= 5 {
+				commonBlock = minH
+				break
+			}
+			fmt.Printf("    [state_root] waiting for convergence (min=%d max=%d gap=%d)...\n", minH, maxH, maxH-minH)
+		}
+
+		select {
+		case <-convergeCtx.Done():
+			result.Passed = false
+			result.Message = "nodes did not converge to within 5 blocks within 2 minutes after chaos recovery"
+			result.Failures++
+			return result, nil
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	fmt.Printf("    [state_root] nodes converged at block %d, checking stateRoot...\n", commonBlock)
+
+	// Query stateRoot at commonBlock from every node
+	stateRoots := make(map[string]string) // rpcURL → stateRoot
+	for _, n := range nodes {
+		sr, err := ethStateRoot(ctx, n.rpcURL, commonBlock)
+		if err != nil {
+			result.Passed = false
+			result.Message = fmt.Sprintf("failed to query stateRoot from %s at block %d: %v", n.name, commonBlock, err)
+			result.Failures++
+			return result, nil
+		}
+		stateRoots[n.name] = sr
+		fmt.Printf("    [state_root] %s block=%d stateRoot=%s\n", n.name, commonBlock, sr)
+	}
+
+	// All stateRoots must be identical
+	var reference string
+	var divergent []string
+	for name, sr := range stateRoots {
+		if reference == "" {
+			reference = sr
+			continue
+		}
+		if sr != reference {
+			divergent = append(divergent, fmt.Sprintf("%s: %s (expected %s)", name, sr, reference))
+		}
+	}
+
+	if len(divergent) > 0 {
+		result.Passed = false
+		result.Message = fmt.Sprintf("stateRoot divergence at block %d: %s", commonBlock, strings.Join(divergent, "; "))
+		result.Failures++
+		return result, nil
+	}
+
+	result.Passed = true
+	result.Message = fmt.Sprintf("all %d nodes agree on stateRoot %s at block %d", len(nodes), reference, commonBlock)
+	return result, nil
+}
+
+// ethBlockNumber queries eth_blockNumber on a JSON-RPC endpoint.
+func ethBlockNumber(ctx context.Context, rpcURL string) (uint64, error) {
+	body := `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`
+	resp, err := jsonRPCCall(ctx, rpcURL, body)
+	if err != nil {
+		return 0, err
+	}
+	hexStr, ok := resp["result"].(string)
+	if !ok {
+		return 0, fmt.Errorf("unexpected result type in eth_blockNumber response")
+	}
+	n, err := strconv.ParseUint(strings.TrimPrefix(hexStr, "0x"), 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse block number %q: %w", hexStr, err)
+	}
+	return n, nil
+}
+
+// ethStateRoot queries eth_getBlockByNumber and returns the stateRoot field.
+func ethStateRoot(ctx context.Context, rpcURL string, blockNum uint64) (string, error) {
+	blockHex := fmt.Sprintf("0x%x", blockNum)
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":[%q,false],"id":1}`, blockHex)
+	resp, err := jsonRPCCall(ctx, rpcURL, body)
+	if err != nil {
+		return "", err
+	}
+	result, ok := resp["result"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("nil or unexpected result in eth_getBlockByNumber response for block %s", blockHex)
+	}
+	stateRoot, ok := result["stateRoot"].(string)
+	if !ok || stateRoot == "" {
+		return "", fmt.Errorf("missing stateRoot in block %s response", blockHex)
+	}
+	return stateRoot, nil
+}
+
+// jsonRPCCall sends a JSON-RPC request and returns the decoded response map.
+func jsonRPCCall(ctx context.Context, rpcURL, body string) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewBufferString(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	httpResp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("RPC request to %s failed: %w", rpcURL, err)
+	}
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode JSON-RPC response: %w", err)
+	}
+	if errField, ok := result["error"]; ok {
+		return nil, fmt.Errorf("JSON-RPC error: %v", errField)
+	}
+	return result, nil
+}
+
 // evaluateThreshold parses and evaluates a threshold expression
 // Supports: "> 0", "< 100", ">= 50", "<= 75", "== 0", "!= 0"
 func (fd *FailureDetector) evaluateThreshold(value float64, threshold string) (bool, error) {
@@ -386,16 +621,22 @@ func (fd *FailureDetector) EvaluateAll(ctx context.Context, criteria []scenario.
 
 // GetResults returns all criterion results
 func (fd *FailureDetector) GetResults() map[string]*CriterionResult {
+	fd.mu.RLock()
+	defer fd.mu.RUnlock()
 	return fd.results
 }
 
 // GetResult returns a specific criterion result
 func (fd *FailureDetector) GetResult(name string) *CriterionResult {
+	fd.mu.RLock()
+	defer fd.mu.RUnlock()
 	return fd.results[name]
 }
 
 // AllPassed returns true if all criteria passed
 func (fd *FailureDetector) AllPassed() bool {
+	fd.mu.RLock()
+	defer fd.mu.RUnlock()
 	for _, result := range fd.results {
 		if !result.Passed {
 			return false
@@ -406,6 +647,8 @@ func (fd *FailureDetector) AllPassed() bool {
 
 // CriticalPassed returns true if all critical criteria passed
 func (fd *FailureDetector) CriticalPassed() bool {
+	fd.mu.RLock()
+	defer fd.mu.RUnlock()
 	for _, result := range fd.results {
 		if result.Criterion.Critical && !result.Passed {
 			return false
@@ -416,6 +659,9 @@ func (fd *FailureDetector) CriticalPassed() bool {
 
 // GetSummary returns a summary of all evaluations
 func (fd *FailureDetector) GetSummary() string {
+	fd.mu.RLock()
+	defer fd.mu.RUnlock()
+
 	var sb strings.Builder
 
 	total := len(fd.results)

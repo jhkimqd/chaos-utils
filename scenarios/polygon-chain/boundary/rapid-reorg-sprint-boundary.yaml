@@ -90,6 +90,16 @@ spec:
       critical: true
       post_fault_only: true
 
+    - name: post_chaos_state_root_consensus
+      description: >
+        All Bor validators agree on stateRoot after rapid reorg stress at sprint boundaries.
+        The Recents map and snapshot accumulator must survive concurrent reorgs without
+        producing divergent state.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
   metrics:
     - chain_head_block
     - cometbft_consensus_height

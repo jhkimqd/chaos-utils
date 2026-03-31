@@ -89,6 +89,15 @@ spec:
       absence: true
       critical: true
 
+    - name: post_chaos_state_root_consensus
+      description: >
+        All Bor validators agree on stateRoot after degradation and recovery.
+        A divergence here means silent state corruption survived the fault window.
+      type: state_root_consensus
+      container_pattern: "bor-heimdall-v2-validator"
+      critical: true
+      post_fault_only: true
+
   metrics:
     - chain_head_block
     - cometbft_consensus_height
