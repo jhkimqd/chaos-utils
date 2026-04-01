@@ -223,14 +223,14 @@ jobs:
           set -o pipefail
           pushd kurtosis-pos
           timeout 900 kurtosis run \
-            --enclave=${{ env.ENCLAVE_NAME }} \
+            --enclave=${ENCLAVE_NAME} \
             --args-file /tmp/chaos-params.yml \
             . 2>&1 | tee ../deploy.log
           popd
 
       - name: Wait for network readiness
         run: |
-          VALIDATOR_RPC="$(timeout 30 kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-1-bor-heimdall-v2-validator rpc)"
+          VALIDATOR_RPC="$(timeout 30 kurtosis port print ${ENCLAVE_NAME} l2-el-1-bor-heimdall-v2-validator rpc)"
           # Normalize: strip any existing scheme, then prepend http://
           VALIDATOR_RPC="${VALIDATOR_RPC#http://}"
           VALIDATOR_RPC="${VALIDATOR_RPC#https://}"
@@ -281,5 +281,5 @@ jobs:
       - name: Cleanup enclave
         if: always()
         run: |
-          timeout 30 kurtosis enclave stop ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
-          timeout 30 kurtosis enclave rm ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
+          timeout 30 kurtosis enclave stop ${ENCLAVE_NAME} 2>/dev/null || true
+          timeout 30 kurtosis enclave rm ${ENCLAVE_NAME} 2>/dev/null || true
