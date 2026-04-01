@@ -36,7 +36,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
   packages: read
 
 concurrency:
@@ -103,14 +102,18 @@ jobs:
           fi
 
       - name: Summary
+        env:
+          BOR_IMAGE: ${{ steps.resolve.outputs.bor-image }}
+          HV2_IMAGE: ${{ steps.resolve.outputs.heimdall-v2-image }}
+          ERIGON_IMAGE: ${{ steps.resolve.outputs.erigon-image }}
         run: |
           echo "### Chaos Suite Image Resolution" >> "$GITHUB_STEP_SUMMARY"
           echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Bor | \`${{ steps.resolve.outputs.bor-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Heimdall-v2 | \`${{ steps.resolve.outputs.heimdall-v2-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Erigon | \`${{ steps.resolve.outputs.erigon-image }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| kurtosis-pos ref | \`${{ env.KURTOSIS_POS_REF }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bor | \`${BOR_IMAGE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Heimdall-v2 | \`${HV2_IMAGE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Erigon | \`${ERIGON_IMAGE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| kurtosis-pos ref | \`${KURTOSIS_POS_REF}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   run-chaos-tests:
     needs: resolve-images
@@ -146,7 +149,7 @@ jobs:
             "https://github.com/kurtosis-tech/kurtosis-cli-release-artifacts/releases/download/${KURTOSIS_VERSION}/kurtosis-cli_${KURTOSIS_VERSION}_linux_amd64.deb"
           sudo dpkg -i /tmp/kurtosis-cli.deb
           rm /tmp/kurtosis-cli.deb
-          kurtosis analytics disable
+          kurtosis analytics disable || true
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
@@ -218,7 +221,7 @@ jobs:
         run: |
           set -o pipefail
           pushd kurtosis-pos
-          kurtosis run \
+          timeout 900 kurtosis run \
             --enclave=${{ env.ENCLAVE_NAME }} \
             --args-file /tmp/chaos-params.yml \
             . 2>&1 | tee ../deploy.log
@@ -226,7 +229,7 @@ jobs:
 
       - name: Wait for network readiness
         run: |
-          VALIDATOR_RPC="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-1-bor-heimdall-v2-validator rpc)"
+          VALIDATOR_RPC="$(timeout 30 kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-1-bor-heimdall-v2-validator rpc)"
           # Normalize: strip any existing scheme, then prepend http://
           VALIDATOR_RPC="${VALIDATOR_RPC#http://}"
           VALIDATOR_RPC="${VALIDATOR_RPC#https://}"
@@ -268,7 +271,7 @@ jobs:
           ALL_VALIDATORS="1 2 3 4 5 6 7 8"
           declare -A VALIDATOR_RPCS
           for v in ${ALL_VALIDATORS}; do
-            raw="$(kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator rpc 2>/dev/null || echo "")"
+            raw="$(timeout 30 kurtosis port print ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator rpc 2>/dev/null || echo "")"
             raw="${raw#http://}"; raw="${raw#https://}"
             if [[ -n "${raw}" ]]; then
               VALIDATOR_RPCS[${v}]="http://${raw}"
@@ -332,7 +335,7 @@ jobs:
             for v in ${failed_validators}; do
               echo ""
               echo "  ── last 50 lines: l2-el-${v}-bor-heimdall-v2-validator ──"
-              kurtosis service logs ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator 2>/dev/null | tail -50 || echo "  (logs unavailable)"
+              timeout 30 kurtosis service logs ${{ env.ENCLAVE_NAME }} l2-el-${v}-bor-heimdall-v2-validator 2>/dev/null | tail -50 || echo "  (logs unavailable)"
             done
             echo ""
             return 1
@@ -445,6 +448,70 @@ jobs:
             return 0
           }
 
+          # ── Full devnet redeploy: kurtosis clean + fresh deploy ──
+          # Called when a scenario has broken the network beyond what container
+          # restarts can fix. Tears down the entire Kurtosis enclave, redeploys
+          # from scratch, waits for block production, and re-resolves all
+          # validator RPC endpoints (ports change after redeploy).
+          redeploy_devnet() {
+            echo "  Tearing down enclave..."
+            timeout 30 kurtosis enclave stop ${ENCLAVE_NAME} 2>/dev/null || true
+            timeout 30 kurtosis enclave rm ${ENCLAVE_NAME} 2>/dev/null || true
+
+            echo "  Redeploying devnet from scratch..."
+            pushd "${GITHUB_WORKSPACE}/kurtosis-pos" > /dev/null
+            if ! timeout 900 kurtosis run --enclave=${ENCLAVE_NAME} --args-file /tmp/chaos-params.yml . 2>&1 | tee ../redeploy.log; then
+              echo "  ✗ Redeploy failed"
+              popd > /dev/null
+              return 1
+            fi
+            popd > /dev/null
+
+            echo "  Waiting for network readiness (40 blocks)..."
+            local rpc_raw
+            rpc_raw="$(timeout 30 kurtosis port print ${ENCLAVE_NAME} l2-el-1-bor-heimdall-v2-validator rpc 2>/dev/null || echo "")"
+            rpc_raw="${rpc_raw#http://}"; rpc_raw="${rpc_raw#https://}"
+            if [[ -z "${rpc_raw}" ]]; then
+              echo "  ✗ Cannot resolve validator-1 RPC after redeploy"
+              return 1
+            fi
+            local rpc_url="http://${rpc_raw}"
+
+            for i in $(seq 1 120); do
+              local block
+              block=$(timeout 5 cast bn --rpc-url "${rpc_url}" 2>/dev/null || echo "0")
+              echo "  Block: ${block}/40 (attempt ${i}/120)"
+              if [[ "${block}" -ge 40 ]]; then
+                echo "  ✓ Network ready"
+                break
+              fi
+              if [[ "${i}" -eq 120 ]]; then
+                echo "  ✗ Network did not reach 40 blocks after redeploy"
+                return 1
+              fi
+              sleep 5
+            done
+
+            # Re-resolve all validator RPC URLs (ports change after redeploy)
+            echo "  Re-resolving validator RPC endpoints..."
+            for v in ${ALL_VALIDATORS}; do
+              raw="$(timeout 30 kurtosis port print ${ENCLAVE_NAME} l2-el-${v}-bor-heimdall-v2-validator rpc 2>/dev/null || echo "")"
+              raw="${raw#http://}"; raw="${raw#https://}"
+              if [[ -n "${raw}" ]]; then
+                VALIDATOR_RPCS[${v}]="http://${raw}"
+              fi
+            done
+
+            # Verify multi-validator participation (not just validator-1 producing blocks)
+            echo "  Verifying multi-validator consensus..."
+            if ! check_devnet_health; then
+              echo "  ✗ Devnet deployed but validators not in consensus"
+              return 1
+            fi
+
+            return 0
+          }
+
           # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
@@ -507,6 +574,7 @@ jobs:
           SKIPPED=0
           TEST_FAILURES=""
           DEVNET_HALTED=false
+          HALT_SUSPECT=""
           CONSECUTIVE_ERRORS=0
           MAX_CONSECUTIVE_ERRORS=2
           SCENARIO_TIMEOUT=900  # 15 minutes max per scenario run
@@ -532,6 +600,7 @@ jobs:
                   echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
                   SKIPPED=$((SKIPPED + 1))
                   DEVNET_HALTED=true
+                  HALT_SUSPECT="${name} (pre-flight: devnet was already broken)"
                   echo "::endgroup::"
                   break
                 fi
@@ -576,6 +645,87 @@ jobs:
               ${SET_FLAGS} \
               --format text 2>&1 | tee "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
 
+            # ── Pre-fault steady-state failure: recover and retry ──
+            # The chaos-runner's pre-fault check is stricter than the workflow's
+            # health gate (it evaluates Prometheus-based criteria, not just block
+            # advancement). If it detects the system isn't in steady state, the
+            # scenario aborted before fault injection — it never actually ran.
+            # Recovery + retry is safe and avoids wasting the scenario slot.
+            if [[ ${EXIT_CODE} -ne 0 ]] && grep -q "pre-fault health check failed:.*steady state" "${REPORT_DIR}/${name}.log" 2>/dev/null; then
+              echo "::warning::${name}: pre-fault health check failed — system not in steady state"
+              echo "Recovering network before retry..."
+              force_restart_all_validators
+              if ! check_devnet_health; then
+                echo "::error::Recovery failed after pre-fault check — devnet unrecoverable"
+                echo "ERROR  ${name} (steady-state check failed, recovery failed)" >> "${REPORT_DIR}/results.txt"
+                ERRORS=$((ERRORS + 1))
+                DEVNET_HALTED=true
+                HALT_SUSPECT="${name}"
+                echo "::endgroup::"
+                break
+              fi
+              echo "Network recovered — retrying ${name}..."
+              EXIT_CODE=0
+              timeout --kill-after=30 ${SCENARIO_TIMEOUT} ./bin/chaos-runner run \
+                --scenario "${scenario}" \
+                ${SET_FLAGS} \
+                --format text 2>&1 | tee -a "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
+            fi
+
+            # ── Network-death detection: full redeploy + verify ──
+            # If the scenario killed the network, redeploy from scratch and
+            # re-run the suspect scenario to distinguish a confirmed bug from
+            # a false positive caused by residual state from earlier scenarios.
+            if [[ ${EXIT_CODE} -ne 0 ]]; then
+              echo "Post-scenario liveness probe..."
+              if ! quick_liveness_probe; then
+                echo ""
+                echo "  ╔══════════════════════════════════════════════════════════════════╗"
+                echo "  ║  SUSPECT: ${name} may have broken the devnet                    ║"
+                echo "  ╚══════════════════════════════════════════════════════════════════╝"
+                echo ""
+                echo "Redeploying fresh devnet to verify..."
+                if ! redeploy_devnet; then
+                  echo "::error::Fresh redeploy failed — cannot verify suspect scenario"
+                  echo "ERROR  ${name} (devnet broken, redeploy failed)" >> "${REPORT_DIR}/results.txt"
+                  ERRORS=$((ERRORS + 1))
+                  DEVNET_HALTED=true
+                  HALT_SUSPECT="${name}"
+                  echo "::endgroup::"
+                  break
+                fi
+
+                echo "Re-running ${name} on fresh devnet to confirm..."
+                EXIT_CODE=0
+                timeout --kill-after=30 ${SCENARIO_TIMEOUT} ./bin/chaos-runner run \
+                  --scenario "${scenario}" \
+                  ${SET_FLAGS} \
+                  --format text 2>&1 | tee "${REPORT_DIR}/${name}-verify.log" || EXIT_CODE=$?
+
+                echo "Verification liveness probe..."
+                if ! quick_liveness_probe; then
+                  echo ""
+                  echo "  ╔══════════════════════════════════════════════════════════════════╗"
+                  echo "  ║  CONFIRMED: ${name} breaks the devnet reproducibly              ║"
+                  echo "  ╚══════════════════════════════════════════════════════════════════╝"
+                  echo ""
+                  echo "::error::CONFIRMED BUG: ${name} breaks the devnet on a fresh enclave"
+                  echo "CONFIRMED_BUG ${name}" >> "${REPORT_DIR}/results.txt"
+                  FAILED=$((FAILED + 1))
+                  TEST_FAILURES="${TEST_FAILURES}  - ${name} (**CONFIRMED: breaks devnet reproducibly**)\n"
+                  DEVNET_HALTED=true
+                  HALT_SUSPECT="${name}"
+                  echo "::endgroup::"
+                  break
+                fi
+
+                echo "✓ ${name} passed on fresh devnet — previous failure was a false positive"
+                echo "Continuing tests on fresh devnet..."
+                CONSECUTIVE_ERRORS=0
+                # EXIT_CODE now reflects the re-run on fresh devnet — fall through to classification
+              fi
+            fi
+
             # ── Classify result ──
             if [[ ${EXIT_CODE} -eq 124 || ${EXIT_CODE} -eq 137 ]]; then
               # 124 = SIGTERM from timeout, 137 = SIGKILL from --kill-after
@@ -593,9 +743,6 @@ jobs:
               echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
               FAILED=$((FAILED + 1))
               TEST_FAILURES="${TEST_FAILURES}  - ${name}\n"
-              # Test failures don't indicate infra problems — don't increment consecutive errors.
-              # But don't reset either: a legitimate test failure sandwiched between infra errors
-              # shouldn't mask a dying network.
             else
               echo "::error::ERROR: ${name} (exit: ${EXIT_CODE})"
               echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
@@ -603,41 +750,16 @@ jobs:
               CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
             fi
 
-            # ── Post-scenario liveness probe ──
-            # On any non-pass result, immediately check if the network is still alive.
-            # This catches a broken network right away instead of waiting for the next
-            # scenario's pre-flight health gate (which adds ~5 min of recovery overhead).
-            if [[ ${EXIT_CODE} -ne 0 ]]; then
-              echo "Post-scenario liveness probe..."
-              if ! quick_liveness_probe; then
-                echo "Network unreachable after ${name} — attempting recovery..."
-                recover_unresponsive_validators
-                if ! quick_liveness_probe; then
-                  force_restart_all_validators
-                  if ! check_devnet_health; then
-                    echo "::error::Devnet unrecoverable after scenario ${name} — halting suite"
-                    DEVNET_HALTED=true
-                    echo "::endgroup::"
-                    break
-                  fi
-                fi
-                echo "Network recovered after post-scenario intervention"
-                CONSECUTIVE_ERRORS=0
-              fi
-            fi
-
             # ── Consecutive-error circuit breaker ──
-            # Multiple infra errors in a row strongly suggest the network is
-            # fundamentally broken, not a single flaky scenario. Skip straight
-            # to the nuclear option instead of repeating the full recovery dance
-            # per-scenario.
+            # Multiple infra errors in a row on a live network suggest a
+            # systemic issue. Force-restart all validators as a last resort.
             if [[ ${CONSECUTIVE_ERRORS} -ge ${MAX_CONSECUTIVE_ERRORS} ]]; then
-              echo "::warning::${CONSECUTIVE_ERRORS} consecutive infra errors — network likely broken"
-              echo "Attempting final recovery before halting..."
+              echo "::warning::${CONSECUTIVE_ERRORS} consecutive infra errors — attempting full validator restart"
               force_restart_all_validators
               if ! check_devnet_health; then
                 echo "::error::Devnet unrecoverable after ${CONSECUTIVE_ERRORS} consecutive errors — halting suite"
                 DEVNET_HALTED=true
+                HALT_SUSPECT="${name}"
                 echo "::endgroup::"
                 break
               fi
@@ -673,6 +795,10 @@ jobs:
           if [[ "${DEVNET_HALTED}" == "true" ]]; then
             echo ""
             echo "⚠ Suite halted early: devnet became unrecoverable"
+            if [[ -n "${HALT_SUSPECT}" ]]; then
+              echo "  ➜ Last scenario before halt: ${HALT_SUSPECT}"
+              echo "  ➜ Check the scenario logs and enclave dump for root cause"
+            fi
           fi
 
           echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
@@ -691,6 +817,15 @@ jobs:
               echo "**Failed scenarios:**"
               echo -e "${TEST_FAILURES}" | sed 's/^/- /'
             fi
+            if [[ "${DEVNET_HALTED}" == "true" ]]; then
+              echo ""
+              echo "> **Suite halted early: devnet became unrecoverable**"
+              if [[ -n "${HALT_SUSPECT}" ]]; then
+                echo ">"
+                echo "> Last scenario before halt: \`${HALT_SUSPECT}\`"
+                echo "> Check the scenario logs and enclave dump for root cause."
+              fi
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Fail the job on test failures (critical criteria), infrastructure
@@ -704,13 +839,13 @@ jobs:
             exit 1
           fi
           if [[ "${DEVNET_HALTED}" == "true" ]]; then
-            echo "::error::Devnet became unrecoverable — ${SKIPPED} scenario(s) skipped"
+            echo "::error::Devnet became unrecoverable after '${HALT_SUSPECT}' — ${SKIPPED} scenario(s) skipped"
             exit 1
           fi
 
       - name: Dump enclave logs
         if: failure()
-        run: kurtosis dump ./dump
+        run: timeout 120 kurtosis dump ./dump
 
       - name: Upload enclave dump
         if: failure()
@@ -718,6 +853,7 @@ jobs:
         with:
           name: chaos-enclave-dump-${{ github.run_id }}
           path: ./dump
+          retention-days: 14
 
       - name: Upload test reports
         if: always()
@@ -725,9 +861,10 @@ jobs:
         with:
           name: chaos-reports-${{ github.run_id }}
           path: reports/
+          retention-days: 30
 
       - name: Cleanup enclave
         if: always()
         run: |
-          kurtosis enclave stop ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
-          kurtosis enclave rm ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
+          timeout 30 kurtosis enclave stop ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
+          timeout 30 kurtosis enclave rm ${{ env.ENCLAVE_NAME }} 2>/dev/null || true
