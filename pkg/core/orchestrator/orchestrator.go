@@ -1016,9 +1016,111 @@ func (o *Orchestrator) evaluateDuringFaultCriteria(ctx context.Context) error {
 	return nil
 }
 
+// universalSafetyCriteria returns criteria that every chaos scenario should
+// evaluate regardless of what the YAML defines. These catch safety violations
+// (double-signing, deep reorgs, state divergence) that individual scenario
+// authors might forget to include.
+//
+// All universal criteria are post_fault_only (meaningless before injection)
+// and non-critical (informational — they surface problems without overriding
+// the scenario's own pass/fail logic). The one exception is byzantine
+// detection which is always critical: double-signing is never acceptable.
+func universalSafetyCriteria() []scenario.SuccessCriterion {
+	return []scenario.SuccessCriterion{
+		{
+			Name:          "[universal] no_byzantine_validators",
+			Description:   "No double-signing detected — any non-zero value is a critical safety violation",
+			Type:          "prometheus",
+			Query:         `max(cometbft_consensus_byzantine_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}) or vector(0)`,
+			Threshold:     "== 0",
+			Critical:      true,
+			PostFaultOnly: true,
+		},
+		{
+			Name:          "[universal] reorg_depth_bounded",
+			Description:   "No deep chain reorganizations (> 20 blocks dropped) during or after chaos",
+			Type:          "prometheus",
+			Query:         `sum(increase(chain_reorg_drop{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)`,
+			Threshold:     "< 20",
+			Critical:      false,
+			PostFaultOnly: true,
+		},
+		{
+			Name:          "[universal] no_panic_or_consensus_failure_bor",
+			Description:   "No panic, fatal error, or consensus failure in any Bor validator",
+			Type:          "log",
+			Pattern:       `(panic:|fatal:|CONSENSUS FAILURE)`,
+			Absence:       true,
+			Critical:      true,
+			PostFaultOnly: true,
+			ContainerPattern: "bor-heimdall-v2-validator",
+		},
+		{
+			Name:          "[universal] no_panic_or_consensus_failure_heimdall",
+			Description:   "No panic, fatal error, or consensus failure in any Heimdall validator",
+			Type:          "log",
+			Pattern:       `(panic:|fatal:|CONSENSUS FAILURE)`,
+			Absence:       true,
+			Critical:      true,
+			PostFaultOnly: true,
+			ContainerPattern: "heimdall-v2-bor-validator",
+		},
+		{
+			Name:             "[universal] no_db_corruption_bor",
+			Description:      "No database corruption detected in any Bor validator",
+			Type:             "log",
+			Pattern:          `(corruption detected|MANIFEST.*error|pebble.*panic|leveldb.*corruption)`,
+			Absence:          true,
+			Critical:         true,
+			PostFaultOnly:    true,
+			ContainerPattern: "bor-heimdall-v2-validator",
+		},
+		{
+			Name:             "[universal] no_db_corruption_heimdall",
+			Description:      "No database corruption detected in any Heimdall validator",
+			Type:             "log",
+			Pattern:          `(corruption detected|MANIFEST.*error|pebble.*panic|leveldb.*corruption)`,
+			Absence:          true,
+			Critical:         true,
+			PostFaultOnly:    true,
+			ContainerPattern: "heimdall-v2-bor-validator",
+		},
+		{
+			Name:          "[universal] state_root_consensus",
+			Description:   "All validators converge on the same state root after chaos — catches silent state divergence",
+			Type:          "state_root_consensus",
+			Critical:      true,
+			PostFaultOnly: true,
+			ContainerPattern: "bor-heimdall-v2-validator",
+		},
+		{
+			Name:          "[universal] sidetx_consensus_healthy",
+			Description:   "Heimdall side-tx consensus failures remain low (< 20% of approvals)",
+			Type:          "prometheus",
+			Query:         `(sum(rate(heimdallv2_sidetx_consensus_failures_total[3m])) / clamp_min(sum(rate(heimdallv2_sidetx_consensus_approved_total[3m])), 0.001)) or vector(0)`,
+			Threshold:     "< 0.2",
+			Critical:      false,
+			PostFaultOnly: true,
+		},
+	}
+}
+
 // executeDetect evaluates success criteria
 func (o *Orchestrator) executeDetect(ctx context.Context) error {
 	fmt.Println("Evaluating success criteria...")
+
+	// Inject universal safety criteria that apply to every scenario.
+	// These are appended so they don't interfere with scenario-specific
+	// criteria ordering. Duplicates (same name) are skipped.
+	existing := make(map[string]bool)
+	for _, c := range o.scenario.Spec.SuccessCriteria {
+		existing[c.Name] = true
+	}
+	for _, uc := range universalSafetyCriteria() {
+		if !existing[uc.Name] {
+			o.scenario.Spec.SuccessCriteria = append(o.scenario.Spec.SuccessCriteria, uc)
+		}
+	}
 
 	if len(o.scenario.Spec.SuccessCriteria) == 0 {
 		fmt.Println("  ⚠ No success criteria defined")
