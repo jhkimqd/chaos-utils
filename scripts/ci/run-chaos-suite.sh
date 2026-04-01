@@ -298,6 +298,7 @@ SKIPPED=0
 TEST_FAILURES=""
 DEVNET_HALTED=false
 HALT_SUSPECT=""
+LAST_ERROR_SCENARIO=""
 CONSECUTIVE_ERRORS=0
 MAX_CONSECUTIVE_ERRORS=2
 SCENARIO_TIMEOUT=900  # 15 minutes max per scenario run
@@ -320,7 +321,11 @@ for scenario in ${SELECTED}; do
         echo "SKIPPED ${name} (devnet halted)" >> "${REPORT_DIR}/results.txt"
         SKIPPED=$((SKIPPED + 1))
         DEVNET_HALTED=true
-        HALT_SUSPECT="${name} (pre-flight: devnet was already broken)"
+        if [[ -n "${LAST_ERROR_SCENARIO}" ]]; then
+          HALT_SUSPECT="${LAST_ERROR_SCENARIO} (broke devnet; detected at pre-flight of ${name})"
+        else
+          HALT_SUSPECT="${name} (pre-flight: devnet was already broken)"
+        fi
         echo "::endgroup::"
         break
       fi
@@ -369,7 +374,11 @@ for scenario in ${SELECTED}; do
       echo "ERROR  ${name} (steady-state check failed, recovery failed)" >> "${REPORT_DIR}/results.txt"
       ERRORS=$((ERRORS + 1))
       DEVNET_HALTED=true
-      HALT_SUSPECT="${name}"
+      if [[ -n "${LAST_ERROR_SCENARIO}" ]]; then
+        HALT_SUSPECT="${LAST_ERROR_SCENARIO} (degraded devnet; pre-fault check failed in ${name})"
+      else
+        HALT_SUSPECT="${name}"
+      fi
       echo "::endgroup::"
       break
     fi
@@ -382,9 +391,23 @@ for scenario in ${SELECTED}; do
   fi
 
   # ── Network-death detection: full redeploy + verify ──
+  # After infra errors (exit >= 2 or timeout), use the full 30s block-advancement
+  # check — quick_liveness_probe only tests RPC reachability, which misses degraded
+  # states where validators are reachable but consensus is stalled.
   if [[ ${EXIT_CODE} -ne 0 ]]; then
-    echo "Post-scenario liveness probe..."
-    if ! quick_liveness_probe; then
+    NETWORK_OK=true
+    if [[ ${EXIT_CODE} -ge 2 ]]; then
+      echo "Post-scenario health check (full — infra error detected)..."
+      if ! check_devnet_health; then
+        NETWORK_OK=false
+      fi
+    else
+      echo "Post-scenario liveness probe..."
+      if ! quick_liveness_probe; then
+        NETWORK_OK=false
+      fi
+    fi
+    if [[ "${NETWORK_OK}" == "false" ]]; then
       echo ""
       echo "  ╔══════════════════════════════════════════════════════════════════╗"
       echo "  ║  SUSPECT: ${name} may have broken the devnet                    ║"
@@ -425,9 +448,14 @@ for scenario in ${SELECTED}; do
         break
       fi
 
-      echo "✓ ${name} passed on fresh devnet — previous failure was a false positive"
+      if [[ ${EXIT_CODE} -eq 0 ]]; then
+        echo "✓ ${name} passed on fresh devnet — previous failure was a false positive"
+      else
+        echo "⚠ ${name} also failed on fresh devnet (exit ${EXIT_CODE}) — not a network-death issue"
+      fi
       echo "Continuing tests on fresh devnet..."
       CONSECUTIVE_ERRORS=0
+      LAST_ERROR_SCENARIO=""
     fi
   fi
 
@@ -437,11 +465,13 @@ for scenario in ${SELECTED}; do
     echo "ERROR  ${name} (timeout after ${SCENARIO_TIMEOUT}s)" >> "${REPORT_DIR}/results.txt"
     ERRORS=$((ERRORS + 1))
     CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
+    LAST_ERROR_SCENARIO="${name}"
   elif [[ ${EXIT_CODE} -eq 0 ]]; then
     echo "✅ PASSED: ${name}"
     echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
     PASSED=$((PASSED + 1))
     CONSECUTIVE_ERRORS=0
+    LAST_ERROR_SCENARIO=""
   elif [[ ${EXIT_CODE} -eq 1 ]]; then
     echo "::error::FAILED: ${name} — one or more critical success criteria did not pass"
     echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
@@ -452,6 +482,7 @@ for scenario in ${SELECTED}; do
     echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
     ERRORS=$((ERRORS + 1))
     CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
+    LAST_ERROR_SCENARIO="${name}"
   fi
 
   # ── Consecutive-error circuit breaker ──
