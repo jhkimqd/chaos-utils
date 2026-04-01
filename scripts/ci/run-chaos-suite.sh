@@ -91,16 +91,12 @@ check_devnet_health() {
     return 0
   fi
 
-  # Total failure — dump recent logs for diagnosis
+  # Total failure — collect diagnostic state instead of dumping INFO logs
   echo ""
   echo "  ╔══════════════════════════════════════════════════════╗"
   echo "  ║  ALL HEALTH-CHECK VALIDATORS UNRESPONSIVE           ║"
   echo "  ╚══════════════════════════════════════════════════════╝"
-  for v in ${failed_validators}; do
-    echo ""
-    echo "  ── last 50 lines: l2-el-${v}-bor-heimdall-v2-validator ──"
-    timeout 30 kurtosis service logs "${ENCLAVE_NAME}" "l2-el-${v}-bor-heimdall-v2-validator" 2>/dev/null | tail -50 || echo "  (logs unavailable)"
-  done
+  diagnose_network_state "${failed_validators}"
   echo ""
   return 1
 }
@@ -191,6 +187,137 @@ quick_liveness_probe() {
   fi
   echo "  Liveness probe: ${reachable}/${total} validators reachable"
   return 0
+}
+
+# ── Diagnostic panel: rich state dump when validators are unresponsive ──
+# Replaces the old "dump last 50 INFO lines" approach with structured
+# diagnostics: container status, block heights, peer counts, Heimdall
+# health, and only ERROR/WARN/FATAL/PANIC log lines.
+diagnose_network_state() {
+  local problem_validators="${1:-${ALL_VALIDATORS}}"
+  echo ""
+  echo "  ┌─────────────────────────────────────────────────────────────┐"
+  echo "  │  DIAGNOSTIC REPORT                                         │"
+  echo "  └─────────────────────────────────────────────────────────────┘"
+
+  # ── 1. Container status (running/exited/dead?) ──
+  echo ""
+  echo "  ── Container Status ──"
+  for v in ${ALL_VALIDATORS}; do
+    for layer in "l2-el-${v}-bor-heimdall-v2-validator" "l2-cl-${v}-heimdall-v2-bor-validator"; do
+      local ctr state
+      ctr=$(docker ps -a -q --filter "name=${ENCLAVE_NAME}--${layer}" 2>/dev/null | head -1)
+      [[ -z "${ctr}" ]] && ctr=$(docker ps -a -q --filter "name=${layer}" 2>/dev/null | head -1)
+      if [[ -n "${ctr}" ]]; then
+        state=$(docker inspect --format='{{.State.Status}} ({{.State.Health.Status}})' "${ctr}" 2>/dev/null || docker inspect --format='{{.State.Status}}' "${ctr}" 2>/dev/null || echo "unknown")
+        local short_layer="${layer#l2-*-}"
+        echo "    ${layer}: ${state}"
+      else
+        echo "    ${layer}: NOT FOUND"
+      fi
+    done
+  done
+
+  # ── 2. Block heights across all validators ──
+  echo ""
+  echo "  ── Block Heights (Bor RPC) ──"
+  local max_block=0
+  local min_block=999999999
+  for v in ${ALL_VALIDATORS}; do
+    local url="${VALIDATOR_RPCS[${v}]:-}"
+    local height="unreachable"
+    if [[ -n "${url}" ]]; then
+      height=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "unreachable")
+    fi
+    if [[ "${height}" != "unreachable" && "${height}" -gt 0 ]] 2>/dev/null; then
+      [[ "${height}" -gt "${max_block}" ]] && max_block="${height}"
+      [[ "${height}" -lt "${min_block}" ]] && min_block="${height}"
+      echo "    validator ${v}: block ${height}"
+    else
+      echo "    validator ${v}: ${height}"
+    fi
+  done
+  if [[ "${max_block}" -gt 0 && "${min_block}" -lt 999999999 ]]; then
+    local gap=$((max_block - min_block))
+    echo "    ── spread: ${min_block}..${max_block} (Δ${gap} blocks)"
+  fi
+
+  # ── 3. Heimdall consensus heights ──
+  echo ""
+  echo "  ── Heimdall Consensus Heights ──"
+  for v in ${ALL_VALIDATORS}; do
+    local cl_port
+    cl_port="$(timeout 10 kurtosis port print "${ENCLAVE_NAME}" "l2-cl-${v}-heimdall-v2-bor-validator" rpc 2>/dev/null || echo "")"
+    cl_port="${cl_port#http://}"; cl_port="${cl_port#https://}"
+    if [[ -n "${cl_port}" ]]; then
+      local hd_status
+      hd_status=$(timeout 5 curl -s "http://${cl_port}/status" 2>/dev/null || echo "")
+      if [[ -n "${hd_status}" ]]; then
+        local hd_block hd_catching_up
+        hd_block=$(echo "${hd_status}" | jq -r '.result.sync_info.latest_block_height // "n/a"' 2>/dev/null || echo "n/a")
+        hd_catching_up=$(echo "${hd_status}" | jq -r '.result.sync_info.catching_up // "n/a"' 2>/dev/null || echo "n/a")
+        local hd_peers
+        hd_peers=$(echo "${hd_status}" | jq -r '.result.node_info.other.peers // "n/a"' 2>/dev/null || echo "n/a")
+        echo "    validator ${v}: height=${hd_block} catching_up=${hd_catching_up}"
+      else
+        echo "    validator ${v}: Heimdall RPC unreachable"
+      fi
+    else
+      echo "    validator ${v}: Heimdall port not found"
+    fi
+  done
+
+  # ── 4. Peer counts (Bor P2P) ──
+  echo ""
+  echo "  ── Bor Peer Counts ──"
+  for v in ${ALL_VALIDATORS}; do
+    local url="${VALIDATOR_RPCS[${v}]:-}"
+    if [[ -n "${url}" ]]; then
+      local peers
+      peers=$(timeout 5 curl -s -X POST -H "Content-Type: application/json" \
+        -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' \
+        "${url}" 2>/dev/null | jq -r '.result // "n/a"' 2>/dev/null || echo "n/a")
+      if [[ "${peers}" != "n/a" && "${peers}" != "null" && -n "${peers}" ]]; then
+        local peer_dec=$((16#${peers#0x})) 2>/dev/null || peer_dec="${peers}"
+        echo "    validator ${v}: ${peer_dec} peers"
+      else
+        echo "    validator ${v}: unreachable"
+      fi
+    else
+      echo "    validator ${v}: no RPC URL"
+    fi
+  done
+
+  # ── 5. Error/warning logs only (not INFO) ──
+  echo ""
+  echo "  ── Error Logs (last 20 ERROR/WARN/FATAL/PANIC lines per problem validator) ──"
+  for v in ${problem_validators}; do
+    echo ""
+    echo "    ── Bor validator ${v} ──"
+    local bor_errors
+    bor_errors=$(timeout 30 kurtosis service logs "${ENCLAVE_NAME}" "l2-el-${v}-bor-heimdall-v2-validator" 2>/dev/null \
+      | grep -iE '(ERR|error|WARN|warning|FATAL|PANIC|CRIT)' | tail -20 || echo "")
+    if [[ -n "${bor_errors}" ]]; then
+      echo "${bor_errors}" | sed 's/^/      /'
+    else
+      echo "      (no error-level logs found)"
+    fi
+
+    echo "    ── Heimdall validator ${v} ──"
+    local hd_errors
+    hd_errors=$(timeout 30 kurtosis service logs "${ENCLAVE_NAME}" "l2-cl-${v}-heimdall-v2-bor-validator" 2>/dev/null \
+      | grep -iE '(ERR|error|WARN|warning|FATAL|PANIC|CRIT)' | tail -20 || echo "")
+    if [[ -n "${hd_errors}" ]]; then
+      echo "${hd_errors}" | sed 's/^/      /'
+    else
+      echo "      (no error-level logs found)"
+    fi
+  done
+
+  echo ""
+  echo "  ┌─────────────────────────────────────────────────────────────┐"
+  echo "  │  END DIAGNOSTIC REPORT                                     │"
+  echo "  └─────────────────────────────────────────────────────────────┘"
 }
 
 # ── Full devnet redeploy: kurtosis clean + fresh deploy ──
@@ -531,11 +658,16 @@ fi
 
 if [[ "${DEVNET_HALTED}" == "true" ]]; then
   echo ""
-  echo "⚠ Suite halted early: devnet became unrecoverable"
+  echo "╔══════════════════════════════════════════════════════════════════╗"
+  echo "║  SUITE HALTED: DEVNET UNRECOVERABLE                           ║"
+  echo "╚══════════════════════════════════════════════════════════════════╝"
   if [[ -n "${HALT_SUSPECT}" ]]; then
-    echo "  ➜ Last scenario before halt: ${HALT_SUSPECT}"
-    echo "  ➜ Check the scenario logs and enclave dump for root cause"
+    echo ""
+    echo "  Suspect scenario: ${HALT_SUSPECT}"
   fi
+  echo ""
+  echo "  Collecting final network state for diagnosis..."
+  diagnose_network_state "${ALL_VALIDATORS}"
 fi
 
 echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
@@ -556,12 +688,13 @@ echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
   fi
   if [[ "${DEVNET_HALTED}" == "true" ]]; then
     echo ""
-    echo "> **Suite halted early: devnet became unrecoverable**"
+    echo "> **Suite halted: devnet became unrecoverable**"
     if [[ -n "${HALT_SUSPECT}" ]]; then
       echo ">"
-      echo "> Last scenario before halt: \`${HALT_SUSPECT}\`"
-      echo "> Check the scenario logs and enclave dump for root cause."
+      echo "> Suspect scenario: \`${HALT_SUSPECT}\`"
     fi
+    echo ">"
+    echo "> See the **Diagnostic Report** in the job logs and the enclave dump artifact for root cause analysis."
   fi
 } >> "$GITHUB_STEP_SUMMARY"
 
