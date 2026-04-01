@@ -12,15 +12,16 @@ on:
       scenario_count:
         description: "Number of scenarios to sample (0 = run all)"
         required: false
-        default: "8"
+        default: "0"
       kurtosis_pos_ref:
         description: "kurtosis-pos branch/tag to deploy"
         required: false
         default: "feat/execution-specs"
       fast_mode:
-        description: "Compress scenario timings for faster CI (true/false)"
+        description: "Compress scenario timings for faster CI"
         required: false
-        default: "true"
+        type: boolean
+        default: true
       bor_image:
         description: "Bor Docker image (leave empty to auto-detect latest release)"
         required: false
