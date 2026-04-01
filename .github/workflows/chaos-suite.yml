@@ -139,10 +139,13 @@ jobs:
           swap-storage: true
 
       - name: Install Kurtosis
+        env:
+          KURTOSIS_VERSION: "1.17.7"
         run: |
-          echo "deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /" | sudo tee /etc/apt/sources.list.d/kurtosis.list
-          sudo apt update
-          sudo apt install -y kurtosis-cli=1.17.7
+          curl -fsSL -o /tmp/kurtosis-cli.deb \
+            "https://github.com/kurtosis-tech/kurtosis-cli-release-artifacts/releases/download/${KURTOSIS_VERSION}/kurtosis-cli_${KURTOSIS_VERSION}_linux_amd64.deb"
+          sudo dpkg -i /tmp/kurtosis-cli.deb
+          rm /tmp/kurtosis-cli.deb
           kurtosis analytics disable
 
       - name: Login to GitHub Container Registry
