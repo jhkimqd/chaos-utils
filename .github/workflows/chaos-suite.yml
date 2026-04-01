@@ -38,7 +38,6 @@ permissions:
   contents: read
   actions: write
   packages: read
-  id-token: write
 
 concurrency:
   group: chaos-suite-${{ github.ref }}
@@ -60,10 +59,13 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_BOR_IMAGE: ${{ inputs.bor_image }}
+          INPUT_HEIMDALL_V2_IMAGE: ${{ inputs.heimdall_v2_image }}
+          INPUT_ERIGON_IMAGE: ${{ inputs.erigon_image }}
         run: |
           # Use explicit images if provided
-          if [[ -n "${{ inputs.bor_image }}" ]]; then
-            echo "bor-image=${{ inputs.bor_image }}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${INPUT_BOR_IMAGE}" ]]; then
+            echo "bor-image=${INPUT_BOR_IMAGE}" >> "$GITHUB_OUTPUT"
           else
             bor_tag=$(gh api repos/0xPolygon/bor/releases --jq \
               '[.[] | select(.draft == false)] | .[0].tag_name' 2>/dev/null || echo "")
@@ -75,8 +77,8 @@ jobs:
             fi
           fi
 
-          if [[ -n "${{ inputs.heimdall_v2_image }}" ]]; then
-            echo "heimdall-v2-image=${{ inputs.heimdall_v2_image }}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${INPUT_HEIMDALL_V2_IMAGE}" ]]; then
+            echo "heimdall-v2-image=${INPUT_HEIMDALL_V2_IMAGE}" >> "$GITHUB_OUTPUT"
           else
             hv2_tag=$(gh api repos/0xPolygon/heimdall-v2/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
             if [[ -n "$hv2_tag" ]]; then
@@ -88,8 +90,8 @@ jobs:
           fi
 
           # Erigon keeps the 'v' prefix in image tags (unlike bor/heimdall which strip it)
-          if [[ -n "${{ inputs.erigon_image }}" ]]; then
-            echo "erigon-image=${{ inputs.erigon_image }}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${INPUT_ERIGON_IMAGE}" ]]; then
+            echo "erigon-image=${INPUT_ERIGON_IMAGE}" >> "$GITHUB_OUTPUT"
           else
             erigon_tag=$(gh api repos/0xPolygon/erigon/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
             if [[ -n "$erigon_tag" && "$erigon_tag" != "null" ]]; then
@@ -113,13 +115,13 @@ jobs:
   run-chaos-tests:
     needs: resolve-images
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 240
     steps:
       - name: Checkout chaos-utils
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Checkout kurtosis-pos
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: 0xPolygon/kurtosis-pos
           ref: ${{ env.KURTOSIS_POS_REF }}
@@ -140,21 +142,21 @@ jobs:
         run: |
           echo "deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /" | sudo tee /etc/apt/sources.list.d/kurtosis.list
           sudo apt update
-          sudo apt install -y kurtosis-cli
+          sudo apt install -y kurtosis-cli=1.17.7
           kurtosis analytics disable
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN || github.token }}
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version-file: go.mod
 
@@ -229,7 +231,7 @@ jobs:
           echo "Waiting for 40 blocks on ${RPC_URL}..."
 
           for i in $(seq 1 120); do
-            BLOCK=$(cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
+            BLOCK=$(timeout 5 cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
             echo "Block: ${BLOCK}/40 (attempt ${i}/120)"
             if [[ "${BLOCK}" -ge 40 ]]; then
               echo "Network ready!"
@@ -243,10 +245,14 @@ jobs:
           done
 
       - name: Select and run chaos scenarios
+        env:
+          INPUT_SCENARIO_FILTER: ${{ inputs.scenario_filter }}
+          INPUT_SCENARIO_COUNT: ${{ inputs.scenario_count }}
+          INPUT_FAST_MODE: ${{ inputs.fast_mode }}
         run: |
-          FILTER="${{ inputs.scenario_filter || 'all' }}"
-          COUNT="${{ inputs.scenario_count || '8' }}"
-          FAST_MODE="${{ inputs.fast_mode || 'true' }}"
+          FILTER="${INPUT_SCENARIO_FILTER:-all}"
+          COUNT="${INPUT_SCENARIO_COUNT:-8}"
+          FAST_MODE="${INPUT_FAST_MODE:-true}"
           REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
           mkdir -p "${REPORT_DIR}"
 
@@ -281,7 +287,7 @@ jobs:
                 blocks_before[${v}]="0"
                 continue
               fi
-              blocks_before[${v}]=$(cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+              blocks_before[${v}]=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
             done
 
             sleep 30
@@ -296,7 +302,7 @@ jobs:
                 continue
               fi
               local after
-              after=$(cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+              after=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
               if [[ "${after}" == "0" ]]; then
                 echo "  validator ${v}: ⚠ RPC unreachable after wait"
                 failed_validators="${failed_validators} ${v}"
@@ -345,7 +351,7 @@ jobs:
                 continue
               fi
               local height
-              height=$(cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+              height=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
               if [[ "${height}" == "0" ]]; then
                 echo "  validator ${v}: ✗ unreachable"
                 unresponsive="${unresponsive} ${v}"
@@ -410,6 +416,32 @@ jobs:
             sleep 120
           }
 
+          # ── Quick liveness probe: instant RPC reachability check ──
+          # Unlike check_devnet_health (which sleeps 30s to confirm block advancement),
+          # this is a ~3s check that only tests whether RPC endpoints respond at all.
+          # Used after failed scenarios to fast-detect a completely dead network
+          # without the overhead of a full block-advancement health gate.
+          quick_liveness_probe() {
+            local reachable=0
+            local total=0
+            for v in ${HEALTH_CHECK_VALIDATORS}; do
+              local url="${VALIDATOR_RPCS[${v}]:-}"
+              [[ -z "${url}" ]] && continue
+              total=$((total + 1))
+              local height
+              height=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+              if [[ "${height}" != "0" ]]; then
+                reachable=$((reachable + 1))
+              fi
+            done
+            if [[ ${reachable} -eq 0 ]]; then
+              echo "  ⚠ All probed validators unreachable (0/${total})"
+              return 1
+            fi
+            echo "  Liveness probe: ${reachable}/${total} validators reachable"
+            return 0
+          }
+
           # ── Collect all candidate scenario files ──
           SCENARIO_DIRS=""
           case "${FILTER}" in
@@ -472,6 +504,9 @@ jobs:
           SKIPPED=0
           TEST_FAILURES=""
           DEVNET_HALTED=false
+          CONSECUTIVE_ERRORS=0
+          MAX_CONSECUTIVE_ERRORS=2
+          SCENARIO_TIMEOUT=900  # 15 minutes max per scenario run
 
           for scenario in ${SELECTED}; do
             name=$(basename "${scenario}" .yaml)
@@ -484,6 +519,9 @@ jobs:
               echo "Health check failed — scanning for unresponsive validators..."
               recover_unresponsive_validators
               if ! check_devnet_health; then
+                # Tier-2 escalation: force-restart ALL validators even if tier-1 just
+                # restarted some. A full simultaneous restart is needed to clear
+                # cluster-wide stale CometBFT consensus state.
                 echo "Consensus still stalled — force-restarting all validators..."
                 force_restart_all_validators
                 if ! check_devnet_health; then
@@ -530,24 +568,78 @@ jobs:
             fi
 
             EXIT_CODE=0
-            ./bin/chaos-runner run \
+            timeout --kill-after=30 ${SCENARIO_TIMEOUT} ./bin/chaos-runner run \
               --scenario "${scenario}" \
               ${SET_FLAGS} \
               --format text 2>&1 | tee "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
 
-            if [[ ${EXIT_CODE} -eq 0 ]]; then
+            # ── Classify result ──
+            if [[ ${EXIT_CODE} -eq 124 || ${EXIT_CODE} -eq 137 ]]; then
+              # 124 = SIGTERM from timeout, 137 = SIGKILL from --kill-after
+              echo "::error::TIMEOUT: ${name} — exceeded ${SCENARIO_TIMEOUT}s (network may be hung)"
+              echo "ERROR  ${name} (timeout after ${SCENARIO_TIMEOUT}s)" >> "${REPORT_DIR}/results.txt"
+              ERRORS=$((ERRORS + 1))
+              CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
+            elif [[ ${EXIT_CODE} -eq 0 ]]; then
               echo "✅ PASSED: ${name}"
               echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
               PASSED=$((PASSED + 1))
+              CONSECUTIVE_ERRORS=0
             elif [[ ${EXIT_CODE} -eq 1 ]]; then
               echo "::error::FAILED: ${name} — one or more critical success criteria did not pass"
               echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
               FAILED=$((FAILED + 1))
               TEST_FAILURES="${TEST_FAILURES}  - ${name}\n"
+              # Test failures don't indicate infra problems — don't increment consecutive errors.
+              # But don't reset either: a legitimate test failure sandwiched between infra errors
+              # shouldn't mask a dying network.
             else
               echo "::error::ERROR: ${name} (exit: ${EXIT_CODE})"
               echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
               ERRORS=$((ERRORS + 1))
+              CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
+            fi
+
+            # ── Post-scenario liveness probe ──
+            # On any non-pass result, immediately check if the network is still alive.
+            # This catches a broken network right away instead of waiting for the next
+            # scenario's pre-flight health gate (which adds ~5 min of recovery overhead).
+            if [[ ${EXIT_CODE} -ne 0 ]]; then
+              echo "Post-scenario liveness probe..."
+              if ! quick_liveness_probe; then
+                echo "Network unreachable after ${name} — attempting recovery..."
+                recover_unresponsive_validators
+                if ! quick_liveness_probe; then
+                  force_restart_all_validators
+                  if ! check_devnet_health; then
+                    echo "::error::Devnet unrecoverable after scenario ${name} — halting suite"
+                    DEVNET_HALTED=true
+                    echo "::endgroup::"
+                    break
+                  fi
+                fi
+                echo "Network recovered after post-scenario intervention"
+                CONSECUTIVE_ERRORS=0
+              fi
+            fi
+
+            # ── Consecutive-error circuit breaker ──
+            # Multiple infra errors in a row strongly suggest the network is
+            # fundamentally broken, not a single flaky scenario. Skip straight
+            # to the nuclear option instead of repeating the full recovery dance
+            # per-scenario.
+            if [[ ${CONSECUTIVE_ERRORS} -ge ${MAX_CONSECUTIVE_ERRORS} ]]; then
+              echo "::warning::${CONSECUTIVE_ERRORS} consecutive infra errors — network likely broken"
+              echo "Attempting final recovery before halting..."
+              force_restart_all_validators
+              if ! check_devnet_health; then
+                echo "::error::Devnet unrecoverable after ${CONSECUTIVE_ERRORS} consecutive errors — halting suite"
+                DEVNET_HALTED=true
+                echo "::endgroup::"
+                break
+              fi
+              echo "Network recovered — resetting error counter"
+              CONSECUTIVE_ERRORS=0
             fi
 
             echo "::endgroup::"
@@ -619,14 +711,14 @@ jobs:
 
       - name: Upload enclave dump
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: chaos-enclave-dump-${{ github.run_id }}
           path: ./dump
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: chaos-reports-${{ github.run_id }}
           path: reports/
