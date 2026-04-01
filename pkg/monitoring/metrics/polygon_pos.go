@@ -16,6 +16,18 @@ type PolygonPoSSLI struct {
 	HeimdallPeerCount           string
 	HeimdallValidatorPower      string
 
+	// CometBFT consensus safety metrics
+	ByzantineValidators      string
+	ConsensusRounds          string
+	MissingValidatorsPower   string
+	ConsensusMissedBlocks    string
+	SideTxConsensusFailures  string
+
+	// Bor chain safety metrics
+	ReorgExecutes string
+	ReorgDropped  string
+	FinalityGap   string
+
 	// Block timing & span rotation metrics
 	BlockIntervalAvg       string
 	SpanAPICallSuccessRate string
@@ -50,6 +62,18 @@ func DefaultPolygonPosSLI() PolygonPoSSLI {
 		HeimdallCheckpointLatency:   "histogram_quantile(0.95, rate(heimdall_checkpoint_duration_seconds_bucket[5m]))",
 		HeimdallPeerCount:           "heimdall_p2p_peers",
 		HeimdallValidatorPower:      "heimdall_validator_voting_power",
+
+		// CometBFT consensus safety metrics
+		ByzantineValidators:     `max(cometbft_consensus_byzantine_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}) or vector(0)`,
+		ConsensusRounds:         `max(cometbft_consensus_rounds{job=~"l2-cl-.*-heimdall-v2-bor-validator"})`,
+		MissingValidatorsPower:  `max(cometbft_consensus_missing_validators_power{job=~"l2-cl-.*-heimdall-v2-bor-validator"})`,
+		ConsensusMissedBlocks:   `sum(rate(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]))`,
+		SideTxConsensusFailures: `sum(rate(heimdallv2_sidetx_consensus_failures_total[3m])) or vector(0)`,
+
+		// Bor chain safety metrics
+		ReorgExecutes: `sum(increase(chain_reorg_executes{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)`,
+		ReorgDropped:  `sum(increase(chain_reorg_drop{job=~"l2-el-.*-bor-heimdall-v2-validator"}[5m])) or vector(0)`,
+		FinalityGap:   `max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - max(chain_head_finalized{job=~"l2-el-.*-bor-heimdall-v2-validator"})`,
 
 		// Block timing & span rotation
 		BlockIntervalAvg:       "rate(cometbft_consensus_block_interval_seconds_sum[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count[2m]), 0.001)",
@@ -147,6 +171,73 @@ func GetAllMetrics() []MetricDefinition {
 			Description: "Validator voting power",
 			Type:        "gauge",
 			Labels:      []string{"service", "validator"},
+		},
+
+		// CometBFT consensus safety metrics
+		{
+			Name:        "cometbft_consensus_byzantine_validators",
+			Query:       "cometbft_consensus_byzantine_validators",
+			Description: "Number of validators detected as byzantine (double-signing) — must always be 0",
+			Type:        "gauge",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "cometbft_consensus_rounds",
+			Query:       "cometbft_consensus_rounds",
+			Description: "Current consensus round — values > 0 indicate proposal disagreements",
+			Type:        "gauge",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "cometbft_consensus_missing_validators_power",
+			Query:       "cometbft_consensus_missing_validators_power",
+			Description: "Voting power of validators missing from consensus — if > 1/3 total, no blocks finalize",
+			Type:        "gauge",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "cometbft_consensus_late_votes",
+			Query:       "cometbft_consensus_late_votes",
+			Description: "Votes from earlier rounds arriving late — spikes during partition healing",
+			Type:        "counter",
+			Labels:      []string{"service", "vote_type"},
+		},
+		{
+			Name:        "heimdallv2_sidetx_consensus_failures_total",
+			Query:       "heimdallv2_sidetx_consensus_failures_total",
+			Description: "Side-tx consensus failures — non-zero indicates Heimdall consensus degradation",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "heimdallv2_sidetx_consensus_approved_total",
+			Query:       "heimdallv2_sidetx_consensus_approved_total",
+			Description: "Side-tx consensus approvals — healthy rate indicates normal Heimdall operation",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+
+		// Bor chain safety metrics
+		{
+			Name:        "chain_reorg_executes",
+			Query:       "chain_reorg_executes",
+			Description: "Chain reorganization events — non-zero indicates fork resolution occurred",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "chain_reorg_drop",
+			Query:       "chain_reorg_drop",
+			Description: "Blocks dropped during chain reorganization — quantifies reorg depth",
+			Type:        "counter",
+			Labels:      []string{"service"},
+		},
+		{
+			Name:        "chain_head_finalized",
+			Query:       "chain_head_finalized",
+			Description: "Latest finalized block number — gap from chain_head_block indicates finality lag",
+			Type:        "gauge",
+			Labels:      []string{"service"},
 		},
 
 		// Block timing metrics (slow block detection)
