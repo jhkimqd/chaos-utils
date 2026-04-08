@@ -1,0 +1,9 @@
+- name: malformed-hex-strings
+  path_pattern: "/clerk/time"
+  operations:
+    - type: set_field
+      field: "result.event_records.0.contract"
+      value: "0xGGGG_NOT_HEX"
+    - type: set_field
+      field: "result.event_records.0.tx_hash"
+      value: "0xZZZZ_NOT_HEX"

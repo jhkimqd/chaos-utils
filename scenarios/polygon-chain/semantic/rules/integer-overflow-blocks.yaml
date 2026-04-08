@@ -1,0 +1,15 @@
+- name: integer-overflow-blocks
+  path_pattern: "/"
+  operations:
+    - type: set_field
+      field: "result.start_block"
+      value: "18446744073709551615"
+    - type: set_field
+      field: "result.end_block"
+      value: "18446744073709551615"
+    - type: set_field
+      field: "result.span.start_block"
+      value: "18446744073709551615"
+    - type: set_field
+      field: "result.span.end_block"
+      value: "18446744073709551615"

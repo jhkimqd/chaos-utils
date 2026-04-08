@@ -1,0 +1,116 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: checkpoint-hash-corruption
+  description: >
+    Semantic HTTP corruption: Go corruption proxy replaces checkpoint root_hash
+    fields with an invalid hash in Heimdall REST API responses (HTTP 200, valid
+    JSON structure, wrong data). Tests whether Bor correctly validates checkpoint
+    root hashes against local chain state via verifier.verify() and rejects
+    corrupted checkpoints rather than accepting a forked chain.
+  tags: [semantic, http, checkpoint, corruption, application-level, high-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: heimdall_2
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: corrupt_checkpoint_heimdall_2
+      description: Replace checkpoint root_hash with invalid value on Heimdall 2
+      target: heimdall_2
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: checkpoint-wrong-hash
+            path_pattern: "/checkpoints/"
+            operations:
+              - type: set_field
+                field: "result.root_hash"
+                value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+    - phase: corrupt_checkpoint_heimdall_6
+      description: Replace checkpoint root_hash with invalid value on Heimdall 6
+      target: heimdall_6
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: checkpoint-wrong-hash
+            path_pattern: "/checkpoints/"
+            operations:
+              - type: set_field
+                field: "result.root_hash"
+                value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+  success_criteria:
+    # Chain must continue — corrupted checkpoints should be rejected, not halt the chain
+    - name: block_production_continues
+      description: CRITICAL - Block production continues despite corrupted checkpoint data
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus advances (corruption is on REST responses, not consensus)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - Corrupted API responses must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    # Detection metrics — verify the corruption is actually being applied
+    - name: checkpoint_api_calls_continue
+      description: Bor continues calling checkpoint API (not silently giving up)
+      type: prometheus
+      query: sum(rate(heimdallv2_checkpoint_api_calls_total{job=~"l2-el-[26]-bor-heimdall-v2-validator"}[2m]))
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    - name: span_api_healthy
+      description: Span API (different path) should be unaffected by checkpoint corruption
+      type: prometheus
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total[2m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      critical: false
+
+    - name: recovery_after_cleanup
+      description: Checkpoint verification returns to normal after fault removal
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_checkpoint_api_calls_total
+    - heimdallv2_checkpoint_api_calls_success_total
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up

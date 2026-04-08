@@ -1,0 +1,6 @@
+- name: state-sync-truncate
+  path_pattern: "/clerk/time"
+  operations:
+    - type: truncate_array
+      field: "result.event_records"
+      value: 0

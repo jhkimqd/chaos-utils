@@ -1,0 +1,9 @@
+- name: milestone-stale
+  path_pattern: "/milestones/"
+  operations:
+    - type: set_field
+      field: "result.start_block"
+      value: "0"
+    - type: set_field
+      field: "result.end_block"
+      value: "0"

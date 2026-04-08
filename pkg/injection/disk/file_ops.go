@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/jihwankim/chaos-utils/pkg/injection/safeshell"
 )
 
 // FileDeleteParams defines parameters for file deletion injection
@@ -161,6 +163,11 @@ func ValidateFileDeleteParams(params FileDeleteParams) error {
 	if params.TargetPath == "" {
 		return fmt.Errorf("target_path must be specified")
 	}
+
+	if err := safeshell.ValidateShellSafe(params.TargetPath); err != nil {
+		return fmt.Errorf("target_path: %w", err)
+	}
+
 	return nil
 }
 
@@ -168,6 +175,10 @@ func ValidateFileDeleteParams(params FileDeleteParams) error {
 func ValidateFileCorruptParams(params FileCorruptParams) error {
 	if params.TargetPath == "" {
 		return fmt.Errorf("target_path must be specified")
+	}
+
+	if err := safeshell.ValidateShellSafe(params.TargetPath); err != nil {
+		return fmt.Errorf("target_path: %w", err)
 	}
 
 	if params.CorruptBytes < 0 {

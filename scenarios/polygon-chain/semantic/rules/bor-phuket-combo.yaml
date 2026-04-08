@@ -1,0 +1,18 @@
+- name: bor-wrong-block-hash
+  method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+  operations:
+    - type: set_field
+      field: "result.hash"
+      value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+- name: bor-divergent-td
+  method_match: "eth_getTdByNumber"
+  operations:
+    - type: set_field
+      field: "result.totalDifficulty"
+      value: "0xffffffffff"
+
+- name: bor-author-error
+  method_match: "bor_getAuthor"
+  operations:
+    - type: inject_error

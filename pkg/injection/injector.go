@@ -2,7 +2,9 @@ package injection
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
@@ -11,12 +13,14 @@ import (
 	"github.com/jihwankim/chaos-utils/pkg/injection/dns"
 	"github.com/jihwankim/chaos-utils/pkg/injection/firewall"
 	"github.com/jihwankim/chaos-utils/pkg/injection/l3l4"
+	chaosp2p "github.com/jihwankim/chaos-utils/pkg/injection/p2p/bor"
 	"github.com/jihwankim/chaos-utils/pkg/injection/process"
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 	"github.com/jihwankim/chaos-utils/pkg/injection/stress"
 	chaoshttp "github.com/jihwankim/chaos-utils/pkg/injection/http"
 	chaostime "github.com/jihwankim/chaos-utils/pkg/injection/time"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
+	"github.com/rs/zerolog/log"
 )
 
 // Target represents a fault injection target
@@ -38,6 +42,8 @@ type Injector struct {
 	fileOpsInjector  *disk.FileOpsWrapper
 	clockInjector    *chaostime.ClockSkewWrapper
 	httpInjector     *chaoshttp.HTTPFaultWrapper
+	sidecarMgr       *sidecar.Manager
+	dockerClient     *docker.Client
 }
 
 // New creates a new unified fault injector
@@ -54,6 +60,8 @@ func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 		fileOpsInjector:  disk.NewFileOpsWrapper(dockerClient),
 		clockInjector:    chaostime.New(dockerClient),
 		httpInjector:     chaoshttp.New(sidecarMgr),
+		sidecarMgr:       sidecarMgr,
+		dockerClient:     dockerClient,
 	}
 }
 
@@ -92,6 +100,10 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 		return i.injectProcessKill(ctx, fault, targets)
 	case "http_fault":
 		return i.injectHTTPFault(ctx, fault, targets)
+	case "corruption_proxy":
+		return i.injectCorruptionProxy(ctx, fault, targets)
+	case "p2p_attack":
+		return i.injectP2PAttack(ctx, fault, targets)
 	default:
 		return fmt.Errorf("unknown fault type: %s", fault.Type)
 	}
@@ -515,6 +527,12 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 		return nil
 	case "http_fault":
 		return i.httpInjector.RemoveAllFaults(ctx, containerID)
+	case "corruption_proxy":
+		return i.removeCorruptionProxy(ctx, containerID)
+	case "p2p_attack":
+		// P2P attacks are short-lived connections; the peer disconnects when done.
+		// Nothing to clean up on the target side.
+		return nil
 	default:
 		return fmt.Errorf("unknown fault type for removal: %s", faultType)
 	}
@@ -745,3 +763,292 @@ func (i *Injector) injectHTTPFault(ctx context.Context, fault *scenario.Fault, t
 	return nil
 }
 
+// injectP2PAttack handles P2P fault injection by connecting directly to a Bor
+// node's devp2p port and sending crafted malicious Ethereum protocol messages.
+//
+// Required parameters:
+//   - rpc_url  string  — Bor JSON-RPC URL for admin_nodeInfo enode discovery
+//                        (alternative: enode_url with a pre-resolved enode URL)
+//   - attack   string  — attack type (malformed-block | conflicting-chain |
+//                        invalid-txs | malicious-status | invalid-range |
+//                        flood-hashes | header-flood)
+//
+// Optional parameters:
+//   - count      int    — number of messages to send (default 1)
+//   - fork_block uint64 — fork point for conflicting-chain (default 100)
+//   - enode_url  string — direct enode URL, bypasses admin_nodeInfo lookup
+func (i *Injector) injectP2PAttack(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	// Parse parameters.
+	attackType := "malformed-block"
+	count := 1
+	forkBlock := uint64(100)
+	var rpcURL, enodeURL string
+
+	if fault.Params != nil {
+		if v, ok := fault.Params["attack"].(string); ok {
+			attackType = v
+		}
+		if v, ok := fault.Params["count"].(int); ok {
+			count = v
+		} else if v, ok := fault.Params["count"].(float64); ok {
+			count = int(v)
+		}
+		if v, ok := fault.Params["fork_block"].(int); ok {
+			forkBlock = uint64(v)
+		} else if v, ok := fault.Params["fork_block"].(float64); ok {
+			forkBlock = uint64(v)
+		}
+		if v, ok := fault.Params["rpc_url"].(string); ok {
+			rpcURL = v
+		}
+		if v, ok := fault.Params["enode_url"].(string); ok {
+			enodeURL = v
+		}
+	}
+
+	const maxP2PAttackCount = 100000
+	if count > maxP2PAttackCount {
+		return fmt.Errorf("p2p_attack count %d exceeds maximum %d", count, maxP2PAttackCount)
+	}
+
+	logger := log.With().Str("fault", "p2p_attack").Str("attack", attackType).Logger()
+
+	for _, target := range targets {
+		resolvedEnode := enodeURL
+
+		// If no direct enode_url, discover via admin_nodeInfo RPC.
+		if resolvedEnode == "" {
+			targetRPC := rpcURL
+			// Auto-derive RPC URL from the container's Docker network IP
+			// when rpc_url is not provided or contains unresolved variables.
+			if targetRPC == "" || strings.Contains(targetRPC, "${") {
+				containerIP := i.getContainerIP(ctx, target.ContainerID)
+				if containerIP == "" {
+					return fmt.Errorf("p2p_attack on target %s: could not determine container IP (provide rpc_url or enode_url)", target.Name)
+				}
+				targetRPC = fmt.Sprintf("http://%s:8545", containerIP)
+				logger.Info().Str("target", target.Name).Str("rpc", targetRPC).Msg("auto-discovered RPC URL from container IP")
+			}
+			discovered, err := chaosp2p.DiscoverSingleEnode(ctx, targetRPC)
+			if err != nil {
+				return fmt.Errorf("discover enode for target %s via %s: %w", target.Name, targetRPC, err)
+			}
+			resolvedEnode = discovered
+		}
+
+		logger.Info().
+			Str("target", target.Name).
+			Str("enode", resolvedEnode).
+			Msg("launching P2P attack")
+
+		peer, err := chaosp2p.NewChaosPeer(logger)
+		if err != nil {
+			return fmt.Errorf("create chaos peer for %s: %w", target.Name, err)
+		}
+
+		if err := peer.Connect(resolvedEnode); err != nil {
+			return fmt.Errorf("connect to %s (%s): %w", target.Name, resolvedEnode, err)
+		}
+
+		attackErr := runP2PAttack(ctx, peer, attackType, count, forkBlock)
+		peer.Close()
+
+		if attackErr != nil {
+			// A disconnect from the target is not a framework error — it means
+			// the attack was successful enough that Bor ejected the peer.
+			logger.Warn().
+				Err(attackErr).
+				Str("target", target.Name).
+				Msg("P2P attack ended (peer may have been disconnected by target)")
+		}
+	}
+
+	return nil
+}
+
+// runP2PAttack executes a single named attack on the given peer.
+func runP2PAttack(ctx context.Context, peer *chaosp2p.ChaosPeer, attackType string, count int, forkBlock uint64) error {
+	switch attackType {
+	case "malformed-block":
+		for j := 0; j < count; j++ {
+			if err := peer.SendMalformedBlock(uint64(j + 1)); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "conflicting-chain":
+		for j := 0; j < count; j++ {
+			if err := peer.SendConflictingChain(forkBlock); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "invalid-txs":
+		return peer.SendInvalidTransactions(count)
+
+	case "malicious-status":
+		return peer.SendMaliciousStatus()
+
+	case "invalid-range":
+		return peer.SendInvalidBlockRange()
+
+	case "flood-hashes":
+		return peer.FloodNewBlockHashes(ctx, count)
+
+	case "header-flood":
+		return peer.SendGetBlockHeadersFlood(ctx, count)
+
+	default:
+		return fmt.Errorf("unknown P2P attack type: %q", attackType)
+	}
+}
+
+// getContainerIP returns the first Docker network IP of a container.
+func (i *Injector) getContainerIP(ctx context.Context, containerID string) string {
+	info, err := i.dockerClient.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return ""
+	}
+	for _, network := range info.NetworkSettings.Networks {
+		if network.IPAddress != "" {
+			return network.IPAddress
+		}
+	}
+	return ""
+}
+
+// injectCorruptionProxy deploys the Go corruption proxy (Phase 2) in the
+// sidecar for the given targets. It:
+//  1. Writes a YAML rules file to the sidecar at /tmp/corruption-rules-<port>.yaml
+//  2. Starts the corruption-proxy binary in the background
+//  3. Installs the same iptables PREROUTING REDIRECT rule as the Envoy injector
+//
+// Required fault params:
+//
+//	target_port  int    – the port to intercept (e.g. 1317, 8545, 26657)
+//	rules_yaml   string – inline YAML rules content to write to the sidecar
+//
+// The corruption-proxy binary must already be present at
+// /usr/local/bin/corruption-proxy in the sidecar image. Build and include it:
+//
+//	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+//	  -o bin/corruption-proxy ./cmd/corruption-proxy
+//	# Then in Dockerfile.sidecar:
+//	# COPY bin/corruption-proxy /usr/local/bin/corruption-proxy
+func (i *Injector) injectCorruptionProxy(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	targetPort := 1317 // default: Heimdall REST API
+	rulesYAML := ""
+
+	if fault.Params != nil {
+		if tp, ok := fault.Params["target_port"].(int); ok {
+			targetPort = tp
+		} else if tp, ok := fault.Params["target_port"].(float64); ok {
+			targetPort = int(tp)
+		}
+		if ry, ok := fault.Params["rules_yaml"].(string); ok {
+			rulesYAML = ry
+		}
+	}
+
+	if targetPort <= 0 || targetPort > 65535 {
+		return fmt.Errorf("corruption_proxy: target_port must be between 1 and 65535")
+	}
+	if rulesYAML == "" {
+		return fmt.Errorf("corruption_proxy: rules_yaml is required")
+	}
+
+	// Proxy port follows the same 15000+targetPort convention as Envoy.
+	proxyPort := 15000 + targetPort
+	controlPort := proxyPort + 1
+	rulesPath := fmt.Sprintf("/tmp/corruption-rules-%d.yaml", targetPort)
+	logPath := fmt.Sprintf("/tmp/corruption-proxy-%d.log", targetPort)
+
+	for _, target := range targets {
+		// Ensure sidecar exists.
+		if _, exists := i.sidecarMgr.GetSidecarID(target.ContainerID); !exists {
+			fmt.Printf("Creating sidecar for corruption proxy on target %s\n", target.ContainerID[:12])
+			if _, err := i.sidecarMgr.CreateSidecar(ctx, target.ContainerID); err != nil {
+				return fmt.Errorf("failed to create sidecar for %s: %w", target.Name, err)
+			}
+		}
+
+		// Step 1: Write rules YAML to sidecar.
+		encodedRules := base64.StdEncoding.EncodeToString([]byte(rulesYAML))
+		writeCmd := []string{"sh", "-c", fmt.Sprintf("echo %s | base64 -d > %s", encodedRules, rulesPath)}
+		if out, err := i.sidecarMgr.ExecInSidecar(ctx, target.ContainerID, writeCmd); err != nil {
+			return fmt.Errorf("failed to write rules to sidecar %s: %w (output: %s)", target.Name, err, out)
+		}
+
+		// Step 2: Start corruption-proxy in background.
+		startCmd := []string{"sh", "-c", fmt.Sprintf(
+			"corruption-proxy --listen :%d --target %d --rules %s --control 127.0.0.1:%d > %s 2>&1 &",
+			proxyPort, targetPort, rulesPath, controlPort, logPath,
+		)}
+		fmt.Printf("Starting corruption proxy on port %d for target %s (port %d)\n",
+			proxyPort, target.ContainerID[:12], targetPort)
+		if out, err := i.sidecarMgr.ExecInSidecar(ctx, target.ContainerID, startCmd); err != nil {
+			return fmt.Errorf("failed to start corruption proxy on %s: %w (output: %s)", target.Name, err, out)
+		}
+
+		// Step 3: Wait for proxy to be ready (poll control API).
+		readyCmd := []string{"sh", "-c", fmt.Sprintf(
+			"for i in $(seq 1 30); do "+
+				"if curl -sf http://127.0.0.1:%d/stats > /dev/null 2>&1; then exit 0; fi; "+
+				"sleep 0.5; done; exit 1",
+			controlPort,
+		)}
+		if out, err := i.sidecarMgr.ExecInSidecar(ctx, target.ContainerID, readyCmd); err != nil {
+			logCmd := []string{"sh", "-c", fmt.Sprintf("tail -20 %s 2>/dev/null || echo 'no logs'", logPath)}
+			logs, _ := i.sidecarMgr.ExecInSidecar(ctx, target.ContainerID, logCmd)
+			return fmt.Errorf("corruption proxy failed to start on %s within 15s: %w (output: %s, logs: %s)",
+				target.Name, err, out, logs)
+		}
+
+		// Step 4: Install iptables PREROUTING redirect.
+		iptCmd := []string{
+			"iptables", "-t", "nat", "-A", "PREROUTING",
+			"-p", "tcp", "--dport", fmt.Sprintf("%d", targetPort),
+			"-j", "REDIRECT", "--to-port", fmt.Sprintf("%d", proxyPort),
+			"-m", "comment", "--comment", "chaos-corruption-proxy",
+		}
+		fmt.Printf("  iptables: %s\n", strings.Join(iptCmd, " "))
+		if out, err := i.sidecarMgr.ExecInSidecar(ctx, target.ContainerID, iptCmd); err != nil {
+			fmt.Printf("  Warning: iptables command failed: %v (output: %s)\n", err, out)
+		}
+
+		fmt.Printf("Corruption proxy active on target %s (port %d → proxy:%d, control:%d)\n",
+			target.ContainerID[:12], targetPort, proxyPort, controlPort)
+	}
+
+	return nil
+}
+
+// removeCorruptionProxy stops all running corruption-proxy instances in the
+// sidecar and removes the iptables PREROUTING redirect rules they installed.
+func (i *Injector) removeCorruptionProxy(ctx context.Context, containerID string) error {
+	if _, exists := i.sidecarMgr.GetSidecarID(containerID); !exists {
+		return fmt.Errorf("no sidecar found for target %s", containerID)
+	}
+
+	fmt.Printf("Removing corruption proxy from target %s\n", containerID[:12])
+
+	// Remove all chaos-corruption-proxy iptables rules.
+	cleanupIPT := []string{"sh", "-c",
+		"while iptables -t nat -D PREROUTING -m comment --comment chaos-corruption-proxy -j REDIRECT 2>/dev/null; do true; done; echo done"}
+	_, _ = i.sidecarMgr.ExecInSidecar(ctx, containerID, cleanupIPT)
+
+	// Kill all corruption-proxy processes and remove temp files.
+	killCmd := []string{"sh", "-c",
+		"for p in /proc/[0-9]*/cmdline; do " +
+			"PID=$(echo $p | cut -d/ -f3); " +
+			"if tr '\\0' ' ' < $p 2>/dev/null | grep -q corruption-proxy; then kill -9 $PID 2>/dev/null; fi; " +
+			"done; " +
+			"rm -f /tmp/corruption-rules-*.yaml /tmp/corruption-proxy-*.log 2>/dev/null; " +
+			"echo done"}
+	_, _ = i.sidecarMgr.ExecInSidecar(ctx, containerID, killCmd)
+
+	fmt.Printf("Corruption proxy removed from target %s\n", containerID[:12])
+	return nil
+}

@@ -32,6 +32,8 @@ _testmain.go
 # Build artifacts
 /bin/
 /chaos-runner
+/corruption-proxy
+/chaos-peer
 
 # Framework artifacts
 /reports/

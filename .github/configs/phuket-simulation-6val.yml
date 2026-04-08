@@ -1,0 +1,65 @@
+# Consensus-Security Simulation — 6 validators, stock images only
+#
+# Uses stock Heimdall images with adversarial behaviour injected at runtime
+# by chaos-utils corruption proxy sidecars that corrupt HTTP traffic between
+# Bor and Heimdall.
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │ Role                            │ Corruption                       │
+# ├─────────────────────────────────┼──────────────────────────────────┤
+# │ Validators 1-4: honest          │ (none)                           │
+# │ Validator 5: hash-corrupted     │ bor_wrong_block_hash + author err│
+# │ Validator 6: TD-divergent       │ bor_divergent_td                 │
+# └─────────────────────────────────┴──────────────────────────────────┘
+#
+# VP math: each validator has 10 000 VP.
+# Corrupting validators 5 & 6 via Envoy gives 4 honest (40 000 VP) vs
+# 2 adversarial (20 000 VP) — the same 66.7 % / 33.3 % split.
+#
+# Run scenario:
+#   consensus-security-simulation-6val.yaml  (scenarios/polygon-chain/semantic/)
+#
+# Deploy:
+#   kurtosis run --enclave=consensus-sim \
+#     --args-file .github/configs/phuket-simulation-6val.yml \
+#     /path/to/kurtosis-pos
+
+polygon_pos_package:
+  network_params:
+    cl_phuket_hardfork_height: 256
+  participants:
+    # ── 4 honest validators ──────────────────────────────────────────
+    # No chaos flags.  These remain untouched during the test.
+    - kind: validator
+      count: 4
+      el_bor_produce_witness: true
+      cl_type: heimdall-v2
+      cl_phuket_enabled: true
+      el_type: bor
+      el_image: 0xpolygon/bor:2.7.0
+
+    # ── 2 "adversarial" validators (stock images!) ───────────────────
+    # Identical to the honest ones.  The chaos-utils runner targets
+    # their Bor RPC (port 8545) with semantic HTTP faults at runtime:
+    #   validator 5 → bor_wrong_block_hash + bor_author_error  (hash-corrupted validator)
+    #   validator 6 → bor_divergent_td                         (TD-divergent validator)
+    - kind: validator
+      count: 2
+      el_bor_produce_witness: true
+      cl_type: heimdall-v2
+      cl_phuket_enabled: true
+      el_type: bor
+      el_image: 0xpolygon/bor:2.7.0
+
+    # ── RPC node ─────────────────────────────────────────────────────
+    - kind: rpc
+      count: 1
+      el_bor_sync_with_witness: true
+      cl_type: heimdall-v2
+      el_type: bor
+      el_image: 0xpolygon/bor:2.7.0
+
+  additional_services:
+    - bridge_spammer
+    - observability
+    - tx_spammer

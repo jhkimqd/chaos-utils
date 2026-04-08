@@ -279,7 +279,7 @@ func (v *Validator) validateFaultType(fault scenario.Fault, index int) {
 		"process_priority", "process_kill",
 		"disk_io", "disk_fill", "file_delete", "file_corrupt",
 		"clock_skew",
-		"http_fault",
+		"http_fault", "corruption_proxy", "p2p_attack",
 		"disk", "process", "custom",
 	}
 	valid := false

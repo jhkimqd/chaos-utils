@@ -1,0 +1,12 @@
+- name: negative-values
+  path_pattern: "/"
+  operations:
+    - type: set_field
+      field: "result.voting_power"
+      value: "-1"
+    - type: set_field
+      field: "result.start_block"
+      value: "-1"
+    - type: set_field
+      field: "result.end_block"
+      value: "-1"

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/jihwankim/chaos-utils/pkg/injection/safeshell"
 )
 
 // PriorityParams defines parameters for process priority manipulation
@@ -108,6 +110,10 @@ func ValidatePriorityParams(params PriorityParams) error {
 
 	if params.ProcessPattern == "" {
 		return fmt.Errorf("process_pattern must be specified")
+	}
+
+	if err := safeshell.ValidateShellSafe(params.ProcessPattern); err != nil {
+		return fmt.Errorf("process_pattern: %w", err)
 	}
 
 	return nil

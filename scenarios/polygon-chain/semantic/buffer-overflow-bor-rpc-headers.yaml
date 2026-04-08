@@ -1,0 +1,123 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: buffer-overflow-bor-rpc-headers
+  description: >
+    Oversized Bor RPC response attack: injects oversized extraData fields into
+    eth_getHeaderByNumber responses from Bor's JSON-RPC port. The extraData
+    field in Bor block headers carries validator signatures and is variable-
+    length. An attacker controlling a Bor node (or MITM on the local RPC)
+    could return headers with massive extraData to test:
+
+    - RLP decoding limits in go-ethereum's header parsing
+    - Memory allocation during Heimdall's GetBorChainBlockInfoInBatch
+    - Whether oversized headers are accepted into milestone propositions
+    - GC pressure from large transient allocations during batch RPC calls
+
+    This targets the Heimdall->Bor RPC path (port 8545) which is used
+    during ExtendVote for milestone proposition generation.
+    For the maximum 100KB payload use rules/oversized-extra-data.yaml directly.
+  tags: [semantic, buffer-overflow, bor-rpc, extra-data, header, security, application-level, high-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: oversized_extra_bor_2
+      description: Oversized extraData in block header responses from Bor 2
+      target: bor_2
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: oversized-extra-data
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.extraData"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+    - phase: oversized_extra_bor_6
+      description: Oversized extraData in block header responses from Bor 6
+      target: bor_6
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: oversized-extra-data
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.extraData"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+  success_criteria:
+    - name: no_crashes
+      description: CRITICAL - Oversized extraData must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    - name: no_panics_heimdall
+      description: CRITICAL - No panics from oversized RLP decoding in Heimdall
+      type: log
+      pattern: "panic|runtime error|fatal error|out of memory"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    - name: no_panics_bor
+      description: CRITICAL - No panics from oversized RLP decoding in Bor
+      type: log
+      pattern: "panic|runtime error|fatal error|out of memory"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: block_production_continues
+      description: CRITICAL - Block production continues
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: memory_bounded
+      description: Heap memory should not spike from oversized header parsing
+      type: prometheus
+      query: max(go_memstats_heap_inuse_bytes{job=~"l2-cl-[26]-heimdall-v2-bor-validator"}) / 1073741824
+      threshold: "< 4"
+      critical: false
+      during_fault: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - go_memstats_heap_inuse_bytes
+    - process_resident_memory_bytes
+    - go_goroutines
+    - up

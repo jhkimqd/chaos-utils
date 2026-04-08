@@ -1,0 +1,144 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: ve-td-divergence-graceful-skip
+  description: >
+    Majority threshold failure and graceful PreBlocker handling via HTTP
+    corruption. Corrupts totalDifficulty in eth_getTdByNumber responses on
+    Bor's RPC port for a minority of validators.
+
+    Heimdall's GetBorChainBlockInfoInBatch includes TD in the milestone
+    proposition key (blockHash + TD). When some validators see inflated TDs,
+    their vote extension keys differ from honest validators. In
+    GetMajorityMilestoneProposition, this fragments the votes so no single
+    (hash,TD) pair reaches >2/3 voting power.
+
+    This triggers the following code paths:
+    - Majority threshold: getMajorityNonRpVoteExtension fails the >2/3 VP
+      threshold -> "insufficient voting power for majority non-rp vote extension"
+    - Graceful PreBlocker: handles this gracefully
+      -> "skipping checkpoint signature storage" (no halt)
+
+    Expected behavior:
+    - Milestone proposition majority cannot be reached (TD divergence)
+    - Chain continues -- graceful handling prevents halt
+    - Checkpoint signatures may not be stored (expected under divergence)
+  tags: [semantic, consensus-security, td-divergence, threshold, application-level, critical-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    # Target 2 validators' Bor RPC -- creates TD divergence in minority
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: divergent_td_bor_3
+      description: Inflate totalDifficulty on Bor 3
+      target: bor_3
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-divergent-td
+            method_match: "eth_getTdByNumber"
+            operations:
+              - type: set_field
+                field: "result.totalDifficulty"
+                value: "0xffffffffff"
+
+    - phase: divergent_td_bor_6
+      description: Inflate totalDifficulty on Bor 6
+      target: bor_6
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-divergent-td
+            method_match: "eth_getTdByNumber"
+            operations:
+              - type: set_field
+                field: "result.totalDifficulty"
+                value: "0xffffffffff"
+
+  success_criteria:
+    # Graceful liveness check -- chain MUST NOT halt
+    - name: block_production_continues
+      description: CRITICAL - Chain advances despite TD divergence (graceful PreBlocker prevents halt)
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus height advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - TD divergence must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    # Majority threshold failure detection
+    - name: threshold_failure_logged
+      description: Majority threshold failure should be logged by honest validators
+      type: log
+      pattern: "insufficient voting power|No blocks found with majority support|no milestone proposition majority"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: false
+      critical: false
+      during_fault: true
+
+    # Graceful PreBlocker skip detection
+    - name: graceful_skip_logged
+      description: Graceful PreBlocker handling should log checkpoint skip
+      type: log
+      pattern: "skipping checkpoint signature storage|No milestone proposition majority found"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: false
+      critical: false
+      during_fault: true
+
+    # Late votes metric -- affected validators' divergent VEs cause additional rounds
+    - name: late_votes_bounded
+      description: Late votes should not explode (bounded consensus degradation)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 5000"
+      critical: false
+
+    # Recovery
+    - name: recovery_after_cleanup
+      description: Milestone propositions converge after fault removal
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_late_votes
+    - cometbft_p2p_peers
+    - up

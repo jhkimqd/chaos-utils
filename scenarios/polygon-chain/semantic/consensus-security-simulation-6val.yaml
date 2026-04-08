@@ -1,0 +1,161 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: consensus-security-simulation-6val
+  description: >
+    Full consensus-layer security simulation on a 6-validator topology using
+    stock images and Go corruption proxy semantic corruption. Corrupts Bor RPC
+    responses on two validators so Heimdall builds incorrect vote extensions,
+    testing whether the consensus pipeline validates and rejects malicious data.
+
+    Validator 5: combined corruption (block hashes + TDs + author errors)
+      - Wrong block hashes cause milestone hash divergence
+      - Author errors cause nil milestone propositions
+    Validator 6: TD divergence only
+      - Inflated totalDifficulty fragments the milestone majority vote
+
+    VP math: 4 honest (40000 VP) vs 2 corrupted (20000 VP).
+  tags: [semantic, consensus-security, ve-corruption, 6val, application-level, critical-severity]
+  author: DevTools
+  version: "0.3.0"
+
+spec:
+  targets:
+    # Validator 5: combo corruption (hashes + TD + author)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+
+    # Validator 6: TD divergence only
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    # Combined corruption on validator 5: wrong hashes + inflated TD + author errors.
+    # The corruption proxy dispatches on the RPC method name via method_match.
+    - phase: combo_corruption_val5
+      description: Combined hash/TD/author corruption on Bor 5 RPC
+      target: bor_5
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-wrong-block-hash
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.hash"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+          - name: bor-divergent-td
+            method_match: "eth_getTdByNumber"
+            operations:
+              - type: set_field
+                field: "result.totalDifficulty"
+                value: "0xffffffffff"
+          - name: bor-author-error
+            method_match: "bor_getAuthor"
+            operations:
+              - type: inject_error
+
+    # TD-only divergence on validator 6
+    - phase: td_divergence_val6
+      description: Inflated totalDifficulty on Bor 6 RPC
+      target: bor_6
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-divergent-td
+            method_match: "eth_getTdByNumber"
+            operations:
+              - type: set_field
+                field: "result.totalDifficulty"
+                value: "0xffffffffff"
+
+  success_criteria:
+    # ======= CRITICAL: Chain Liveness =======
+
+    - name: block_production_continues
+      description: CRITICAL - Block production continues under adversarial RPC corruption
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus height advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: no_crashes
+      description: CRITICAL - No validator crashes from semantic corruption
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    - name: no_panics_bor
+      description: CRITICAL - No panics in Bor validators
+      type: log
+      pattern: "panic|runtime error|fatal"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: no_panics_heimdall
+      description: CRITICAL - No panics in Heimdall validators
+      type: log
+      pattern: "panic|runtime error|fatal"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    # ======= Corruption Effectiveness =======
+
+    - name: milestone_errors_on_corrupted
+      description: Corrupted validators should log milestone or block-fetch errors
+      type: log
+      pattern: "no valid block author|Error occurred while generating milestone|failed to get block|failed to get the latest header"
+      container_pattern: "l2-cl-5-heimdall-v2-bor-validator"
+      absence: false
+      critical: false
+      during_fault: true
+
+    - name: honest_validators_producing
+      description: Validators 1-4 (honest) produce blocks normally
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[1-4]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    # ======= Recovery =======
+
+    - name: recovery_all_converge
+      description: All validators converge after fault removal (block height gap < 10)
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 10"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_validator_power
+    - cometbft_p2p_peers
+    - go_memstats_heap_inuse_bytes
+    - up

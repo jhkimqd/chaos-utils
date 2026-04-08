@@ -1,0 +1,6 @@
+- name: checkpoint-wrong-hash
+  path_pattern: "/checkpoints/"
+  operations:
+    - type: set_field
+      field: "result.root_hash"
+      value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="

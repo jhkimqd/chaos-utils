@@ -1,0 +1,6 @@
+- name: bor-divergent-td
+  method_match: "eth_getTdByNumber"
+  operations:
+    - type: set_field
+      field: "result.totalDifficulty"
+      value: "0xffffffffff"
