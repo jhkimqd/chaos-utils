@@ -1,0 +1,187 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: buffer-overflow-integer-and-encoding
+  description: >
+    Integer overflow and encoding attack simulation. Tests four vectors:
+
+    1. Integer overflow -- block numbers set to max uint64 (18446744073709551615).
+       Tests whether arithmetic on block ranges wraps silently, panics, or is
+       caught by validation. Go's uint64 will wrap on addition.
+
+    2. Malformed hex strings -- non-hex characters, odd-length hex, and control
+       characters in address/hash fields. Tests robustness of common.HexToAddress,
+       common.HexToHash, and hexutil.Decode.
+
+    3. Deeply nested JSON -- 1000-level deep nesting replacing a scalar field.
+       Tests JSON parser recursion depth limits. Go's encoding/json has a
+       10000 limit, but Cosmos SDK codec behavior may differ.
+
+    4. Negative values -- negative numbers in voting power, block numbers, and
+       IDs. Tests whether unsigned integer parsing handles negative JSON numbers
+       and whether downstream arithmetic handles underflow.
+
+    These attacks target the parsing layer before application logic, testing
+    whether validators crash, panic, or silently accept invalid data.
+  tags: [semantic, buffer-overflow, integer-overflow, encoding, malformed, security, application-level, critical-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-8-heimdall-v2-bor-validator"
+      alias: heimdall_8
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: integer_overflow
+      description: Max uint64 block numbers on Heimdall 3 REST API
+      target: heimdall_3
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: integer-overflow-blocks
+            path_pattern: "/"
+            operations:
+              - type: set_field
+                field: "result.start_block"
+                value: "18446744073709551615"
+              - type: set_field
+                field: "result.end_block"
+                value: "18446744073709551615"
+              - type: set_field
+                field: "result.span.start_block"
+                value: "18446744073709551615"
+              - type: set_field
+                field: "result.span.end_block"
+                value: "18446744073709551615"
+
+    - phase: malformed_hex
+      description: Malformed hex in hash/address fields on Heimdall 6
+      target: heimdall_6
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: malformed-hex-strings
+            path_pattern: "/clerk/time"
+            operations:
+              - type: set_field
+                field: "result.event_records.0.contract"
+                value: "0xGGGG_NOT_HEX"
+              - type: set_field
+                field: "result.event_records.0.tx_hash"
+                value: "0xZZZZ_NOT_HEX"
+
+    - phase: deeply_nested
+      description: 1000-depth JSON nesting on Heimdall 8 span responses
+      target: heimdall_8
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: deeply-nested-json
+            path_pattern: "/bor/spans/"
+            operations:
+              - type: set_field
+                field: "result.span"
+                value: |-
+                  {"depth_1":{"depth_2":{"depth_3":{"depth_4":{"depth_5":{"depth_6":{"depth_7":{"depth_8":{"depth_9":{"depth_10":{"depth_11":{"depth_12":{"depth_13":{"depth_14":{"depth_15":{"depth_16":{"depth_17":{"depth_18":{"depth_19":{"depth_20":{"depth_21":{"depth_22":{"depth_23":{"depth_24":{"depth_25":{"depth_26":{"depth_27":{"depth_28":{"depth_29":{"depth_30":{"depth_31":{"depth_32":{"depth_33":{"depth_34":{"depth_35":{"depth_36":{"depth_37":{"depth_38":{"depth_39":{"depth_40":{"depth_41":{"depth_42":{"depth_43":{"depth_44":{"depth_45":{"depth_46":{"depth_47":{"depth_48":{"depth_49":{"depth_50":{"depth_51":{"depth_52":{"depth_53":{"depth_54":{"depth_55":{"depth_56":{"depth_57":{"depth_58":{"depth_59":{"depth_60":{"depth_61":{"depth_62":{"depth_63":{"depth_64":{"depth_65":{"depth_66":{"depth_67":{"depth_68":{"depth_69":{"depth_70":{"depth_71":{"depth_72":{"depth_73":{"depth_74":{"depth_75":{"depth_76":{"depth_77":{"depth_78":{"depth_79":{"depth_80":{"depth_81":{"depth_82":{"depth_83":{"depth_84":{"depth_85":{"depth_86":{"depth_87":{"depth_88":{"depth_89":{"depth_90":{"depth_91":{"depth_92":{"depth_93":{"depth_94":{"depth_95":{"depth_96":{"depth_97":{"depth_98":{"depth_99":{"depth_100":{"depth_101":{"depth_102":{"depth_103":{"depth_104":{"depth_105":{"depth_106":{"depth_107":{"depth_108":{"depth_109":{"depth_110":{"depth_111":{"depth_112":{"depth_113":{"depth_114":{"depth_115":{"depth_116":{"depth_117":{"depth_118":{"depth_119":{"depth_120":{"depth_121":{"depth_122":{"depth_123":{"depth_124":{"depth_125":{"depth_126":{"depth_127":{"depth_128":{"depth_129":{"depth_130":{"depth_131":{"depth_132":{"depth_133":{"depth_134":{"depth_135":{"depth_136":{"depth_137":{"depth_138":{"depth_139":{"depth_140":{"depth_141":{"depth_142":{"depth_143":{"depth_144":{"depth_145":{"depth_146":{"depth_147":{"depth_148":{"depth_149":{"depth_150":{"depth_151":{"depth_152":{"depth_153":{"depth_154":{"depth_155":{"depth_156":{"depth_157":{"depth_158":{"depth_159":{"depth_160":{"depth_161":{"depth_162":{"depth_163":{"depth_164":{"depth_165":{"depth_166":{"depth_167":{"depth_168":{"depth_169":{"depth_170":{"depth_171":{"depth_172":{"depth_173":{"depth_174":{"depth_175":{"depth_176":{"depth_177":{"depth_178":{"depth_179":{"depth_180":{"depth_181":{"depth_182":{"depth_183":{"depth_184":{"depth_185":{"depth_186":{"depth_187":{"depth_188":{"depth_189":{"depth_190":{"depth_191":{"depth_192":{"depth_193":{"depth_194":{"depth_195":{"depth_196":{"depth_197":{"depth_198":{"depth_199":{"depth_200":{"depth_201":{"depth_202":{"depth_203":{"depth_204":{"depth_205":{"depth_206":{"depth_207":{"depth_208":{"depth_209":{"depth_210":{"depth_211":{"depth_212":{"depth_213":{"depth_214":{"depth_215":{"depth_216":{"depth_217":{"depth_218":{"depth_219":{"depth_220":{"depth_221":{"depth_222":{"depth_223":{"depth_224":{"depth_225":{"depth_226":{"depth_227":{"depth_228":{"depth_229":{"depth_230":{"depth_231":{"depth_232":{"depth_233":{"depth_234":{"depth_235":{"depth_236":{"depth_237":{"depth_238":{"depth_239":{"depth_240":{"depth_241":{"depth_242":{"depth_243":{"depth_244":{"depth_245":{"depth_246":{"depth_247":{"depth_248":{"depth_249":{"depth_250":{"depth_251":{"depth_252":{"depth_253":{"depth_254":{"depth_255":{"depth_256":{"depth_257":{"depth_258":{"depth_259":{"depth_260":{"depth_261":{"depth_262":{"depth_263":{"depth_264":{"depth_265":{"depth_266":{"depth_267":{"depth_268":{"depth_269":{"depth_270":{"depth_271":{"depth_272":{"depth_273":{"depth_274":{"depth_275":{"depth_276":{"depth_277":{"depth_278":{"depth_279":{"depth_280":{"depth_281":{"depth_282":{"depth_283":{"depth_284":{"depth_285":{"depth_286":{"depth_287":{"depth_288":{"depth_289":{"depth_290":{"depth_291":{"depth_292":{"depth_293":{"depth_294":{"depth_295":{"depth_296":{"depth_297":{"depth_298":{"depth_299":{"depth_300":{"depth_301":{"depth_302":{"depth_303":{"depth_304":{"depth_305":{"depth_306":{"depth_307":{"depth_308":{"depth_309":{"depth_310":{"depth_311":{"depth_312":{"depth_313":{"depth_314":{"depth_315":{"depth_316":{"depth_317":{"depth_318":{"depth_319":{"depth_320":{"depth_321":{"depth_322":{"depth_323":{"depth_324":{"depth_325":{"depth_326":{"depth_327":{"depth_328":{"depth_329":{"depth_330":{"depth_331":{"depth_332":{"depth_333":{"depth_334":{"depth_335":{"depth_336":{"depth_337":{"depth_338":{"depth_339":{"depth_340":{"depth_341":{"depth_342":{"depth_343":{"depth_344":{"depth_345":{"depth_346":{"depth_347":{"depth_348":{"depth_349":{"depth_350":{"depth_351":{"depth_352":{"depth_353":{"depth_354":{"depth_355":{"depth_356":{"depth_357":{"depth_358":{"depth_359":{"depth_360":{"depth_361":{"depth_362":{"depth_363":{"depth_364":{"depth_365":{"depth_366":{"depth_367":{"depth_368":{"depth_369":{"depth_370":{"depth_371":{"depth_372":{"depth_373":{"depth_374":{"depth_375":{"depth_376":{"depth_377":{"depth_378":{"depth_379":{"depth_380":{"depth_381":{"depth_382":{"depth_383":{"depth_384":{"depth_385":{"depth_386":{"depth_387":{"depth_388":{"depth_389":{"depth_390":{"depth_391":{"depth_392":{"depth_393":{"depth_394":{"depth_395":{"depth_396":{"depth_397":{"depth_398":{"depth_399":{"depth_400":{"depth_401":{"depth_402":{"depth_403":{"depth_404":{"depth_405":{"depth_406":{"depth_407":{"depth_408":{"depth_409":{"depth_410":{"depth_411":{"depth_412":{"depth_413":{"depth_414":{"depth_415":{"depth_416":{"depth_417":{"depth_418":{"depth_419":{"depth_420":{"depth_421":{"depth_422":{"depth_423":{"depth_424":{"depth_425":{"depth_426":{"depth_427":{"depth_428":{"depth_429":{"depth_430":{"depth_431":{"depth_432":{"depth_433":{"depth_434":{"depth_435":{"depth_436":{"depth_437":{"depth_438":{"depth_439":{"depth_440":{"depth_441":{"depth_442":{"depth_443":{"depth_444":{"depth_445":{"depth_446":{"depth_447":{"depth_448":{"depth_449":{"depth_450":{"depth_451":{"depth_452":{"depth_453":{"depth_454":{"depth_455":{"depth_456":{"depth_457":{"depth_458":{"depth_459":{"depth_460":{"depth_461":{"depth_462":{"depth_463":{"depth_464":{"depth_465":{"depth_466":{"depth_467":{"depth_468":{"depth_469":{"depth_470":{"depth_471":{"depth_472":{"depth_473":{"depth_474":{"depth_475":{"depth_476":{"depth_477":{"depth_478":{"depth_479":{"depth_480":{"depth_481":{"depth_482":{"depth_483":{"depth_484":{"depth_485":{"depth_486":{"depth_487":{"depth_488":{"depth_489":{"depth_490":{"depth_491":{"depth_492":{"depth_493":{"depth_494":{"depth_495":{"depth_496":{"depth_497":{"depth_498":{"depth_499":{"depth_500":{"depth_501":{"depth_502":{"depth_503":{"depth_504":{"depth_505":{"depth_506":{"depth_507":{"depth_508":{"depth_509":{"depth_510":{"depth_511":{"depth_512":{"depth_513":{"depth_514":{"depth_515":{"depth_516":{"depth_517":{"depth_518":{"depth_519":{"depth_520":{"depth_521":{"depth_522":{"depth_523":{"depth_524":{"depth_525":{"depth_526":{"depth_527":{"depth_528":{"depth_529":{"depth_530":{"depth_531":{"depth_532":{"depth_533":{"depth_534":{"depth_535":{"depth_536":{"depth_537":{"depth_538":{"depth_539":{"depth_540":{"depth_541":{"depth_542":{"depth_543":{"depth_544":{"depth_545":{"depth_546":{"depth_547":{"depth_548":{"depth_549":{"depth_550":{"depth_551":{"depth_552":{"depth_553":{"depth_554":{"depth_555":{"depth_556":{"depth_557":{"depth_558":{"depth_559":{"depth_560":{"depth_561":{"depth_562":{"depth_563":{"depth_564":{"depth_565":{"depth_566":{"depth_567":{"depth_568":{"depth_569":{"depth_570":{"depth_571":{"depth_572":{"depth_573":{"depth_574":{"depth_575":{"depth_576":{"depth_577":{"depth_578":{"depth_579":{"depth_580":{"depth_581":{"depth_582":{"depth_583":{"depth_584":{"depth_585":{"depth_586":{"depth_587":{"depth_588":{"depth_589":{"depth_590":{"depth_591":{"depth_592":{"depth_593":{"depth_594":{"depth_595":{"depth_596":{"depth_597":{"depth_598":{"depth_599":{"depth_600":{"depth_601":{"depth_602":{"depth_603":{"depth_604":{"depth_605":{"depth_606":{"depth_607":{"depth_608":{"depth_609":{"depth_610":{"depth_611":{"depth_612":{"depth_613":{"depth_614":{"depth_615":{"depth_616":{"depth_617":{"depth_618":{"depth_619":{"depth_620":{"depth_621":{"depth_622":{"depth_623":{"depth_624":{"depth_625":{"depth_626":{"depth_627":{"depth_628":{"depth_629":{"depth_630":{"depth_631":{"depth_632":{"depth_633":{"depth_634":{"depth_635":{"depth_636":{"depth_637":{"depth_638":{"depth_639":{"depth_640":{"depth_641":{"depth_642":{"depth_643":{"depth_644":{"depth_645":{"depth_646":{"depth_647":{"depth_648":{"depth_649":{"depth_650":{"depth_651":{"depth_652":{"depth_653":{"depth_654":{"depth_655":{"depth_656":{"depth_657":{"depth_658":{"depth_659":{"depth_660":{"depth_661":{"depth_662":{"depth_663":{"depth_664":{"depth_665":{"depth_666":{"depth_667":{"depth_668":{"depth_669":{"depth_670":{"depth_671":{"depth_672":{"depth_673":{"depth_674":{"depth_675":{"depth_676":{"depth_677":{"depth_678":{"depth_679":{"depth_680":{"depth_681":{"depth_682":{"depth_683":{"depth_684":{"depth_685":{"depth_686":{"depth_687":{"depth_688":{"depth_689":{"depth_690":{"depth_691":{"depth_692":{"depth_693":{"depth_694":{"depth_695":{"depth_696":{"depth_697":{"depth_698":{"depth_699":{"depth_700":{"depth_701":{"depth_702":{"depth_703":{"depth_704":{"depth_705":{"depth_706":{"depth_707":{"depth_708":{"depth_709":{"depth_710":{"depth_711":{"depth_712":{"depth_713":{"depth_714":{"depth_715":{"depth_716":{"depth_717":{"depth_718":{"depth_719":{"depth_720":{"depth_721":{"depth_722":{"depth_723":{"depth_724":{"depth_725":{"depth_726":{"depth_727":{"depth_728":{"depth_729":{"depth_730":{"depth_731":{"depth_732":{"depth_733":{"depth_734":{"depth_735":{"depth_736":{"depth_737":{"depth_738":{"depth_739":{"depth_740":{"depth_741":{"depth_742":{"depth_743":{"depth_744":{"depth_745":{"depth_746":{"depth_747":{"depth_748":{"depth_749":{"depth_750":{"depth_751":{"depth_752":{"depth_753":{"depth_754":{"depth_755":{"depth_756":{"depth_757":{"depth_758":{"depth_759":{"depth_760":{"depth_761":{"depth_762":{"depth_763":{"depth_764":{"depth_765":{"depth_766":{"depth_767":{"depth_768":{"depth_769":{"depth_770":{"depth_771":{"depth_772":{"depth_773":{"depth_774":{"depth_775":{"depth_776":{"depth_777":{"depth_778":{"depth_779":{"depth_780":{"depth_781":{"depth_782":{"depth_783":{"depth_784":{"depth_785":{"depth_786":{"depth_787":{"depth_788":{"depth_789":{"depth_790":{"depth_791":{"depth_792":{"depth_793":{"depth_794":{"depth_795":{"depth_796":{"depth_797":{"depth_798":{"depth_799":{"depth_800":{"depth_801":{"depth_802":{"depth_803":{"depth_804":{"depth_805":{"depth_806":{"depth_807":{"depth_808":{"depth_809":{"depth_810":{"depth_811":{"depth_812":{"depth_813":{"depth_814":{"depth_815":{"depth_816":{"depth_817":{"depth_818":{"depth_819":{"depth_820":{"depth_821":{"depth_822":{"depth_823":{"depth_824":{"depth_825":{"depth_826":{"depth_827":{"depth_828":{"depth_829":{"depth_830":{"depth_831":{"depth_832":{"depth_833":{"depth_834":{"depth_835":{"depth_836":{"depth_837":{"depth_838":{"depth_839":{"depth_840":{"depth_841":{"depth_842":{"depth_843":{"depth_844":{"depth_845":{"depth_846":{"depth_847":{"depth_848":{"depth_849":{"depth_850":{"depth_851":{"depth_852":{"depth_853":{"depth_854":{"depth_855":{"depth_856":{"depth_857":{"depth_858":{"depth_859":{"depth_860":{"depth_861":{"depth_862":{"depth_863":{"depth_864":{"depth_865":{"depth_866":{"depth_867":{"depth_868":{"depth_869":{"depth_870":{"depth_871":{"depth_872":{"depth_873":{"depth_874":{"depth_875":{"depth_876":{"depth_877":{"depth_878":{"depth_879":{"depth_880":{"depth_881":{"depth_882":{"depth_883":{"depth_884":{"depth_885":{"depth_886":{"depth_887":{"depth_888":{"depth_889":{"depth_890":{"depth_891":{"depth_892":{"depth_893":{"depth_894":{"depth_895":{"depth_896":{"depth_897":{"depth_898":{"depth_899":{"depth_900":{"depth_901":{"depth_902":{"depth_903":{"depth_904":{"depth_905":{"depth_906":{"depth_907":{"depth_908":{"depth_909":{"depth_910":{"depth_911":{"depth_912":{"depth_913":{"depth_914":{"depth_915":{"depth_916":{"depth_917":{"depth_918":{"depth_919":{"depth_920":{"depth_921":{"depth_922":{"depth_923":{"depth_924":{"depth_925":{"depth_926":{"depth_927":{"depth_928":{"depth_929":{"depth_930":{"depth_931":{"depth_932":{"depth_933":{"depth_934":{"depth_935":{"depth_936":{"depth_937":{"depth_938":{"depth_939":{"depth_940":{"depth_941":{"depth_942":{"depth_943":{"depth_944":{"depth_945":{"depth_946":{"depth_947":{"depth_948":{"depth_949":{"depth_950":{"depth_951":{"depth_952":{"depth_953":{"depth_954":{"depth_955":{"depth_956":{"depth_957":{"depth_958":{"depth_959":{"depth_960":{"depth_961":{"depth_962":{"depth_963":{"depth_964":{"depth_965":{"depth_966":{"depth_967":{"depth_968":{"depth_969":{"depth_970":{"depth_971":{"depth_972":{"depth_973":{"depth_974":{"depth_975":{"depth_976":{"depth_977":{"depth_978":{"depth_979":{"depth_980":{"depth_981":{"depth_982":{"depth_983":{"depth_984":{"depth_985":{"depth_986":{"depth_987":{"depth_988":{"depth_989":{"depth_990":{"depth_991":{"depth_992":{"depth_993":{"depth_994":{"depth_995":{"depth_996":{"depth_997":{"depth_998":{"depth_999":{"depth_1000":"value"}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+
+    - phase: negative_values
+      description: Negative numbers in voting power and block numbers on Bor 3
+      target: bor_3
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: negative-values
+            path_pattern: "/"
+            operations:
+              - type: set_field
+                field: "result.voting_power"
+                value: "-1"
+              - type: set_field
+                field: "result.start_block"
+                value: "-1"
+              - type: set_field
+                field: "result.end_block"
+                value: "-1"
+
+  success_criteria:
+    - name: no_crashes
+      description: CRITICAL - Malformed input must not crash any validator
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    - name: no_panics_heimdall
+      description: CRITICAL - No panics from parsing malformed data in Heimdall
+      type: log
+      pattern: "panic|runtime error|fatal error|stack overflow|index out of range"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    - name: no_panics_bor
+      description: CRITICAL - No panics from parsing malformed data in Bor
+      type: log
+      pattern: "panic|runtime error|fatal error|stack overflow|index out of range"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: block_production_continues
+      description: CRITICAL - Block production continues
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    # Detect silent acceptance -- block heights should converge (no divergence from bad data)
+    - name: no_block_divergence
+      description: Validators should not diverge from accepting malformed data
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 10"
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - go_memstats_heap_inuse_bytes
+    - go_goroutines
+    - up

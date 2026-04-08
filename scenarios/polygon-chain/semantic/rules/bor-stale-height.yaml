@@ -1,0 +1,6 @@
+- name: bor-stale-height
+  method_match: "eth_blockNumber"
+  operations:
+    - type: set_field
+      field: "result"
+      value: "0x1"

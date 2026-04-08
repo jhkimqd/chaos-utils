@@ -1,0 +1,125 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: p2p-flood-attack
+  description: >
+    Phase 3 P2P fault injection: a chaos peer connects to Validator 3's Bor devp2p
+    port and executes a two-wave attack. Wave 1 floods the block announcement channel
+    with 2000 NewBlockHashes messages (each announcing 10 random non-existent block
+    hashes), forcing Bor's block fetcher to enqueue thousands of GetBlockHeaders
+    requests. Wave 2 then sends an invalid BlockRangeUpdate (earliest > latest) which
+    per the eth/69 spec triggers a forced disconnect. This tests:
+    (1) whether the block fetcher has bounded queue depth and rate-limiting,
+    (2) whether goroutine leak occurs when thousands of fetch requests are abandoned,
+    (3) whether the invalid BlockRangeUpdate disconnect is handled gracefully,
+    (4) whether peer recovery happens after the chaos peer disconnects.
+  tags: [p2p, semantic, devp2p, flood, block-fetcher, phase3, high-severity]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 90s
+
+  faults:
+    - phase: hash_flood
+      description: >
+        Flood Validator 3 with 2000 NewBlockHashes messages, each announcing 10
+        random block hashes just ahead of the chain head. This forces the block
+        fetcher to queue ~20,000 skeleton requests. We hold the connection open
+        for 60 seconds to sustain the flood and observe queue saturation behavior.
+      target: bor_3
+      type: p2p_attack
+      params:
+        attack: flood-hashes
+        count: 2000
+
+    - phase: invalid_range_disconnect
+      description: >
+        After the flood, send an invalid BlockRangeUpdate packet (earliestBlock=1000000,
+        latestBlock=1) which violates the eth/69 invariant. Bor should send a disconnect
+        message and close the connection. This verifies that the disconnect handler
+        correctly clears the pending fetch queue.
+      target: bor_3
+      type: p2p_attack
+      params:
+        attack: invalid-range
+        count: 1
+
+  success_criteria:
+    - name: block_production_healthy
+      description: CRITICAL - Other validators unaffected during flood
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[^3]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: target_not_crashed
+      description: CRITICAL - Validator 3 must not crash during or after the flood
+      type: prometheus
+      query: up{job="l2-el-3-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      critical: true
+
+    - name: consensus_stable
+      description: CRITICAL - Heimdall consensus unaffected
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[3m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: no_panic_logs
+      description: No panic or fatal error in Validator 3 Bor logs
+      type: log
+      pattern: "panic|runtime error|fatal error"
+      container_pattern: "l2-el-3-bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: chain_lag_bounded
+      description: Validator 3 must not fall more than 60 blocks behind during the flood
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}
+      threshold: "< 60"
+      critical: false
+
+    - name: goroutine_count_bounded
+      description: >
+        Goroutine count on Validator 3 must not grow unboundedly during the flood.
+        A large spike followed by no recovery suggests a goroutine leak in the
+        fetch path. The threshold of 5000 is generous but catches runaway growth.
+      type: prometheus
+      query: go_goroutines{job="l2-el-3-bor-heimdall-v2-validator"}
+      threshold: "< 5000"
+      critical: false
+
+    - name: peer_count_recovers
+      description: Validator 3 reconnects to at least 2 legitimate peers after attack
+      type: prometheus
+      query: p2p_peers{job="l2-el-3-bor-heimdall-v2-validator"}
+      threshold: ">= 2"
+      critical: false
+      post_fault_only: true
+
+    - name: full_resync
+      description: Validator 3 catches up to within 5 blocks of chain head after attack
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 5"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - p2p_peers
+    - go_goroutines
+    - cometbft_consensus_height
+    - up

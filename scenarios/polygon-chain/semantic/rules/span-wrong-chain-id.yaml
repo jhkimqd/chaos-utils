@@ -1,0 +1,6 @@
+- name: span-wrong-chain-id
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: "result.span.bor_chain_id"
+      value: "99999"

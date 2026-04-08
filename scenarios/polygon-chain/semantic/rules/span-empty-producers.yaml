@@ -1,0 +1,6 @@
+- name: span-empty-producers
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: "result.span.selected_producers"
+      value: []

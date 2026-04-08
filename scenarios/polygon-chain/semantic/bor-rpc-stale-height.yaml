@@ -1,0 +1,109 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-rpc-stale-height
+  description: >
+    Semantic HTTP corruption: Go corruption proxy intercepts eth_blockNumber
+    JSON-RPC responses on Bor's port 8545 and sets the reported block height
+    to a minimal value. This makes Heimdall's milestone ABCI handler (which calls
+    contractCaller.GetBorChainBlock()) see a stale chain head, potentially
+    causing inaccurate vote extensions during milestone/checkpoint proposals.
+    Tests the Heimdall-to-Bor dependency path — the reverse of most corruption
+    scenarios which target Bor-to-Heimdall.
+  tags: [semantic, http, bor-rpc, stale-height, vote-extension, application-level, high-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    # Target Bor RPC on validators that Heimdall reads from
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: stale_height_bor_2
+      description: Return minimal block height for eth_blockNumber responses on Bor 2
+      target: bor_2
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-stale-height
+            method_match: "eth_blockNumber"
+            operations:
+              - type: set_field
+                field: "result"
+                value: "0x1"
+
+    - phase: stale_height_bor_5
+      description: Return minimal block height for eth_blockNumber responses on Bor 5
+      target: bor_5
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-stale-height
+            method_match: "eth_blockNumber"
+            operations:
+              - type: set_field
+                field: "result"
+                value: "0x1"
+
+  success_criteria:
+    - name: block_production_continues
+      description: CRITICAL - Block production continues despite stale RPC height
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus advances (stale height may affect VE accuracy but not liveness)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - Stale block heights must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    # VE divergence detection
+    - name: vote_extension_divergence
+      description: Stale height may cause vote extension divergence — monitor late votes
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-[25]-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 5000"
+      critical: false
+      during_fault: true
+
+    - name: missing_validators_acceptable
+      description: Affected validators should not be persistently missing from consensus
+      type: prometheus
+      query: max(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "< 3"
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up

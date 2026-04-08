@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
@@ -84,7 +85,8 @@ func (hw *HTTPFaultWrapper) InjectHTTPFault(ctx context.Context, targetContainer
 
 	// Step 1: Generate and write Envoy config
 	config := generateEnvoyConfig(params)
-	writeCmd := []string{"sh", "-c", fmt.Sprintf("cat > %s << 'ENVOY_EOF'\n%s\nENVOY_EOF", configPath, config)}
+	encoded := base64.StdEncoding.EncodeToString([]byte(config))
+	writeCmd := []string{"sh", "-c", fmt.Sprintf("echo %s | base64 -d > %s", encoded, configPath)}
 
 	fmt.Printf("Writing Envoy config for port %d on target %s\n", params.TargetPort, targetContainerID[:12])
 	output, err := hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, writeCmd)

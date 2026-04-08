@@ -1,0 +1,118 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: ve-author-failure-incomplete-proposal
+  description: >
+    Incomplete proposal from missing milestone data via HTTP corruption.
+    Returns JSON-RPC errors for bor_getAuthor calls on Bor's RPC port for
+    a minority of validators.
+
+    Heimdall's GenMilestoneProposition calls getBlockAuthor for each block
+    to validate that the author matches allowed producers. When bor_getAuthor
+    fails, GenMilestoneProposition returns "no valid block author found" ->
+    the affected validator's VE has a nil MilestoneProposition.
+
+    This causes the affected validator's proposal to be incomplete -- the VE
+    is missing milestone data. ProcessProposal's
+    ValidateVoteExtensionsCompleteness catches proposals with missing VE
+    entries, testing the VE completeness check code path.
+
+    Expected behavior:
+    - Affected validators can't build milestone propositions (author fails)
+    - VEs have nil MilestoneProposition -> incomplete proposals when proposing
+    - Honest validators detect incomplete data
+    - Chain continues producing blocks
+  tags: [semantic, consensus-security, author, incomplete-proposal, application-level, high-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-7-bor-heimdall-v2-validator"
+      alias: bor_7
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: author_error_bor_2
+      description: Return JSON-RPC errors for bor_getAuthor on Bor 2
+      target: bor_2
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-author-error
+            method_match: "bor_getAuthor"
+            operations:
+              - type: inject_error
+
+    - phase: author_error_bor_7
+      description: Return JSON-RPC errors for bor_getAuthor on Bor 7
+      target: bor_7
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-author-error
+            method_match: "bor_getAuthor"
+            operations:
+              - type: inject_error
+
+  success_criteria:
+    - name: block_production_continues
+      description: CRITICAL - Block production continues (6/8 honest validators sufficient)
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[^27]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - Author errors must not crash validators
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    # Milestone proposition failure detection
+    - name: milestone_generation_fails
+      description: Affected validators should log milestone proposition failures
+      type: log
+      pattern: "no valid block author found|Error occurred while generating milestone proposition|failed to get block batch info"
+      container_pattern: "l2-cl-[27]-heimdall-v2-bor-validator"
+      absence: false
+      critical: false
+      during_fault: true
+
+    # Recovery
+    - name: recovery_milestone_resumption
+      description: Milestone generation resumes after fault removal
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_p2p_peers
+    - up

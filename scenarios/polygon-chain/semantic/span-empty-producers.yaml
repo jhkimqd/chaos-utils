@@ -1,0 +1,96 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: span-empty-producers
+  description: >
+    Semantic HTTP corruption: Go corruption proxy empties the selected_producers
+    array in Heimdall span responses. This simulates a malicious or corrupted
+    Heimdall node returning spans with no block producers. Tests Bor's error
+    handling when len(currentSpan.SelectedProducers) == 0, which should trigger
+    an error in spanByBlockNumber() and prevent FetchAndCommitSpan() from
+    committing invalid validator sets.
+  tags: [semantic, http, span, producers, corruption, application-level, high-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: empty_producers
+      description: Return empty selected_producers in span responses from Heimdall 3
+      target: heimdall_3
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: span-empty-producers
+            path_pattern: "/bor/spans/"
+            operations:
+              - type: set_field
+                field: "result.span.selected_producers"
+                value: []
+
+  success_criteria:
+    - name: block_production_continues
+      description: CRITICAL - Other validators using healthy Heimdall nodes keep producing
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[^3]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus advances (span API corruption doesn't affect consensus)
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: affected_validator_stays_online
+      description: Validator 3's Bor should not crash on empty producer set
+      type: prometheus
+      query: up{job="l2-el-3-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      critical: true
+
+    - name: span_api_calls_detected
+      description: Bor 3 retries span API (confirms it hits the corrupted endpoint)
+      type: prometheus
+      query: rate(heimdallv2_bor_api_calls_total{job="l2-el-3-bor-heimdall-v2-validator"}[2m])
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    - name: bor_span_validity_drops
+      description: Bor 3 span fetch validity should drop (empty producers = invalid)
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid{job="l2-el-3-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(client_requests_span_valid{job="l2-el-3-bor-heimdall-v2-validator"}[2m])) + sum(rate(client_requests_span_invalid{job="l2-el-3-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
+      threshold: "< 0.9"
+      critical: false
+      during_fault: true
+
+    - name: recovery_after_cleanup
+      description: Bor 3 span fetches recover after fault removal
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid{job="l2-el-3-bor-heimdall-v2-validator"}[1m])) / clamp_min(sum(rate(client_requests_span_valid{job="l2-el-3-bor-heimdall-v2-validator"}[1m])) + sum(rate(client_requests_span_invalid{job="l2-el-3-bor-heimdall-v2-validator"}[1m])), 0.001)) or vector(1)
+      threshold: ">= 0.8"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - up

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/jihwankim/chaos-utils/pkg/injection/safeshell"
 )
 
 // KillParams defines parameters for process kill injection
@@ -93,6 +95,10 @@ func (pw *PriorityWrapper) InjectProcessKill(ctx context.Context, targetContaine
 func ValidateKillParams(params KillParams) error {
 	if params.ProcessPattern == "" {
 		return fmt.Errorf("process_pattern must be specified")
+	}
+
+	if err := safeshell.ValidateShellSafe(params.ProcessPattern); err != nil {
+		return fmt.Errorf("process_pattern: %w", err)
 	}
 
 	signal := strings.ToUpper(params.Signal)

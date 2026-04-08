@@ -1,13 +1,30 @@
 # docker build . --tag jhkimqd/chaos-utils:latest --file ./Dockerfile.chaos-utils
+#
+# Multi-stage build:
+#   Stage 1: compile Go binaries (corruption-proxy, chaos-peer)
+#   Stage 2: Ubuntu runtime with network tools + Envoy + Go binaries
+
+# ── Stage 1: Build Go binaries ───────────────────────────────────────
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/corruption-proxy ./cmd/corruption-proxy/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/chaos-peer       ./cmd/chaos-peer/
+
+# ── Stage 2: Runtime image ───────────────────────────────────────────
 FROM ubuntu:22.04
 
 # Install runtime tools for fault injection:
 #   iproute2    — tc (traffic control) for L3/L4 network faults (netem)
-#   iptables    — connection drop, port redirect (Envoy PREROUTING), NTP blocking
+#   iptables    — connection drop, port redirect (Envoy/proxy PREROUTING), NTP blocking
 #   nftables    — verification checks for leftover rules
-#   curl        — Envoy readiness checks
+#   curl        — readiness checks (Envoy admin, corruption-proxy control API)
 #   jq          — JSON parsing
-#   procps      — ps (verify running Envoy processes)
+#   procps      — ps (verify running processes)
 #   coreutils   — dd (I/O stress), date (clock skew), timeout/yes (CPU stress), cp/rm/find
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
@@ -18,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Envoy for L7 HTTP fault injection (transparent proxy).
+# Install Envoy for L7 HTTP fault injection (abort, delay, body/header override).
 # wget + gnupg are only needed for the apt repo setup — purge after install.
 RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-certificates && \
     wget -O- https://apt.envoyproxy.io/signing.key | gpg --dearmor -o /etc/apt/keyrings/envoy-keyring.gpg && \
@@ -26,6 +43,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-c
     apt-get update && apt-get install -y --no-install-recommends envoy && \
     apt-get purge -y wget gnupg && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
+
+# Copy Go binaries from builder stage:
+#   corruption-proxy — Phase 2: JSON-aware HTTP reverse proxy for semantic corruption
+#   chaos-peer       — Phase 3: devp2p fake peer for P2P-level fault injection
+COPY --from=builder /out/corruption-proxy /usr/local/bin/corruption-proxy
+COPY --from=builder /out/chaos-peer       /usr/local/bin/chaos-peer
 
 WORKDIR /opt
 

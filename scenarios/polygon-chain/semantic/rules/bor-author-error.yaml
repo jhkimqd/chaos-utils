@@ -1,0 +1,4 @@
+- name: bor-author-error
+  method_match: "bor_getAuthor"
+  operations:
+    - type: inject_error

@@ -1,0 +1,133 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: ve-block-hash-divergence
+  description: >
+    VE hash divergence via HTTP corruption. Corrupts block hashes in
+    eth_getHeaderByNumber responses on Bor's RPC port for a minority of
+    validators. This causes Heimdall's GenMilestoneProposition to build
+    milestone propositions with wrong block hashes. When other validators
+    verify these VEs via ValidateMilestoneProposition, the hashes won't match
+    their local view -> VerifyVoteExtension returns REJECT -> the affected
+    validator's precommit is discarded from ExtendedCommitInfo.
+
+    This causes VE exclusion from commits by corrupting the data inputs
+    rather than the ABCI outputs, without any custom images. Tests the
+    garbage VE exclusion code path.
+
+    Expected behavior:
+    - Affected validators produce VEs with wrong milestone hashes
+    - Honest validators REJECT these VEs via VerifyVoteExtension
+    - Chain continues producing blocks (4/6 honest = 66.7% > threshold)
+    - Post-cleanup: affected validators rejoin consensus normally
+  tags: [semantic, consensus-security, ve-exclusion, block-hash, application-level, critical-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    # Target 2 validators' Bor RPC (minority -- simulates 2 hash-corrupted validators)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: corrupt_hashes_bor_2
+      description: Corrupt block hashes in eth_getHeaderByNumber on Bor 2
+      target: bor_2
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-wrong-block-hash
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.hash"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+    - phase: corrupt_hashes_bor_5
+      description: Corrupt block hashes in eth_getHeaderByNumber on Bor 5
+      target: bor_5
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-wrong-block-hash
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.hash"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+  success_criteria:
+    # Chain liveness -- chain advances under adversarial load
+    - name: block_production_continues
+      description: CRITICAL - Block production continues (honest 4/6 > 66.7% threshold)
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus height advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - No crashes from hash divergence
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    # VE rejection detection -- garbage VE exclusion measurement
+    - name: ve_rejection_logs_present
+      description: Honest validators should log VE rejections for affected validators
+      type: log
+      pattern: "vote extension rejected|milestone proposition.*rejected|REJECT"
+      container_pattern: "l2-cl-[^25]-heimdall-v2-bor-validator"
+      absence: false
+      critical: false
+      during_fault: true
+
+    # Missing validators metric -- when VEs are rejected, the validator's
+    # precommit is discarded, appearing as "missing" in consensus
+    - name: missing_validators_detected
+      description: Affected validators may appear as missing (precommit discarded)
+      type: prometheus
+      query: max(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    # Recovery
+    - name: recovery_convergence
+      description: All validators rejoin consensus after fault removal
+      type: prometheus
+      query: max(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "< 2"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_late_votes
+    - cometbft_p2p_peers
+    - up

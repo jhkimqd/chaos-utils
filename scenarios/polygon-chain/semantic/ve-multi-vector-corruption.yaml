@@ -1,0 +1,175 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: ve-multi-vector-corruption
+  description: >
+    Combined consensus-security simulation: simultaneously corrupts block
+    hashes, totalDifficulty, and block author data on Bor RPC for a minority
+    of validators. This replicates a full adversarial topology where both
+    hash-corrupted validators (causing garbage VE exclusion) and TD-divergent
+    validators (causing majority threshold failure) are active at the same
+    time.
+
+    The multi-vector corruption exercises all consensus-security code paths
+    simultaneously:
+    - Wrong hashes -> VerifyVoteExtension REJECT (garbage VE exclusion)
+    - Wrong TDs -> majority threshold failure
+    - Author errors -> nil MilestoneProposition (incomplete proposal)
+    - PreBlocker graceful handling
+
+    This is the most aggressive semantic corruption scenario and simulates
+    a worst-case compromised Bor node scenario.
+  tags: [semantic, consensus-security, combined, multi-vector, application-level, critical-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    # Validator 2: combo corruption (hash-corrupted + TD-divergent simultaneously)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+    # Validator 5: combo corruption
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-5-bor-heimdall-v2-validator"
+      alias: bor_5
+
+  duration: 5m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: phuket_combo_bor_2
+      description: Multi-vector corruption on Bor 2 (hashes + TD + author)
+      target: bor_2
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-wrong-block-hash
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.hash"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+          - name: bor-divergent-td
+            method_match: "eth_getTdByNumber"
+            operations:
+              - type: set_field
+                field: "result.totalDifficulty"
+                value: "0xffffffffff"
+          - name: bor-author-error
+            method_match: "bor_getAuthor"
+            operations:
+              - type: inject_error
+
+    - phase: phuket_combo_bor_5
+      description: Multi-vector corruption on Bor 5 (hashes + TD + author)
+      target: bor_5
+      type: corruption_proxy
+      params:
+        target_port: 8545
+        rules_yaml: |
+          - name: bor-wrong-block-hash
+            method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+            operations:
+              - type: set_field
+                field: "result.hash"
+                value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+          - name: bor-divergent-td
+            method_match: "eth_getTdByNumber"
+            operations:
+              - type: set_field
+                field: "result.totalDifficulty"
+                value: "0xffffffffff"
+          - name: bor-author-error
+            method_match: "bor_getAuthor"
+            operations:
+              - type: inject_error
+
+  success_criteria:
+    # Chain liveness -- the fundamental consensus-security invariant
+    - name: block_production_continues
+      description: CRITICAL - Block production must continue under multi-vector attack
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus height advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - Multi-vector corruption must not crash any validator
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    - name: no_panic_in_any_validator
+      description: CRITICAL - No panics across the entire validator set
+      type: log
+      pattern: "panic|runtime error|fatal"
+      container_pattern: "bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: no_panic_in_heimdall
+      description: CRITICAL - No panics in Heimdall validators
+      type: log
+      pattern: "panic|runtime error|fatal"
+      container_pattern: "heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+    # Degradation metrics -- verify corruption is actually having effect
+    - name: ve_rejections_or_missing
+      description: Affected validators should show signs of VE issues
+      type: prometheus
+      query: max(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    - name: late_votes_bounded
+      description: Late votes stay within acceptable bounds
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) * 60
+      threshold: "< 8000"
+      critical: false
+
+    # Healthy validators unaffected
+    - name: honest_validators_producing
+      description: Non-affected validators produce blocks normally
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[^25]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: false
+      during_fault: true
+
+    # Full recovery
+    - name: recovery_all_validators_converge
+      description: All validators converge after fault removal
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 5"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_validator_power
+    - cometbft_p2p_peers
+    - up

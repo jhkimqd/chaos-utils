@@ -1,0 +1,96 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: milestone-stale-data
+  description: >
+    Semantic HTTP corruption: Go corruption proxy zeroes the start_block and
+    end_block fields in Heimdall's /milestones/latest responses. This returns
+    milestone data pointing to blocks far in the past. Tests Bor's milestone
+    monotonicity checking — stale milestones should trigger
+    errHashMismatch → ProcessFutureMilestone rewind logic. Verifies that the
+    rewind is bounded and doesn't cause unbounded rollbacks or panics.
+  tags: [semantic, http, milestone, stale, rewind, application-level, high-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: stale_milestone
+      description: Return milestone with zeroed block numbers from Heimdall 6
+      target: heimdall_6
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: milestone-stale
+            path_pattern: "/milestones/"
+            operations:
+              - type: set_field
+                field: "result.start_block"
+                value: "0"
+              - type: set_field
+                field: "result.end_block"
+                value: "0"
+
+  success_criteria:
+    - name: block_production_continues
+      description: CRITICAL - Other validators unaffected by stale milestones on Heimdall 6
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[^6]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus unaffected
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: affected_validator_survives
+      description: CRITICAL - Validator 6 Bor must not crash on stale milestone
+      type: prometheus
+      query: up{job="l2-el-6-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      critical: true
+
+    # Rewind detection
+    - name: no_excessive_rewind
+      description: Chain head of affected validator should not drop more than 20 blocks behind others
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 20"
+      critical: false
+
+    - name: no_panic_logs
+      description: No panic in Bor logs from milestone processing
+      type: log
+      pattern: "panic|runtime error"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+    - name: recovery_after_cleanup
+      description: Affected validator catches up after fault removal
+      type: prometheus
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      threshold: "< 5"
+      critical: false
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
+    - up

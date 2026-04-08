@@ -386,7 +386,7 @@ redeploy_devnet() {
 
 SCENARIO_DIRS=""
 case "${FILTER}" in
-  all)  SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/boundary scenarios/polygon-chain/compound scenarios/polygon-chain/disk" ;;
+  all)  SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/boundary scenarios/polygon-chain/compound scenarios/polygon-chain/disk scenarios/polygon-chain/semantic" ;;
   *)    SCENARIO_DIRS="scenarios/polygon-chain/${FILTER}" ;;
 esac
 

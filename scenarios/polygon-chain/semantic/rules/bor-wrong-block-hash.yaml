@@ -1,0 +1,6 @@
+- name: bor-wrong-block-hash
+  method_match: "eth_getHeaderByNumber|eth_getBlockByNumber"
+  operations:
+    - type: set_field
+      field: "result.hash"
+      value: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"

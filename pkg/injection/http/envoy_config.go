@@ -5,9 +5,21 @@ import (
 	"strings"
 )
 
+// sanitizePathPattern removes characters that could break YAML structure
+// when PathPattern is interpolated into the Envoy config.
+func sanitizePathPattern(p string) string {
+	if strings.ContainsAny(p, "\n\r\"") {
+		p = strings.NewReplacer("\n", "", "\r", "", "\"", "").Replace(p)
+	}
+	return p
+}
+
 // generateEnvoyConfig builds an Envoy v3 bootstrap config with fault injection.
 func generateEnvoyConfig(params HTTPFaultParams) string {
 	proxyPort := params.proxyPort()
+
+	// Sanitize PathPattern — remove characters that could break YAML structure.
+	params.PathPattern = sanitizePathPattern(params.PathPattern)
 
 	// Build route match clause (indented to level under route entry)
 	routeMatch := "prefix: \"/\""
@@ -131,7 +143,7 @@ static_resources:
 	return config
 }
 
-// buildLuaFilter generates Envoy Lua filter lines
+// buildLuaFilter generates Envoy Lua filter lines for body/header overrides.
 func buildLuaFilter(params HTTPFaultParams) []string {
 	var luaParts []string
 	luaParts = append(luaParts, "function envoy_on_response(response_handle)")

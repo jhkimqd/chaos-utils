@@ -1,0 +1,99 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: span-wrong-chain-id
+  description: >
+    Semantic HTTP corruption: Go corruption proxy replaces the bor_chain_id field
+    in Heimdall span responses with an incorrect value. Bor explicitly validates
+    chain ID matches at bor.go:1689 before committing spans. This tests whether
+    the error propagation is correct — a chain ID mismatch should cause span
+    rejection and graceful fallback, not a panic or silent acceptance.
+  tags: [semantic, http, span, chain-id, corruption, application-level, medium-severity]
+  author: DevTools
+  version: "0.2.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: heimdall_3
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-7-heimdall-v2-bor-validator"
+      alias: heimdall_7
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 2m
+
+  faults:
+    - phase: wrong_chain_id_heimdall_3
+      description: Replace bor_chain_id with invalid value on Heimdall 3
+      target: heimdall_3
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: span-wrong-chain-id
+            path_pattern: "/bor/spans/"
+            operations:
+              - type: set_field
+                field: "result.span.bor_chain_id"
+                value: "99999"
+
+    - phase: wrong_chain_id_heimdall_7
+      description: Replace bor_chain_id with invalid value on Heimdall 7
+      target: heimdall_7
+      type: corruption_proxy
+      params:
+        target_port: 1317
+        rules_yaml: |
+          - name: span-wrong-chain-id
+            path_pattern: "/bor/spans/"
+            operations:
+              - type: set_field
+                field: "result.span.bor_chain_id"
+                value: "99999"
+
+  success_criteria:
+    - name: block_production_continues
+      description: CRITICAL - Other validators with correct chain ID keep producing
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[^37]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Heimdall consensus unaffected by REST API corruption
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    - name: validators_stay_online
+      description: CRITICAL - Wrong chain ID must not crash Bor
+      type: prometheus
+      query: min(up{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      threshold: "== 1"
+      critical: true
+
+    - name: span_validity_drops_for_affected
+      description: Affected validators should see invalid span responses
+      type: prometheus
+      query: (sum(rate(client_requests_span_valid{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(client_requests_span_valid{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[2m])) + sum(rate(client_requests_span_invalid{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
+      threshold: "< 0.9"
+      critical: false
+      during_fault: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - client_requests_span_valid
+    - client_requests_span_invalid
+    - heimdallv2_bor_api_calls_total
+    - heimdallv2_bor_api_calls_success_total
+    - up
