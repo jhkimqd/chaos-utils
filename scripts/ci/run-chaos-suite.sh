@@ -10,14 +10,18 @@
 #   GITHUB_STEP_SUMMARY GitHub Actions step summary file
 #
 # Optional env vars (with defaults):
-#   INPUT_SCENARIO_FILTER  Scenario category filter (default: all)
-#   INPUT_SCENARIO_COUNT   Number of scenarios to sample (default: 8)
-#   INPUT_FAST_MODE        Compress timings for faster CI (default: true)
+#   INPUT_SCENARIO_FILTER        Scenario category filter (default: all)
+#   INPUT_SAMPLES_PER_CATEGORY   Scenarios to sample per category (default: 2, 0 = all)
+#   INPUT_FAST_MODE              Compress timings for faster CI (default: true)
 
 set -euo pipefail
 
 FILTER="${INPUT_SCENARIO_FILTER:-all}"
-COUNT="${INPUT_SCENARIO_COUNT:-8}"
+SAMPLES="${INPUT_SAMPLES_PER_CATEGORY:-2}"
+if ! [[ "${SAMPLES}" =~ ^[0-9]+$ ]]; then
+  echo "::warning::Invalid samples_per_category '${SAMPLES}', defaulting to 2"
+  SAMPLES=2
+fi
 FAST_MODE="${INPUT_FAST_MODE:-true}"
 REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${REPORT_DIR}"
@@ -386,27 +390,41 @@ redeploy_devnet() {
 
 SCENARIO_DIRS=""
 case "${FILTER}" in
-  all)  SCENARIO_DIRS="scenarios/polygon-chain/network scenarios/polygon-chain/applications scenarios/polygon-chain/boundary scenarios/polygon-chain/compound scenarios/polygon-chain/disk scenarios/polygon-chain/semantic" ;;
+  all)  SCENARIO_DIRS="scenarios/polygon-chain/applications scenarios/polygon-chain/boundary scenarios/polygon-chain/compound scenarios/polygon-chain/disk scenarios/polygon-chain/network scenarios/polygon-chain/semantic" ;;
   *)    SCENARIO_DIRS="scenarios/polygon-chain/${FILTER}" ;;
 esac
 
-ALL_SCENARIOS=""
+# Stratified sampling: pick SAMPLES scenarios from each subdirectory.
+# When SAMPLES=0, run all scenarios in each directory.
+SELECTED=""
+TOTAL_AVAILABLE=0
 for dir in ${SCENARIO_DIRS}; do
   [[ -d "${dir}" ]] || continue
+  category=$(basename "${dir}")
+  DIR_SCENARIOS=""
+  dir_count=0
   for f in "${dir}"/*.yaml; do
-    ALL_SCENARIOS="${ALL_SCENARIOS} ${f}"
+    [[ -f "${f}" ]] || continue
+    DIR_SCENARIOS="${DIR_SCENARIOS} ${f}"
+    dir_count=$((dir_count + 1))
   done
+  TOTAL_AVAILABLE=$((TOTAL_AVAILABLE + dir_count))
+
+  if [[ "${SAMPLES}" -eq 0 || ${dir_count} -le ${SAMPLES} ]]; then
+    SAMPLED="${DIR_SCENARIOS}"
+    picked=${dir_count}
+  else
+    SAMPLED=$(echo "${DIR_SCENARIOS}" | tr ' ' '\n' | grep -v '^$' | shuf | head -n "${SAMPLES}")
+    picked="${SAMPLES}"
+  fi
+  SELECTED="${SELECTED} ${SAMPLED}"
+  echo "[${category}] ${picked}/${dir_count} scenarios selected"
+  echo "${SAMPLED}" | tr ' ' '\n' | grep -v '^$' | while read -r f; do echo "  - $(basename "$f" .yaml)"; done
 done
 
-if [[ "${COUNT}" -eq 0 ]]; then
-  SELECTED="${ALL_SCENARIOS}"
-else
-  SELECTED=$(echo "${ALL_SCENARIOS}" | tr ' ' '\n' | grep -v '^$' | shuf | head -n "${COUNT}")
-fi
-
 SCENARIO_COUNT=$(echo "${SELECTED}" | wc -w)
-echo "Selected ${SCENARIO_COUNT} scenarios (from $(echo ${ALL_SCENARIOS} | wc -w) total)"
-echo "${SELECTED}" | tr ' ' '\n' | grep -v '^$' | while read -r f; do echo "  - $(basename "$f" .yaml)"; done
+echo ""
+echo "Total: ${SCENARIO_COUNT} scenarios selected (from ${TOTAL_AVAILABLE} available)"
 
 # ── Scenarios with hard timing floors that cannot be compressed ──
 SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
