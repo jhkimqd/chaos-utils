@@ -32,13 +32,15 @@ Chaos Runner helps you systematically test your Polygon Chain network by:
 ### Installation
 
 ```bash
-# Clone repository
 cd chaos-utils
 
-# Build the binary
+# Build everything (chaos-runner, chaos-peer, corruption-proxy)
+make
+
+# Or build just the host CLI
 make build-runner
 
-# Binary available at: ./bin/chaos-runner
+# Binaries available at: ./bin/
 ```
 
 ### Run Your First Test
@@ -62,21 +64,46 @@ vim config.yaml
 
 ## Architecture
 
-### Components
+### Binaries
+
+The project produces three binaries split across two deployment contexts:
+
+**Host (your machine / CI)**
+
+| Binary | Source | Purpose |
+|--------|--------|---------|
+| `chaos-runner` | `cmd/chaos-runner/` | Main CLI. Reads YAML scenarios, discovers Kurtosis/Docker containers, orchestrates fault injection, collects Prometheus metrics, evaluates success criteria, and generates reports. Runs on the host and reaches into containers via Docker exec. |
+
+**Sidecar (inside `jhkimqd/chaos-utils` Docker image)**
+
+| Binary | Source | Purpose |
+|--------|--------|---------|
+| `corruption-proxy` | `cmd/corruption-proxy/` | HTTP reverse proxy that intercepts JSON-RPC/REST traffic between Bor and Heimdall. Applies semantic corruption rules (mutate block numbers, delete fields, inject wrong hashes) with a runtime control API to toggle rules on the fly. |
+| `chaos-peer` | `cmd/chaos-peer/` | Fake devp2p peer that connects to a Bor node's RLPx port, completes the eth handshake, and sends crafted malicious protocol messages (malformed blocks, conflicting chains, hash floods, etc.). Attacks Bor's P2P layer directly, bypassing any HTTP proxy. |
+
+`chaos-runner` is never containerized. `corruption-proxy` and `chaos-peer` live in the sidecar image alongside Envoy and Linux network tools (tc, iptables). The runner starts sidecars, injects faults through them, and tears everything down after the test.
+
+### Project Structure
 
 ```
 chaos-utils/
-├── cmd/chaos-runner/          # CLI entry point (run subcommand)
+├── cmd/
+│   ├── chaos-runner/              # Host CLI (run subcommand)
+│   ├── corruption-proxy/          # Sidecar: HTTP corruption proxy
+│   └── chaos-peer/                # Sidecar: devp2p fake peer
 ├── pkg/
-│   ├── core/orchestrator/     # State machine (PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT)
-│   ├── discovery/             # Kurtosis & Docker service discovery
-│   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
-│   ├── monitoring/            # Prometheus integration & metrics collection
-│   ├── scenario/              # YAML parser & validator
-│   ├── reporting/             # Test results & logging
-│   └── emergency/             # Emergency stop & cleanup
-├── scenarios/polygon-chain/   # Built-in test scenarios (network/, applications/, cpu-memory/, filesystem/)
-└── reports/                   # Test execution reports (auto-generated)
+│   ├── core/orchestrator/         # State machine (PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT)
+│   ├── discovery/                 # Kurtosis & Docker service discovery
+│   ├── injection/                 # Fault injectors (network, container, stress, disk, DNS, HTTP, P2P)
+│   │   ├── http/corruption/       # Corruption proxy engine (rules, mutations, control API)
+│   │   └── p2p/bor/               # devp2p RLPx peer + attack implementations
+│   ├── monitoring/                # Prometheus integration & metrics collection
+│   ├── scenario/                  # YAML parser & validator
+│   ├── reporting/                 # Test results & logging
+│   └── emergency/                 # Emergency stop & cleanup
+├── scenarios/polygon-chain/       # Built-in test scenarios
+├── Dockerfile.chaos-utils         # Sidecar image (corruption-proxy + chaos-peer + Envoy + network tools)
+└── reports/                       # Test execution reports (auto-generated)
 ```
 
 ### How It Works
@@ -420,43 +447,47 @@ cat scenarios/polygon-chain/network/validator-partition.yaml
 
 ## Development
 
-### Project Structure
-
-```
-chaos-utils/
-├── cmd/chaos-runner/          # CLI entry point (run subcommand)
-├── pkg/
-│   ├── core/orchestrator/     # State machine: PARSE → WARMUP → [pre-check] → INJECT → MONITOR → TEARDOWN → DETECT
-│   ├── discovery/             # Kurtosis & Docker service discovery
-│   ├── injection/             # Fault injection (network, container, stress, disk, DNS)
-│   ├── monitoring/            # Prometheus integration
-│   ├── scenario/              # YAML parser & validator
-│   ├── reporting/             # Test results & logging
-│   ├── emergency/             # Emergency stop & cleanup
-│   └── config/                # Configuration management
-├── scenarios/polygon-chain/   # Built-in test scenarios (network/, applications/, cpu-memory/, filesystem/)
-└── reports/                   # Test execution reports (auto-generated)
-```
-
-### Build from Source
+### Building
 
 ```bash
-# Build the binary
-make build-runner  # Creates ./bin/chaos-runner
+# Build everything (all three binaries) — this is the default target
+make
 
-# Clean build artifacts
-make clean
+# Build individual binaries
+make build-runner    # → bin/chaos-runner
+make build-peer      # → bin/chaos-peer
+make build-proxy     # → bin/corruption-proxy
 
-# Run tests
-make test
+# Build static Linux binaries (for Docker / CI, matches Dockerfile)
+make build-static    # → bin/corruption-proxy, bin/chaos-peer (CGO_ENABLED=0, stripped)
+
+# Build the sidecar Docker image
+make docker          # → jhkimqd/chaos-utils:latest
+
+# One command: build all binaries + sidecar image
+make && make docker
+
+# Other targets
+make test            # Run integration tests
+make vet             # Go vet
+make fmt             # gofmt -s -w
+make fmt-check       # CI check: fails if gofmt would change anything
+make clean           # rm -rf bin/
 ```
 
-### Docker Image
+### Sidecar Docker Image
 
-The sidecar uses `jhkimqd/chaos-utils:latest` which includes:
-- comcast (network fault injection tool)
-- Standard Linux network tools (tc, iptables, nsenter)
-- Envoy proxy (for future L7 fault support)
+The sidecar image (`jhkimqd/chaos-utils:latest`, built from `Dockerfile.chaos-utils`) is a two-stage build:
+
+1. **Builder stage** (golang:alpine): compiles `corruption-proxy` and `chaos-peer` as static binaries
+2. **Runtime stage** (ubuntu:22.04): copies the binaries alongside:
+   - **Envoy** — L7 HTTP fault injection (abort, delay, body/header override)
+   - **iproute2** — tc (traffic control) for L3/L4 network faults (netem)
+   - **iptables** — connection drop, port redirect (proxy PREROUTING)
+   - **nftables** — verification checks for leftover rules
+   - **curl / jq / procps** — readiness checks and debugging
+
+The image requires `--cap-add=NET_ADMIN,NET_RAW` at runtime. `chaos-runner` manages the sidecar lifecycle automatically — you only need to build the image.
 
 ## License
 
