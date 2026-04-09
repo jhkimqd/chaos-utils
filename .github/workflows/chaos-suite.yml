@@ -6,13 +6,22 @@ on:
   workflow_dispatch:
     inputs:
       scenario_filter:
-        description: "Scenario category: all, network, applications, boundary, compound, disk"
+        description: "Scenario category to test"
         required: false
+        type: choice
         default: "all"
-      scenario_count:
-        description: "Number of scenarios to sample (0 = run all)"
+        options:
+          - all
+          - applications
+          - boundary
+          - compound
+          - disk
+          - network
+          - semantic
+      samples_per_category:
+        description: "Scenarios to sample per category (0 = run all in category)"
         required: false
-        default: "0"
+        default: "2"
       kurtosis_pos_ref:
         description: "kurtosis-pos branch/tag to deploy"
         required: false
@@ -254,7 +263,7 @@ jobs:
       - name: Select and run chaos scenarios
         env:
           INPUT_SCENARIO_FILTER: ${{ inputs.scenario_filter }}
-          INPUT_SCENARIO_COUNT: ${{ inputs.scenario_count }}
+          INPUT_SAMPLES_PER_CATEGORY: ${{ inputs.samples_per_category }}
           INPUT_FAST_MODE: ${{ inputs.fast_mode }}
         run: bash scripts/ci/run-chaos-suite.sh
 
