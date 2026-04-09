@@ -93,7 +93,7 @@ spec:
     - name: span_api_degrades_as_expected
       description: Span API success rate should drop (confirming fault is active)
       type: prometheus
-      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[2m])), 0.001)) or vector(1)
       threshold: "< 0.9"
       critical: false
       during_fault: true
@@ -101,7 +101,7 @@ spec:
     - name: bor_handles_retries_gracefully
       description: Bor should not crash or spike API calls from retry storms
       type: prometheus
-      query: sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[1m]))
+      query: sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[1m]))
       threshold: "< 100"
       critical: false
       during_fault: true

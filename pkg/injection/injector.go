@@ -1035,8 +1035,12 @@ func (i *Injector) removeCorruptionProxy(ctx context.Context, containerID string
 	fmt.Printf("Removing corruption proxy from target %s\n", containerID[:12])
 
 	// Remove all chaos-corruption-proxy iptables rules.
+	// Use iptables-save to find exact rule specs, then delete them.
+	// The partial-match approach (just comment + REDIRECT) does not work because
+	// iptables -D requires an exact match of all fields.
 	cleanupIPT := []string{"sh", "-c",
-		"while iptables -t nat -D PREROUTING -m comment --comment chaos-corruption-proxy -j REDIRECT 2>/dev/null; do true; done; echo done"}
+		"iptables-save -t nat 2>/dev/null | grep 'chaos-corruption-proxy' | sed 's/^-A /-D /' | " +
+			"while IFS= read -r rule; do iptables -t nat $rule 2>/dev/null; done; echo done"}
 	_, _ = i.sidecarMgr.ExecInSidecar(ctx, containerID, cleanupIPT)
 
 	// Kill all corruption-proxy processes and remove temp files.

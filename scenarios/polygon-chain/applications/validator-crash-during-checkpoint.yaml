@@ -96,7 +96,7 @@ spec:
     - name: missed_proposals_during_recovery
       description: Missed proposals under 8/min (crashes cause missed proposal opportunities)
       type: prometheus
-      query: sum(rate(panoptichain_heimdall_missed_block_proposal{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
+      query: (sum(rate(cometbft_consensus_validator_missed_blocks{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60) or vector(0)
       threshold: "< 8"
       critical: false
 
@@ -169,7 +169,7 @@ spec:
     - up
 
     # Subtle degradation metrics
-    - panoptichain_heimdall_missed_block_proposal
+    - cometbft_consensus_validator_missed_blocks
     - cometbft_p2p_peers
     - cometbft_consensus_late_votes
     - cometbft_consensus_validator_power

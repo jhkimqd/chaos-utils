@@ -86,7 +86,7 @@ spec:
     - name: checkpoint_api_calls_continue
       description: Bor continues calling checkpoint API (not silently giving up)
       type: prometheus
-      query: sum(rate(heimdallv2_checkpoint_api_calls_total{job=~"l2-el-[26]-bor-heimdall-v2-validator"}[2m]))
+      query: sum(rate(heimdallv2_checkpoint_api_calls_total{job=~"l2-cl-[26]-heimdall-v2-bor-validator"}[2m]))
       threshold: "> 0"
       critical: false
       during_fault: true

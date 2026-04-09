@@ -292,7 +292,9 @@ func (fd *FailureDetector) evaluateLog(ctx context.Context, criterion scenario.S
 	return result, nil
 }
 
-// discoverContainersByPattern finds running containers whose name contains the pattern.
+// discoverContainersByPattern finds running containers whose name matches the pattern.
+// Supports both literal substring matching and regex patterns (detected by the
+// presence of regex metacharacters like [, ], ., *, ^, $, |, (, )).
 func (fd *FailureDetector) discoverContainersByPattern(ctx context.Context, pattern string) ([]LogTarget, error) {
 	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -302,11 +304,30 @@ func (fd *FailureDetector) discoverContainersByPattern(ctx context.Context, patt
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
+	// Use regex matching if the pattern contains regex metacharacters,
+	// otherwise fall back to literal substring matching for backwards
+	// compatibility with existing scenario files.
+	useRegex := strings.ContainsAny(pattern, "[].*+?^$|()\\")
+	var re *regexp.Regexp
+	if useRegex {
+		var err error
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid container pattern regex %q: %w", pattern, err)
+		}
+	}
+
 	var targets []LogTarget
 	for _, c := range containers {
 		for _, name := range c.Names {
 			name = strings.TrimPrefix(name, "/")
-			if strings.Contains(name, pattern) {
+			matched := false
+			if useRegex {
+				matched = re.MatchString(name)
+			} else {
+				matched = strings.Contains(name, pattern)
+			}
+			if matched {
 				targets = append(targets, LogTarget{
 					ContainerID: c.ID,
 					Name:        name,
@@ -356,10 +377,13 @@ func (fd *FailureDetector) evaluateStateRootConsensus(ctx context.Context, crite
 		return result, nil
 	}
 
-	// Resolve container IPs via Docker inspect
+	// Resolve container IPs via Docker inspect.
+	// We keep the containerID so we can exec into the container as a fallback
+	// when the external HTTP RPC is unreachable (stale iptables, overload, etc.).
 	type nodeInfo struct {
-		name   string
-		rpcURL string
+		name        string
+		containerID string
+		rpcURL      string
 	}
 	var nodes []nodeInfo
 	for _, t := range targets {
@@ -377,8 +401,9 @@ func (fd *FailureDetector) evaluateStateRootConsensus(ctx context.Context, crite
 			continue
 		}
 		nodes = append(nodes, nodeInfo{
-			name:   t.Name,
-			rpcURL: fmt.Sprintf("http://%s:8545", svc.IP),
+			name:        t.Name,
+			containerID: t.ContainerID,
+			rpcURL:      fmt.Sprintf("http://%s:8545", svc.IP),
 		})
 	}
 	if len(nodes) < 2 {
@@ -388,59 +413,118 @@ func (fd *FailureDetector) evaluateStateRootConsensus(ctx context.Context, crite
 		return result, nil
 	}
 
+	// queryBlockNumber tries the external HTTP RPC first; if that fails, it
+	// falls back to querying via IPC socket by exec-ing into the container.
+	// IPC bypasses iptables (no network stack) and the HTTP server entirely,
+	// so it works even with stale PREROUTING redirects or HTTP overload.
+	queryBlockNumber := func(ctx context.Context, n nodeInfo) (uint64, error) {
+		h, err := ethBlockNumber(ctx, n.rpcURL)
+		if err == nil {
+			return h, nil
+		}
+		fmt.Printf("    [state_root] HTTP RPC failed for %s, falling back to IPC...\n", n.name)
+		return fd.execIPCBlockNumber(ctx, n.containerID)
+	}
+
+	// queryStateRoot is the same fallback pattern for state root queries.
+	queryStateRoot := func(ctx context.Context, n nodeInfo, blockNum uint64) (string, error) {
+		sr, err := ethStateRoot(ctx, n.rpcURL, blockNum)
+		if err == nil {
+			return sr, nil
+		}
+		return fd.execIPCStateRoot(ctx, n.containerID, blockNum)
+	}
+
 	fmt.Printf("    [state_root] checking consensus across %d nodes...\n", len(nodes))
 
-	// Poll until all nodes are within 5 blocks of each other (max 2 minutes).
+	// Poll until reachable nodes are within 5 blocks of each other (max 2 minutes).
+	// Track which nodes are unreachable so we can report them explicitly
+	// instead of masking the real problem behind a generic "didn't converge" message.
 	convergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	var commonBlock uint64
+	var reachableNodes []nodeInfo
+	var unreachableNames []string
 	for {
-		var heights []uint64
+		type nodeHeight struct {
+			node   nodeInfo
+			height uint64
+		}
+		var reachable []nodeHeight
+		var unreachable []string
 		for _, n := range nodes {
-			h, err := ethBlockNumber(convergeCtx, n.rpcURL)
+			h, err := queryBlockNumber(convergeCtx, n)
 			if err != nil {
 				fmt.Printf("    [state_root] warning: failed to query block number from %s: %v\n", n.name, err)
+				unreachable = append(unreachable, n.name)
 				continue
 			}
-			heights = append(heights, h)
+			reachable = append(reachable, nodeHeight{node: n, height: h})
+		}
+		unreachableNames = unreachable
+
+		if len(reachable) < 2 {
+			// Not enough responsive nodes to check anything.
+			select {
+			case <-convergeCtx.Done():
+				result.Passed = false
+				result.Message = fmt.Sprintf(
+					"%d/%d nodes unreachable (never responded to RPC during 2m recovery window): %s — cannot evaluate state root consensus",
+					len(unreachable), len(nodes), strings.Join(unreachable, ", "))
+				result.Failures++
+				return result, nil
+			case <-time.After(5 * time.Second):
+				continue
+			}
 		}
 
-		if len(heights) >= len(nodes) {
-			var minH, maxH uint64
-			minH = heights[0]
-			maxH = heights[0]
-			for _, h := range heights[1:] {
-				if h < minH {
-					minH = h
-				}
-				if h > maxH {
-					maxH = h
-				}
+		var minH, maxH uint64
+		minH = reachable[0].height
+		maxH = reachable[0].height
+		for _, nh := range reachable[1:] {
+			if nh.height < minH {
+				minH = nh.height
 			}
-			if maxH-minH <= 5 {
-				commonBlock = minH
-				break
+			if nh.height > maxH {
+				maxH = nh.height
 			}
-			fmt.Printf("    [state_root] waiting for convergence (min=%d max=%d gap=%d)...\n", minH, maxH, maxH-minH)
 		}
+		if maxH-minH <= 5 {
+			commonBlock = minH
+			reachableNodes = make([]nodeInfo, 0, len(reachable))
+			for _, nh := range reachable {
+				reachableNodes = append(reachableNodes, nh.node)
+			}
+			break
+		}
+		fmt.Printf("    [state_root] waiting for convergence across %d reachable nodes (min=%d max=%d gap=%d, %d unreachable)...\n",
+			len(reachable), minH, maxH, maxH-minH, len(unreachable))
 
 		select {
 		case <-convergeCtx.Done():
 			result.Passed = false
-			result.Message = "nodes did not converge to within 5 blocks within 2 minutes after chaos recovery"
+			msg := fmt.Sprintf("reachable nodes did not converge to within 5 blocks within 2 minutes (min=%d max=%d gap=%d)", minH, maxH, maxH-minH)
+			if len(unreachable) > 0 {
+				msg += fmt.Sprintf("; additionally %d/%d nodes were unreachable: %s",
+					len(unreachable), len(nodes), strings.Join(unreachable, ", "))
+			}
+			result.Message = msg
 			result.Failures++
 			return result, nil
 		case <-time.After(5 * time.Second):
 		}
 	}
 
-	fmt.Printf("    [state_root] nodes converged at block %d, checking stateRoot...\n", commonBlock)
+	if len(unreachableNames) > 0 {
+		fmt.Printf("    [state_root] %d/%d nodes unreachable: %s\n", len(unreachableNames), len(nodes), strings.Join(unreachableNames, ", "))
+	}
+	fmt.Printf("    [state_root] %d reachable nodes converged at block %d, checking stateRoot...\n", len(reachableNodes), commonBlock)
 
-	// Query stateRoot at commonBlock from every node
-	stateRoots := make(map[string]string) // rpcURL → stateRoot
-	for _, n := range nodes {
-		sr, err := ethStateRoot(ctx, n.rpcURL, commonBlock)
+	// Query stateRoot at commonBlock from reachable nodes only
+	stateRoots := make(map[string]string)
+	for _, n := range reachableNodes {
+		sr, err := queryStateRoot(ctx, n, commonBlock)
 		if err != nil {
 			result.Passed = false
 			result.Message = fmt.Sprintf("failed to query stateRoot from %s at block %d: %v", n.name, commonBlock, err)
@@ -466,7 +550,23 @@ func (fd *FailureDetector) evaluateStateRootConsensus(ctx context.Context, crite
 
 	if len(divergent) > 0 {
 		result.Passed = false
-		result.Message = fmt.Sprintf("stateRoot divergence at block %d: %s", commonBlock, strings.Join(divergent, "; "))
+		msg := fmt.Sprintf("stateRoot divergence at block %d: %s", commonBlock, strings.Join(divergent, "; "))
+		if len(unreachableNames) > 0 {
+			msg += fmt.Sprintf("; %d nodes were unreachable: %s", len(unreachableNames), strings.Join(unreachableNames, ", "))
+		}
+		result.Message = msg
+		result.Failures++
+		return result, nil
+	}
+
+	// Reachable nodes agree, but flag unreachable nodes as a failure — we can't
+	// confirm consensus if we couldn't query all nodes.
+	if len(unreachableNames) > 0 {
+		result.Passed = false
+		result.Message = fmt.Sprintf(
+			"%d/%d reachable nodes agree on stateRoot %s at block %d, but %d nodes were unreachable and could not be verified: %s",
+			len(reachableNodes), len(nodes), reference, commonBlock,
+			len(unreachableNames), strings.Join(unreachableNames, ", "))
 		result.Failures++
 		return result, nil
 	}
@@ -511,6 +611,45 @@ func ethStateRoot(ctx context.Context, rpcURL string, blockNum uint64) (string, 
 		return "", fmt.Errorf("missing stateRoot in block %s response", blockHex)
 	}
 	return stateRoot, nil
+}
+
+// borIPCPath is the default IPC socket path used by Bor inside containers.
+const borIPCPath = "/var/lib/bor/bor.ipc"
+
+// execIPCBlockNumber queries eth.blockNumber via the Bor IPC socket inside
+// the container. IPC bypasses both the HTTP server and the network stack
+// entirely (Unix domain socket), so it works even when iptables rules are
+// stale or the HTTP RPC is overloaded.
+func (fd *FailureDetector) execIPCBlockNumber(ctx context.Context, containerID string) (uint64, error) {
+	cmd := []string{"bor", "attach", borIPCPath, "--exec", "eth.blockNumber"}
+	out, err := fd.dockerClient.ExecCommand(ctx, containerID, cmd)
+	if err != nil {
+		return 0, fmt.Errorf("IPC eth.blockNumber failed: %w (output: %s)", err, strings.TrimSpace(out))
+	}
+	// bor attach --exec prints the result as a plain decimal number, e.g. "6495\n"
+	trimmed := strings.TrimSpace(out)
+	n, err := strconv.ParseUint(trimmed, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse IPC block number %q: %w", trimmed, err)
+	}
+	return n, nil
+}
+
+// execIPCStateRoot queries the stateRoot at a given block number via the Bor
+// IPC socket. Same bypass as execIPCBlockNumber.
+func (fd *FailureDetector) execIPCStateRoot(ctx context.Context, containerID string, blockNum uint64) (string, error) {
+	jsExpr := fmt.Sprintf("eth.getBlock(%d).stateRoot", blockNum)
+	cmd := []string{"bor", "attach", borIPCPath, "--exec", jsExpr}
+	out, err := fd.dockerClient.ExecCommand(ctx, containerID, cmd)
+	if err != nil {
+		return "", fmt.Errorf("IPC eth.getBlock(%d).stateRoot failed: %w (output: %s)", blockNum, err, strings.TrimSpace(out))
+	}
+	// bor attach --exec prints the result as a quoted hex string, e.g. "\"0xabcd...\"\n"
+	trimmed := strings.Trim(strings.TrimSpace(out), "\"")
+	if trimmed == "" || !strings.HasPrefix(trimmed, "0x") {
+		return "", fmt.Errorf("unexpected IPC stateRoot response: %q", out)
+	}
+	return trimmed, nil
 }
 
 // jsonRPCCall sends a JSON-RPC request and returns the decoded response map.

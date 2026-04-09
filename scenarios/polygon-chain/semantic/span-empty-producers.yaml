@@ -65,7 +65,7 @@ spec:
     - name: span_api_calls_detected
       description: Bor 3 retries span API (confirms it hits the corrupted endpoint)
       type: prometheus
-      query: rate(heimdallv2_bor_api_calls_total{job="l2-el-3-bor-heimdall-v2-validator"}[2m])
+      query: rate(heimdallv2_bor_api_calls_total{job="l2-cl-3-heimdall-v2-bor-validator"}[2m])
       threshold: "> 0"
       critical: false
       during_fault: true
