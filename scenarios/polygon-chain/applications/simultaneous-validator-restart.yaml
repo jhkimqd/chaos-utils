@@ -127,7 +127,7 @@ spec:
     - cometbft_consensus_height
     - cometbft_consensus_validators
     - cometbft_consensus_missing_validators
-    - panoptichain_heimdall_missed_block_proposal
+    - cometbft_consensus_validator_missed_blocks
     - up
     # Slow block & span rotation detection
     - cometbft_consensus_block_interval_seconds_sum

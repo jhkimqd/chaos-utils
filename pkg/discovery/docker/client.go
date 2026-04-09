@@ -132,23 +132,25 @@ func (c *Client) ExecCommand(ctx context.Context, containerID string, cmd []stri
 	}
 	defer resp.Close()
 
-	// Read output
-	output, err := io.ReadAll(resp.Reader)
-	if err != nil {
-		return string(output), fmt.Errorf("failed to read output: %w", err)
+	// Docker exec streams are multiplexed (8-byte header per chunk) when
+	// no TTY is allocated. Use stdcopy.StdCopy to demultiplex into clean output.
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, resp.Reader); err != nil {
+		return stdout.String(), fmt.Errorf("failed to read output: %w", err)
 	}
 
 	// Check exit code
 	inspectResp, err := c.cli.ContainerExecInspect(ctx, execID.ID)
 	if err != nil {
-		return string(output), fmt.Errorf("failed to inspect exec: %w", err)
+		return stdout.String(), fmt.Errorf("failed to inspect exec: %w", err)
 	}
 
 	if inspectResp.ExitCode != 0 {
-		return string(output), fmt.Errorf("command exited with code %d: %s", inspectResp.ExitCode, string(output))
+		combined := stdout.String() + stderr.String()
+		return combined, fmt.Errorf("command exited with code %d: %s", inspectResp.ExitCode, combined)
 	}
 
-	return string(output), nil
+	return stdout.String(), nil
 }
 
 // Helper function to convert types.Container to Service

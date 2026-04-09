@@ -87,7 +87,7 @@ spec:
     - name: chain_lag_bounded
       description: Validator 3 must not fall more than 60 blocks behind during the flood
       type: prometheus
-      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}
+      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - on() chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}
       threshold: "< 60"
       critical: false
 
@@ -97,7 +97,7 @@ spec:
         A large spike followed by no recovery suggests a goroutine leak in the
         fetch path. The threshold of 5000 is generous but catches runaway growth.
       type: prometheus
-      query: go_goroutines{job="l2-el-3-bor-heimdall-v2-validator"}
+      query: go_goroutines{job="l2-cl-3-heimdall-v2-bor-validator"}
       threshold: "< 5000"
       critical: false
 

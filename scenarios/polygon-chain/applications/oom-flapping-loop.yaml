@@ -103,7 +103,7 @@ spec:
         RSS stabilizes after recovery — not climbing toward limit.
         Unbounded growth after restart = GC not aggressive enough (missing GOMEMLIMIT).
       type: prometheus
-      query: process_resident_memory_bytes{job="l2-el-5-bor-heimdall-v2-validator"} / 1024 / 1024
+      query: process_resident_memory_bytes{job="l2-cl-5-heimdall-v2-bor-validator"} / 1024 / 1024
       threshold: "< 1843"
       critical: false
       post_fault_only: true

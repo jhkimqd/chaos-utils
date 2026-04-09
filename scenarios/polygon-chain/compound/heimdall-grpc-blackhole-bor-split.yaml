@@ -129,7 +129,7 @@ spec:
     - name: span_api_degrades
       description: Span API should show degradation on disconnected nodes
       type: prometheus
-      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(0)
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[2m])), 0.001)) or vector(0)
       threshold: "< 0.5"
       critical: false
       during_fault: true
@@ -137,7 +137,7 @@ spec:
     - name: healthy_nodes_span_api_fine
       description: Non-blackholed validators maintain span API access
       type: prometheus
-      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m])), 0.001)) or vector(1)
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-cl-[13578]-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[13578]-heimdall-v2-bor-validator"}[2m])), 0.001)) or vector(1)
       threshold: ">= 0.8"
       critical: true
 
