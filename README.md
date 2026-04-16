@@ -233,7 +233,10 @@ spec:
 - `memory_mb`: Memory to consume in MB
 
 **Disk I/O** (`type: disk_io`):
-- `delay_ms`: I/O delay in milliseconds
+- `io_latency_ms`: I/O delay intensity (dd: controls worker count; dm-delay: exact ms)
+- `target_path`: Filesystem path to target (e.g., `/var/lib/bor/bor/chaindata`)
+- `operation`: `read`, `write`, or `all` (default: `all`, dd method only)
+- `method`: `dd` (default) or `dm-delay` (requires privileged container + dmsetup)
 
 ## Built-in Scenarios
 
@@ -251,7 +254,9 @@ Located in `scenarios/polygon-chain/`:
 | `applications/` | `bor-heimdall-link-isolation.yaml` | 7m | Complete Bor→Heimdall REST isolation (100% loss on port 1317) |
 | `applications/` | `span-rotation-heimdall-stall.yaml` | 10m | Heimdall P2P partition preventing span commitment |
 | `cpu-memory/` | `cpu-starved-validator.yaml` | 8m | Validator under CPU stress |
-| `filesystem/` | `slow-disk-io-validator.yaml` | 8m | Disk I/O latency injection |
+| `disk/` | `disk-fill-exhaustion.yaml` | 8m | Disk space exhaustion (90% fill) |
+| `compound/` | `disk-io-plus-network-latency.yaml` | 10m | Combined disk I/O + network latency |
+| `compound/` | `kill-during-disk-io-delay.yaml` | 8m | SIGKILL during I/O delay (crash recovery) |
 
 ## Prometheus Metrics
 

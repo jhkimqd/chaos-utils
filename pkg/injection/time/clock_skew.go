@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // ClockSkewParams defines parameters for clock skew injection
@@ -52,7 +54,10 @@ func (cw *ClockSkewWrapper) InjectClockSkew(ctx context.Context, targetContainer
 	// Block NTP if requested (prevents time correction)
 	if params.DisableNTP {
 		ntpCmd := []string{"sh", "-c", "iptables -A OUTPUT -p udp --dport 123 -j DROP -m comment --comment chaos-ntp-block 2>/dev/null || true"}
-		_, _ = cw.dockerClient.ExecCommand(ctx, targetContainerID, ntpCmd)
+		_, ntpErr := cw.dockerClient.ExecCommand(ctx, targetContainerID, ntpCmd)
+		if ntpErr != nil {
+			log.Warn().Err(ntpErr).Str("container", targetContainerID[:12]).Msg("failed to block NTP traffic")
+		}
 		fmt.Printf("  NTP traffic blocked\n")
 	}
 
@@ -95,7 +100,10 @@ func (cw *ClockSkewWrapper) RemoveClockSkew(ctx context.Context, targetContainer
 	// Restore NTP if it was blocked
 	if params.DisableNTP {
 		ntpCmd := []string{"sh", "-c", "iptables -D OUTPUT -p udp --dport 123 -j DROP -m comment --comment chaos-ntp-block 2>/dev/null || true"}
-		_, _ = cw.dockerClient.ExecCommand(ctx, targetContainerID, ntpCmd)
+		_, ntpErr := cw.dockerClient.ExecCommand(ctx, targetContainerID, ntpCmd)
+		if ntpErr != nil {
+			log.Warn().Err(ntpErr).Str("container", targetContainerID[:12]).Msg("failed to restore NTP traffic")
+		}
 		fmt.Printf("  NTP traffic restored\n")
 	}
 

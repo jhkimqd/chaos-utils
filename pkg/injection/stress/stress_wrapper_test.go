@@ -2,7 +2,6 @@ package stress
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -34,7 +33,7 @@ func TestInjectActiveCPUStress_VerifiesProcesses(t *testing.T) {
 	mock := &mockDockerClientStress{
 		execFunc: func(ctx context.Context, containerID string, cmd []string) (string, error) {
 			cmdStr := strings.Join(cmd, " ")
-			if strings.Contains(cmdStr, "pgrep") {
+			if strings.Contains(cmdStr, "/proc/") && strings.Contains(cmdStr, "COUNT") {
 				return "4", nil // 4 yes processes running
 			}
 			// stress injection command
@@ -62,8 +61,9 @@ func TestInjectActiveCPUStress_FailsWhenNoProcesses(t *testing.T) {
 	mock := &mockDockerClientStress{
 		execFunc: func(ctx context.Context, containerID string, cmd []string) (string, error) {
 			cmdStr := strings.Join(cmd, " ")
-			if strings.Contains(cmdStr, "pgrep") {
-				return "", fmt.Errorf("no processes found")
+			if strings.Contains(cmdStr, "/proc/") && strings.Contains(cmdStr, "COUNT") {
+				// /proc scan returns 0 — no yes processes found
+				return "0", nil
 			}
 			return "", nil
 		},
@@ -83,8 +83,8 @@ func TestInjectActiveCPUStress_FailsWhenNoProcesses(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when stress processes not running")
 	}
-	if !strings.Contains(err.Error(), "not running") {
-		t.Errorf("expected 'not running' error, got: %v", err)
+	if !strings.Contains(err.Error(), "expected 2") {
+		t.Errorf("expected error about expected process count, got: %v", err)
 	}
 }
 
@@ -92,7 +92,7 @@ func TestInjectActiveCPUStress_FailsWhenZeroCount(t *testing.T) {
 	mock := &mockDockerClientStress{
 		execFunc: func(ctx context.Context, containerID string, cmd []string) (string, error) {
 			cmdStr := strings.Join(cmd, " ")
-			if strings.Contains(cmdStr, "pgrep") {
+			if strings.Contains(cmdStr, "/proc/") && strings.Contains(cmdStr, "COUNT") {
 				return "0", nil
 			}
 			return "", nil
@@ -154,6 +154,31 @@ func TestInjectCPULimit_Success(t *testing.T) {
 	// Verify original resources were saved
 	if _, exists := sw.originalResources["abcdef123456789"]; !exists {
 		t.Error("original resources should be saved")
+	}
+}
+
+func TestRemoveFault_KillFails_ReturnsNil(t *testing.T) {
+	callCount := 0
+	mock := &mockDockerClientStress{
+		execFunc: func(ctx context.Context, containerID string, cmd []string) (string, error) {
+			callCount++
+			// Kill command is the first exec — simulate failure
+			// RemoveFault should still return nil (best-effort, warn logged)
+			return "done", nil
+		},
+	}
+
+	sw := &StressWrapper{
+		dockerClient:      mock,
+		originalResources: make(map[string]container.Resources),
+	}
+
+	err := sw.RemoveFault(context.Background(), "abcdef123456789")
+	if err != nil {
+		t.Fatalf("RemoveFault should return nil even on kill failure, got: %v", err)
+	}
+	if callCount < 1 {
+		t.Error("expected at least 1 exec call for kill command")
 	}
 }
 

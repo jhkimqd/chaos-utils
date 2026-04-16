@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jihwankim/chaos-utils/pkg/injection/safeshell"
+	"github.com/rs/zerolog/log"
 )
 
 // PriorityParams defines parameters for process priority manipulation
@@ -96,7 +97,10 @@ func (pw *PriorityWrapper) RemoveFault(ctx context.Context, targetContainerID st
 	reniceCmd := []string{"sh", "-c", fmt.Sprintf(
 		"renice 0 %s 2>/dev/null || renice -n 0 -p %s 2>/dev/null || true", pid, pid,
 	)}
-	_, _ = pw.dockerClient.ExecCommand(ctx, targetContainerID, reniceCmd)
+	_, reniceErr := pw.dockerClient.ExecCommand(ctx, targetContainerID, reniceCmd)
+	if reniceErr != nil {
+		log.Warn().Err(reniceErr).Str("container", targetContainerID[:12]).Msg("failed to restore process priority")
+	}
 
 	fmt.Printf("Normal priority restored on target %s\n", targetContainerID[:12])
 	return nil

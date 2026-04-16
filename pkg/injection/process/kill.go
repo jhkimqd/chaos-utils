@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jihwankim/chaos-utils/pkg/injection/safeshell"
+	"github.com/rs/zerolog/log"
 )
 
 // KillParams defines parameters for process kill injection
@@ -52,7 +53,10 @@ func (pw *PriorityWrapper) InjectProcessKill(ctx context.Context, targetContaine
 		if i > 0 && params.Interval > 0 {
 			// Sleep between kills
 			sleepCmd := []string{"sleep", fmt.Sprintf("%d", params.Interval)}
-			_, _ = pw.dockerClient.ExecCommand(ctx, targetContainerID, sleepCmd)
+			_, sleepErr := pw.dockerClient.ExecCommand(ctx, targetContainerID, sleepCmd)
+			if sleepErr != nil {
+				log.Warn().Err(sleepErr).Str("container", targetContainerID[:12]).Msg("failed to sleep between kill attempts")
+			}
 		}
 
 		// Find and kill processes matching pattern

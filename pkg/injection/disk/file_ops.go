@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jihwankim/chaos-utils/pkg/injection/safeshell"
+	"github.com/rs/zerolog/log"
 )
 
 // FileDeleteParams defines parameters for file deletion injection
@@ -57,7 +58,10 @@ func (fw *FileOpsWrapper) InjectFileDelete(ctx context.Context, targetContainerI
 	if params.BackupFirst {
 		backupPath := params.TargetPath + ".chaos_backup"
 		backupCmd := []string{"sh", "-c", fmt.Sprintf("cp -a \"%s\" \"%s\" 2>/dev/null || true", params.TargetPath, backupPath)}
-		_, _ = fw.dockerClient.ExecCommand(ctx, targetContainerID, backupCmd)
+		_, backupErr := fw.dockerClient.ExecCommand(ctx, targetContainerID, backupCmd)
+		if backupErr != nil {
+			log.Warn().Err(backupErr).Str("container", targetContainerID[:12]).Str("path", backupPath).Msg("failed to create backup before delete")
+		}
 		fmt.Printf("  Backed up to %s\n", backupPath)
 	}
 
@@ -89,7 +93,10 @@ func (fw *FileOpsWrapper) InjectFileCorrupt(ctx context.Context, targetContainer
 	if params.BackupFirst {
 		backupPath := params.TargetPath + ".chaos_backup"
 		backupCmd := []string{"sh", "-c", fmt.Sprintf("cp -a \"%s\" \"%s\" 2>/dev/null || true", params.TargetPath, backupPath)}
-		_, _ = fw.dockerClient.ExecCommand(ctx, targetContainerID, backupCmd)
+		_, backupErr := fw.dockerClient.ExecCommand(ctx, targetContainerID, backupCmd)
+		if backupErr != nil {
+			log.Warn().Err(backupErr).Str("container", targetContainerID[:12]).Str("path", backupPath).Msg("failed to create backup before corrupt")
+		}
 		fmt.Printf("  Backed up to %s\n", backupPath)
 	}
 

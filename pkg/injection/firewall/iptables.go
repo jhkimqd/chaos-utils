@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // ConnectionDropParams defines parameters for connection drop injection
@@ -91,8 +93,10 @@ func (iw *IptablesWrapper) RemoveFault(ctx context.Context, targetContainerID st
 	}
 
 	for _, cmd := range flushCmds {
-		// Ignore errors - chain might not exist
-		_, _ = iw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+		_, flushErr := iw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+		if flushErr != nil {
+			log.Warn().Err(flushErr).Str("container", targetContainerID[:12]).Strs("cmd", cmd).Msg("failed to flush iptables rule during removal")
+		}
 	}
 
 	fmt.Printf("Connection drop rules removed successfully from target %s\n", targetContainerID[:12])

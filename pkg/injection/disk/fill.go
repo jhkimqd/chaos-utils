@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
 // FillParams defines parameters for disk space fill injection
@@ -110,9 +112,13 @@ func (fw *FillWrapper) RemoveFault(ctx context.Context, targetContainerID string
 	paths, exists := fw.injectedFills[targetContainerID]
 	fw.mu.Unlock()
 	if !exists || len(paths) == 0 {
-		// Fallback: try to remove the default fill file pattern
-		cmd := []string{"sh", "-c", "find / -name 'chaos_fill_data' -delete 2>/dev/null; echo done"}
-		_, _ = fw.dockerClient.ExecCommand(ctx, targetContainerID, cmd)
+		// Fallback: try to remove fill files from common locations only
+		// (avoid dangerous system-wide 'find / -delete')
+		cmd := []string{"sh", "-c", "rm -f /tmp/chaos_fill_data /var/lib/*/chaos_fill_data /root/chaos_fill_data 2>/dev/null; echo done"}
+		_, cleanupErr := fw.dockerClient.ExecCommand(ctx, targetContainerID, cmd)
+		if cleanupErr != nil {
+			log.Warn().Err(cleanupErr).Str("container", targetContainerID[:12]).Msg("failed to remove fallback fill files during cleanup")
+		}
 		return nil
 	}
 

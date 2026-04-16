@@ -42,3 +42,4 @@ config.yaml
 # Development
 .vscode/
 .idea/
+.harness/

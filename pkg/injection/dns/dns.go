@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // DNSParams defines parameters for DNS delay injection
@@ -100,8 +102,10 @@ func (dw *DNSWrapper) RemoveFault(ctx context.Context, targetContainerID string)
 	}
 
 	for _, cmd := range cleanupCmds {
-		// Ignore errors - rules might not exist
-		_, _ = dw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+		_, tcErr := dw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+		if tcErr != nil {
+			log.Warn().Err(tcErr).Str("container", targetContainerID[:12]).Msg("failed to remove tc rules during DNS delay removal")
+		}
 	}
 
 	fmt.Printf("DNS delay removed successfully from target %s\n", targetContainerID[:12])

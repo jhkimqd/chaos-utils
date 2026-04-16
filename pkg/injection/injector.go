@@ -458,7 +458,7 @@ func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault,
 	params := disk.IODelayParams{
 		IOLatencyMs: 200,
 		Operation:   "all",
-		Method:      "dm-delay",
+		Method:      "dd",
 	}
 
 	if fault.Params != nil {
@@ -493,8 +493,7 @@ func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault,
 func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerID string) error {
 	switch faultType {
 	case "network":
-		_ = i.tcInjector.RemoveFault(ctx, containerID)
-		return nil
+		return i.tcInjector.RemoveFault(ctx, containerID)
 	case "container_restart", "container_kill":
 		// Restart and kill don't need removal - containers are already running
 		return nil
@@ -513,7 +512,7 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 		// For now, just return nil - priority will reset on process restart
 		return nil
 	case "disk_io":
-		// Kill background dd processes and clean up stress files
+		// Removes dm-delay mapping if active, otherwise kills dd stress processes
 		return i.diskInjector.RemoveFault(ctx, containerID, disk.IODelayParams{Operation: "all"})
 	case "disk_fill":
 		return i.diskFillInjector.RemoveFault(ctx, containerID)
@@ -1041,7 +1040,10 @@ func (i *Injector) removeCorruptionProxy(ctx context.Context, containerID string
 	cleanupIPT := []string{"sh", "-c",
 		"iptables-save -t nat 2>/dev/null | grep 'chaos-corruption-proxy' | sed 's/^-A /-D /' | " +
 			"while IFS= read -r rule; do iptables -t nat $rule 2>/dev/null; done; echo done"}
-	_, _ = i.sidecarMgr.ExecInSidecar(ctx, containerID, cleanupIPT)
+	_, iptErr := i.sidecarMgr.ExecInSidecar(ctx, containerID, cleanupIPT)
+	if iptErr != nil {
+		log.Warn().Err(iptErr).Str("container", containerID[:12]).Msg("failed to remove corruption-proxy iptables rules")
+	}
 
 	// Kill all corruption-proxy processes and remove temp files.
 	killCmd := []string{"sh", "-c",
@@ -1051,7 +1053,10 @@ func (i *Injector) removeCorruptionProxy(ctx context.Context, containerID string
 			"done; " +
 			"rm -f /tmp/corruption-rules-*.yaml /tmp/corruption-proxy-*.log 2>/dev/null; " +
 			"echo done"}
-	_, _ = i.sidecarMgr.ExecInSidecar(ctx, containerID, killCmd)
+	_, killErr := i.sidecarMgr.ExecInSidecar(ctx, containerID, killCmd)
+	if killErr != nil {
+		log.Warn().Err(killErr).Str("container", containerID[:12]).Msg("failed to kill corruption-proxy processes")
+	}
 
 	fmt.Printf("Corruption proxy removed from target %s\n", containerID[:12])
 	return nil
