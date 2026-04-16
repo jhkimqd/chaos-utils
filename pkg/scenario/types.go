@@ -47,6 +47,28 @@ type ScenarioSpec struct {
 
 	// Execution mode: sequential or parallel
 	ExecutionMode string `yaml:"execution_mode,omitempty"`
+
+	// Preconditions are topology requirements that must hold for the scenario
+	// to be meaningful. Checked after target discovery; the scenario is
+	// skipped with a clear error if unmet, instead of silently targeting a
+	// devnet too small to exercise the intended fault.
+	Preconditions *Preconditions `yaml:"preconditions,omitempty"`
+}
+
+// Preconditions encodes topology requirements for a scenario. A scenario that
+// targets e.g. validator index 5 cannot run meaningfully on a 4-validator
+// devnet; declare MinValidators so the runner fails fast with a helpful
+// message rather than producing confusing "no containers matched" errors
+// downstream.
+type Preconditions struct {
+	// MinValidators requires at least N containers to match ValidatorPattern.
+	// Zero disables the check.
+	MinValidators int `yaml:"min_validators,omitempty"`
+
+	// ValidatorPattern is the regex used to count validators. If empty, the
+	// orchestrator uses its default pattern (Polygon PoS Kurtosis convention:
+	// "l2-cl-[0-9]+-heimdall-v2-bor-validator").
+	ValidatorPattern string `yaml:"validator_pattern,omitempty"`
 }
 
 // Target defines a service or group of services to target

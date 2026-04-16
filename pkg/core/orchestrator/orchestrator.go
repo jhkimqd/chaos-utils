@@ -308,6 +308,13 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 		return o.failTest(result, err)
 	}
 
+	// Topology preconditions: a scenario may require a minimum number of
+	// validators to exercise its fault path meaningfully. Fail fast here,
+	// before we start creating sidecars, so the operator gets a clear error.
+	if err = o.executePreconditions(ctx); err != nil {
+		return o.failTest(result, err)
+	}
+
 	// Check for stop
 	if o.stopRequested.Load() {
 		return o.failTest(result, fmt.Errorf("stopped before prepare"))
@@ -530,6 +537,62 @@ func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 	}
 
 	fmt.Printf("✓ Discovered %d target(s)\n", len(o.targets))
+	return nil
+}
+
+// defaultValidatorPattern is the Polygon PoS Kurtosis naming convention for
+// Heimdall consensus-layer validators. Used as the fallback when a scenario
+// declares Preconditions without an explicit ValidatorPattern.
+const defaultValidatorPattern = `l2-cl-[0-9]+-heimdall-v2-bor-validator`
+
+// executePreconditions enforces topology requirements declared in the
+// scenario. Runs after target discovery and before sidecar preparation.
+// A no-op when the scenario does not declare any preconditions.
+func (o *Orchestrator) executePreconditions(ctx context.Context) error {
+	pre := o.scenario.Spec.Preconditions
+	if pre == nil || pre.MinValidators <= 0 {
+		return nil
+	}
+
+	pattern := pre.ValidatorPattern
+	if pattern == "" {
+		pattern = defaultValidatorPattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("preconditions: invalid validator_pattern %q: %w", pattern, err)
+	}
+
+	containers, err := o.dockerClient.ContainerList(ctx, types.ContainerListOptions{})
+	if err != nil {
+		return fmt.Errorf("preconditions: failed to list containers: %w", err)
+	}
+
+	// Deduplicate by container ID so a container with multiple names is
+	// counted once.
+	matched := make(map[string]string)
+	for _, c := range containers {
+		for _, n := range c.Names {
+			if len(n) > 0 && n[0] == '/' {
+				n = n[1:]
+			}
+			if re.MatchString(n) {
+				matched[c.ID] = n
+				break
+			}
+		}
+	}
+
+	if len(matched) < pre.MinValidators {
+		return fmt.Errorf(
+			"preconditions: scenario requires at least %d validators (matching %q), "+
+				"but only %d are deployed — expand the devnet or run a scenario with lower topology requirements",
+			pre.MinValidators, pattern, len(matched),
+		)
+	}
+
+	fmt.Printf("✓ Preconditions satisfied: %d validator(s) found (min: %d)\n",
+		len(matched), pre.MinValidators)
 	return nil
 }
 
