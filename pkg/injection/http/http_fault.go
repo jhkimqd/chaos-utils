@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
 // HTTPFaultParams defines parameters for HTTP fault injection
@@ -184,7 +186,10 @@ func (hw *HTTPFaultWrapper) RemoveFault(ctx context.Context, targetContainerID s
 	}
 
 	for _, cmd := range cleanupCmds {
-		_, _ = hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+		_, iptErr := hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+		if iptErr != nil {
+			log.Warn().Err(iptErr).Str("container", targetContainerID[:12]).Int("port", params.TargetPort).Msg("failed to remove iptables redirect during HTTP fault removal")
+		}
 	}
 
 	// Stop Envoy using /proc scanning (sidecar is Ubuntu so pkill exists, but
@@ -194,7 +199,10 @@ func (hw *HTTPFaultWrapper) RemoveFault(ctx context.Context, targetContainerID s
 			"if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'envoy-chaos-%d'; then kill -9 $PID 2>/dev/null; fi; done; "+
 			"rm -f /tmp/envoy-chaos-%d.yaml /tmp/envoy-chaos-%d.log",
 		params.TargetPort, params.TargetPort, params.TargetPort)}
-	_, _ = hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, killCmd)
+	_, envoyErr := hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, killCmd)
+	if envoyErr != nil {
+		log.Warn().Err(envoyErr).Str("container", targetContainerID[:12]).Int("port", params.TargetPort).Msg("failed to kill Envoy process during HTTP fault removal")
+	}
 
 	fmt.Printf("HTTP fault injection removed from target %s\n", targetContainerID[:12])
 	return nil
@@ -214,7 +222,10 @@ func (hw *HTTPFaultWrapper) RemoveAllFaults(ctx context.Context, targetContainer
 					"while iptables -t nat -D PREROUTING -m comment --comment chaos-http-fault -j REDIRECT 2>/dev/null; do true; done; " +
 					"rm -f /tmp/envoy-chaos-*.yaml /tmp/envoy-chaos-*.log 2>/dev/null; " +
 					"echo done"}
-			_, _ = hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, killCmd)
+			_, fallbackErr := hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, killCmd)
+			if fallbackErr != nil {
+				log.Warn().Err(fallbackErr).Str("container", targetContainerID[:12]).Msg("failed to kill Envoy processes during fallback HTTP fault removal")
+			}
 		}
 		return nil
 	}

@@ -3,7 +3,7 @@ kind: ChaosScenario
 metadata:
   name: kill-during-disk-io-delay
   description: >
-    Compound scenario combining Chaos Mesh IOChaos with Gremlin Process Killer.
+    Compound scenario: disk I/O contention + SIGKILL.
     First applies disk I/O delay on validators to slow state writes, then kills
     them mid-operation. This is the worst-case for database integrity:
     - Slow I/O extends the window during which partial writes exist

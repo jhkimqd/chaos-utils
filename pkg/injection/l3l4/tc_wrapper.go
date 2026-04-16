@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // TCWrapper handles all network fault injection using tc directly.
@@ -53,7 +55,10 @@ func (tw *TCWrapper) RemoveFault(ctx context.Context, targetContainerID string) 
 	fmt.Printf("Removing tc rules from target %s\n", targetContainerID[:12])
 
 	cmd := []string{"tc", "qdisc", "del", "dev", "eth0", "root"}
-	_, _ = tw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+	_, tcErr := tw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+	if tcErr != nil {
+		log.Warn().Err(tcErr).Str("container", targetContainerID[:12]).Msg("failed to remove tc qdisc during fault removal")
+	}
 
 	fmt.Printf("TC rules removed successfully from target %s\n", targetContainerID[:12])
 	return nil
@@ -74,7 +79,10 @@ func (tw *TCWrapper) clearRules(ctx context.Context, targetContainerID string, d
 		device = "eth0"
 	}
 	cmd := []string{"tc", "qdisc", "del", "dev", device, "root"}
-	_, _ = tw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+	_, clearErr := tw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
+	if clearErr != nil {
+		log.Warn().Err(clearErr).Str("container", targetContainerID[:12]).Str("device", device).Msg("failed to clear tc rules before injection")
+	}
 }
 
 // injectWholeDevice applies netem directly as the root qdisc — affects all traffic on the device.

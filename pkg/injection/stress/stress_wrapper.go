@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/rs/zerolog/log"
 )
 
 // StressParams defines parameters for CPU/memory stress injection
@@ -262,7 +263,10 @@ func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID stri
 		rm -f /dev/shm/mem-stress-fill /tmp/mem-stress-fill 2>/dev/null
 		echo done
 	`}
-	_, _ = sw.dockerClient.ExecCommand(ctx, targetContainerID, killCmd)
+	_, killErr := sw.dockerClient.ExecCommand(ctx, targetContainerID, killCmd)
+	if killErr != nil {
+		log.Warn().Err(killErr).Str("container", targetContainerID[:12]).Msg("failed to kill stress processes during removal")
+	}
 
 	// Restore original resource limits (for "limit" method)
 	sw.mu.Lock()
