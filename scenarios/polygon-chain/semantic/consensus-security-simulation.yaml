@@ -1,12 +1,12 @@
 apiVersion: chaos.polygon.io/v1
 kind: ChaosScenario
 metadata:
-  name: consensus-security-simulation-6val
+  name: consensus-security-simulation
   description: >
-    Full consensus-layer security simulation on a 6-validator topology using
-    stock images and Go corruption proxy semantic corruption. Corrupts Bor RPC
-    responses on two validators so Heimdall builds incorrect vote extensions,
-    testing whether the consensus pipeline validates and rejects malicious data.
+    Full consensus-layer security simulation using stock images and Go
+    corruption proxy semantic corruption. Corrupts Bor RPC responses on
+    two validators so Heimdall builds incorrect vote extensions, testing
+    whether the consensus pipeline validates and rejects malicious data.
 
     Validator 5: combined corruption (block hashes + TDs + author errors)
       - Wrong block hashes cause milestone hash divergence
@@ -14,12 +14,16 @@ metadata:
     Validator 6: TD divergence only
       - Inflated totalDifficulty fragments the milestone majority vote
 
-    VP math: 4 honest (40000 VP) vs 2 corrupted (20000 VP).
-  tags: [semantic, consensus-security, ve-corruption, 6val, application-level, critical-severity]
+    Requires at least 6 validators so the 2 corrupted nodes remain a
+    minority and honest quorum (>2/3) is maintained.
+  tags: [semantic, consensus-security, ve-corruption, application-level, critical-severity]
   author: DevTools
-  version: "0.3.0"
+  version: "0.4.0"
 
 spec:
+  preconditions:
+    min_validators: 6
+
   targets:
     # Validator 5: combo corruption (hashes + TD + author)
     - selector:
@@ -133,7 +137,7 @@ spec:
       during_fault: true
 
     - name: honest_validators_producing
-      description: Validators 1-4 (honest) produce blocks normally
+      description: Non-affected validators produce blocks normally
       type: prometheus
       query: min(rate(chain_head_block{job=~"l2-el-[1-4]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"

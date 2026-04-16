@@ -1,7 +1,7 @@
 # Semantic Chaos Testing — 8 validators + 2 RPC nodes
 #
 # General-purpose topology for all chaos-utils semantic scenarios including
-# buffer-overflow, phuket analogs, and Heimdall REST / Bor RPC corruption.
+# buffer-overflow simulations and Heimdall REST / Bor RPC corruption.
 # All images are stock — no custom builds required.
 #
 # 8 validators allows corrupting up to 3 while keeping > 2/3 quorum (5/8).
@@ -13,29 +13,23 @@
 #     /path/to/kurtosis-pos
 
 polygon_pos_package:
-  network_params:
-    cl_phuket_hardfork_height: 256
   participants:
     - kind: validator
       count: 8
       el_bor_produce_witness: true
       cl_type: heimdall-v2
-      cl_phuket_enabled: true
       el_type: bor
-      el_image: 0xpolygon/bor:2.7.0
 
     - kind: rpc
       count: 1
       el_bor_sync_with_witness: true
       cl_type: heimdall-v2
       el_type: bor
-      el_image: 0xpolygon/bor:2.7.0
 
     - kind: rpc
       count: 1
       cl_type: heimdall-v2
       el_type: erigon
-      el_image: 0xpolygon/erigon:v3.5.0
 
   additional_services:
     - bridge_spammer

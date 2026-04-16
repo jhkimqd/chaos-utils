@@ -106,8 +106,8 @@ jobs:
             if [[ -n "$erigon_tag" && "$erigon_tag" != "null" ]]; then
               echo "erigon-image=0xpolygon/erigon:${erigon_tag}" >> "$GITHUB_OUTPUT"
             else
-              echo "::warning::Failed to fetch erigon release, using 'v3.5.0'."
-              echo "erigon-image=0xpolygon/erigon:v3.5.0" >> "$GITHUB_OUTPUT"
+              echo "::warning::Failed to fetch erigon release, using 'latest'."
+              echo "erigon-image=0xpolygon/erigon:latest" >> "$GITHUB_OUTPUT"
             fi
           fi
 

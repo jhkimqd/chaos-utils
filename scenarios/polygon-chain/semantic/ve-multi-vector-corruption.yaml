@@ -24,6 +24,9 @@ metadata:
   version: "0.2.0"
 
 spec:
+  preconditions:
+    min_validators: 6
+
   targets:
     # Validator 2: combo corruption (hash-corrupted + TD-divergent simultaneously)
     - selector:
@@ -44,7 +47,7 @@ spec:
   cooldown: 2m
 
   faults:
-    - phase: phuket_combo_bor_2
+    - phase: multi_vector_bor_2
       description: Multi-vector corruption on Bor 2 (hashes + TD + author)
       target: bor_2
       type: corruption_proxy
@@ -68,7 +71,7 @@ spec:
             operations:
               - type: inject_error
 
-    - phase: phuket_combo_bor_5
+    - phase: multi_vector_bor_5
       description: Multi-vector corruption on Bor 5 (hashes + TD + author)
       target: bor_5
       type: corruption_proxy
