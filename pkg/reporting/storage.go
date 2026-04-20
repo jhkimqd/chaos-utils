@@ -116,22 +116,6 @@ func (s *Storage) ListReports() ([]ReportSummary, error) {
 	return summaries, nil
 }
 
-// FindReportByTestID finds a report by test ID
-func (s *Storage) FindReportByTestID(testID string) (*TestReport, error) {
-	summaries, err := s.ListReports()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, summary := range summaries {
-		if summary.TestID == testID {
-			return s.LoadReport(summary.Filepath)
-		}
-	}
-
-	return nil, fmt.Errorf("report not found for test ID: %s", testID)
-}
-
 // cleanupOldReports removes old report files, keeping only the last N
 func (s *Storage) cleanupOldReports() error {
 	summaries, err := s.ListReports()
@@ -154,11 +138,6 @@ func (s *Storage) cleanupOldReports() error {
 	}
 
 	return nil
-}
-
-// GetOutputDir returns the output directory path
-func (s *Storage) GetOutputDir() string {
-	return s.outputDir
 }
 
 // ReportSummary contains a summary of a test report

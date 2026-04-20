@@ -11,7 +11,6 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -47,25 +46,6 @@ func (c *Client) GetClient() *client.Client {
 	return c.cli
 }
 
-// GetContainerByName finds a container by name
-func (c *Client) GetContainerByName(ctx context.Context, name string) (*discovery.Service, error) {
-	containers, err := c.cli.ContainerList(ctx, types.ContainerListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	for _, ctr := range containers {
-		for _, ctrName := range ctr.Names {
-			// Docker adds '/' prefix to container names
-			if ctrName == "/"+name || ctrName == name {
-				return c.containerToService(ctx, ctr)
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("container not found: %s", name)
-}
-
 // GetContainerByID finds a container by ID
 func (c *Client) GetContainerByID(ctx context.Context, id string) (*discovery.Service, error) {
 	ctr, err := c.cli.ContainerInspect(ctx, id)
@@ -74,31 +54,6 @@ func (c *Client) GetContainerByID(ctx context.Context, id string) (*discovery.Se
 	}
 
 	return c.inspectToService(ctr)
-}
-
-// GetContainersByLabel finds containers matching label filters
-func (c *Client) GetContainersByLabel(ctx context.Context, labels map[string]string) ([]*discovery.Service, error) {
-	f := buildLabelFilters(labels)
-
-	containers, err := c.cli.ContainerList(ctx, types.ContainerListOptions{
-		Filters: f,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	services := make([]*discovery.Service, 0, len(containers))
-	for _, ctr := range containers {
-		svc, err := c.containerToService(ctx, ctr)
-		if err != nil {
-			// Log warning but continue
-			fmt.Printf("Warning: failed to convert container %s: %v\n", ctr.ID[:12], err)
-			continue
-		}
-		services = append(services, svc)
-	}
-
-	return services, nil
 }
 
 // GetContainerPID gets the PID of a container
@@ -151,17 +106,6 @@ func (c *Client) ExecCommand(ctx context.Context, containerID string, cmd []stri
 	}
 
 	return stdout.String(), nil
-}
-
-// Helper function to convert types.Container to Service
-func (c *Client) containerToService(ctx context.Context, ctr types.Container) (*discovery.Service, error) {
-	// Get full container details
-	inspectData, err := c.cli.ContainerInspect(ctx, ctr.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect container: %w", err)
-	}
-
-	return c.inspectToService(inspectData)
 }
 
 // Helper function to convert inspect data to Service
@@ -313,15 +257,3 @@ func (c *Client) ContainerUpdate(ctx context.Context, containerID string, update
 	return c.cli.ContainerUpdate(ctx, containerID, updateConfig)
 }
 
-// Helper to build Docker API filters from label map
-func buildLabelFilters(labels map[string]string) filters.Args {
-	f := filters.NewArgs()
-	for key, value := range labels {
-		if value == "" {
-			f.Add("label", key)
-		} else {
-			f.Add("label", fmt.Sprintf("%s=%s", key, value))
-		}
-	}
-	return f
-}

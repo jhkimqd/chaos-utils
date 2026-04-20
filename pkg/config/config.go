@@ -19,7 +19,6 @@ type Config struct {
 	Reporting  ReportingConfig  `yaml:"reporting"`
 	Emergency  EmergencyConfig  `yaml:"emergency"`
 	Execution  ExecutionConfig  `yaml:"execution"`
-	Safety     SafetyConfig     `yaml:"safety"`
 }
 
 // FrameworkConfig contains general framework settings
@@ -37,7 +36,6 @@ type KurtosisConfig struct {
 // DockerConfig contains Docker settings for sidecar management
 type DockerConfig struct {
 	SidecarImage string `yaml:"sidecar_image"`
-	PullPolicy   string `yaml:"pull_policy"`
 }
 
 // PrometheusConfig contains Prometheus connection settings
@@ -49,29 +47,19 @@ type PrometheusConfig struct {
 
 // ReportingConfig contains reporting and output settings
 type ReportingConfig struct {
-	OutputDir string   `yaml:"output_dir"`
-	KeepLastN int      `yaml:"keep_last_n"`
-	Formats   []string `yaml:"formats"`
+	OutputDir string `yaml:"output_dir"`
+	KeepLastN int    `yaml:"keep_last_n"`
 }
 
 // EmergencyConfig contains emergency stop settings
 type EmergencyConfig struct {
-	StopFile           string        `yaml:"stop_file"`
-	AutoCleanupTimeout time.Duration `yaml:"auto_cleanup_timeout"`
+	StopFile string `yaml:"stop_file"`
 }
 
 // ExecutionConfig contains test execution settings
 type ExecutionConfig struct {
-	DefaultMode         string        `yaml:"default_mode"`
-	DefaultWarmup       time.Duration `yaml:"default_warmup"`
-	DefaultCooldown     time.Duration `yaml:"default_cooldown"`
-	MaxConcurrentFaults int           `yaml:"max_concurrent_faults"`
-}
-
-// SafetyConfig contains safety limits
-type SafetyConfig struct {
-	MaxDuration         time.Duration `yaml:"max_duration"`
-	RequireConfirmation bool          `yaml:"require_confirmation"`
+	DefaultWarmup   time.Duration `yaml:"default_warmup"`
+	DefaultCooldown time.Duration `yaml:"default_cooldown"`
 }
 
 // DefaultConfig returns a default configuration
@@ -87,7 +75,6 @@ func DefaultConfig() *Config {
 		},
 		Docker: DockerConfig{
 			SidecarImage: "jhkimqd/chaos-utils:latest",
-			PullPolicy:   "if_not_present",
 		},
 		Prometheus: PrometheusConfig{
 			URL:             "http://localhost:9090",
@@ -97,21 +84,13 @@ func DefaultConfig() *Config {
 		Reporting: ReportingConfig{
 			OutputDir: "./reports",
 			KeepLastN: 50,
-			Formats:   []string{"json", "html"},
 		},
 		Emergency: EmergencyConfig{
-			StopFile:           "/tmp/chaos-emergency-stop",
-			AutoCleanupTimeout: 5 * time.Minute,
+			StopFile: "/tmp/chaos-emergency-stop",
 		},
 		Execution: ExecutionConfig{
-			DefaultMode:         "sequential",
-			DefaultWarmup:       30 * time.Second,
-			DefaultCooldown:     30 * time.Second,
-			MaxConcurrentFaults: 5,
-		},
-		Safety: SafetyConfig{
-			MaxDuration:         1 * time.Hour,
-			RequireConfirmation: true,
+			DefaultWarmup:   30 * time.Second,
+			DefaultCooldown: 30 * time.Second,
 		},
 	}
 }
@@ -201,40 +180,30 @@ func DiscoverHeimdallEndpoint(enclaveName string) (string, error) {
 
 // Load loads configuration from a YAML file
 func Load(path string) (*Config, error) {
-	// Start with defaults
 	cfg := DefaultConfig()
 
-	// If no path provided, look for config.yaml in current directory
 	if path == "" {
 		path = "config.yaml"
 	}
 
-	// Check if file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// Return default config if file doesn't exist
 		return cfg, nil
 	}
 
-	// Read file
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Check if PROMETHEUS_URL environment variable is set
-	prometheusURLEnvSet := os.Getenv("PROMETHEUS_URL") != ""
 	prometheusURLEnv := os.Getenv("PROMETHEUS_URL")
-
-	// Expand environment variables in the YAML content
 	expandedData := []byte(os.ExpandEnv(string(data)))
 
-	// Parse YAML
 	if err := yaml.Unmarshal(expandedData, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Apply PROMETHEUS_URL env var if set (takes priority over config file)
-	if prometheusURLEnvSet {
+	// PROMETHEUS_URL env var takes priority over config file
+	if prometheusURLEnv != "" {
 		cfg.Prometheus.URL = prometheusURLEnv
 	}
 
@@ -267,10 +236,6 @@ func (c *Config) Validate() error {
 
 	if c.Reporting.OutputDir == "" {
 		return fmt.Errorf("reporting.output_dir is required")
-	}
-
-	if c.Execution.MaxConcurrentFaults < 1 {
-		return fmt.Errorf("execution.max_concurrent_faults must be at least 1")
 	}
 
 	return nil

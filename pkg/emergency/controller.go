@@ -13,7 +13,6 @@ import (
 // Controller manages emergency stop functionality
 type Controller struct {
 	stopFile       string
-	stopCh         chan struct{}
 	stopped        bool
 	mutex          sync.RWMutex
 	callbacks      []func()
@@ -45,7 +44,6 @@ func New(config Config) *Controller {
 
 	return &Controller{
 		stopFile:       config.StopFile,
-		stopCh:         make(chan struct{}),
 		callbacks:      make([]func(), 0),
 		pollInterval:   config.PollInterval,
 		signalHandlers: config.EnableSignalHandlers,
@@ -115,7 +113,6 @@ func (c *Controller) triggerStop(reason string) {
 	}
 
 	c.stopped = true
-	close(c.stopCh)
 
 	fmt.Printf("🚨 EMERGENCY STOP TRIGGERED: %s\n", reason)
 
@@ -126,56 +123,9 @@ func (c *Controller) triggerStop(reason string) {
 	}
 }
 
-// Stop manually triggers an emergency stop
-func (c *Controller) Stop(reason string) {
-	c.triggerStop(reason)
-}
-
-// IsStopped returns true if emergency stop has been triggered
-func (c *Controller) IsStopped() bool {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	return c.stopped
-}
-
-// StopChannel returns a channel that closes when stop is triggered
-func (c *Controller) StopChannel() <-chan struct{} {
-	return c.stopCh
-}
-
 // OnStop registers a callback to execute when stop is triggered
 func (c *Controller) OnStop(callback func()) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.callbacks = append(c.callbacks, callback)
-}
-
-// CreateStopFile creates the emergency stop file
-func (c *Controller) CreateStopFile() error {
-	f, err := os.Create(c.stopFile)
-	if err != nil {
-		return fmt.Errorf("failed to create stop file: %w", err)
-	}
-	defer f.Close()
-
-	_, err = f.WriteString(fmt.Sprintf("Emergency stop requested at %s\n", time.Now().Format(time.RFC3339)))
-	if err != nil {
-		return fmt.Errorf("failed to write to stop file: %w", err)
-	}
-
-	return nil
-}
-
-// RemoveStopFile removes the emergency stop file
-func (c *Controller) RemoveStopFile() error {
-	err := os.Remove(c.stopFile)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove stop file: %w", err)
-	}
-	return nil
-}
-
-// GetStopFilePath returns the path to the stop file
-func (c *Controller) GetStopFilePath() string {
-	return c.stopFile
 }
