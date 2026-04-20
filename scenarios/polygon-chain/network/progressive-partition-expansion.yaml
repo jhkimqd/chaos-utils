@@ -65,7 +65,10 @@ spec:
 
   duration: 4m
   warmup: 30s
-  cooldown: 1m
+  # 2m cooldown: at TEARDOWN three validators heal simultaneously, each needing
+  # peer reconnect + chain-sync of ~4m of missed blocks. peer_count_recovers
+  # (> 3 peers) and chain_head_converges (< 50 block gap) both need this margin.
+  cooldown: 2m
 
   faults:
     # Phase 1 (t=0): isolate validator 3

@@ -88,7 +88,10 @@ spec:
 
   duration: 3m
   warmup: 30s
-  cooldown: 1m
+  # 2m cooldown: phase 4 pause (SIGSTOP) ends at t=195s — only 15s before the
+  # 3m duration ends. Two paused nodes need restart + peer reconnect; killed
+  # nodes from phase 3 still catching up. 1m left state_root_consensus racing.
+  cooldown: 2m
 
   faults:
     # ============ PHASE 1 (t=0): NETWORK LATENCY ============

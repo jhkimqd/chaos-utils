@@ -10,7 +10,11 @@ metadata:
     boundaries (span=128), so fork + span commit + state sync collide.
 
     IMPORTANT: Deploy a fresh devnet and start this scenario before block 200.
-    At 1s/block the 8-minute duration covers blocks ~120 to ~600.
+    At 1s/block the 3-minute fault window covers ~180 blocks, hitting the
+    rio (256), madhugiri (320), and madhugiriPro (384) activations when
+    started near block 200. Later forks (dandeli/lisovo/lisovoPro/giugliano)
+    are exercised by the post-fault convergence checks rather than during
+    the fault itself.
 
     Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, fork-transition, sprint, span, collision, high-severity]
@@ -32,7 +36,12 @@ spec:
 
   duration: 3m
   warmup: 20s
-  cooldown: 1m
+  # 2m cooldown matches sibling 3m-fault scenarios (span-boundary-partition,
+  # validator-exit-during-checkpoint). After a 3m latency+loss window on bor
+  # P2P + heimdall CometBFT, the degraded validator must TCP-reconnect, refresh
+  # its peerstore, and chain-sync the gap before state_root_consensus evaluates.
+  # 1m left "chain out of sync" milestone errors still firing during detect.
+  cooldown: 2m
 
   faults:
     - phase: degrade_bor_2
@@ -69,7 +78,11 @@ spec:
       query: >
         max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
         - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
-      threshold: "< 30"
+      # < 50 matches span-boundary-partition (same query pattern, same fault
+      # duration). 3m of 200ms latency + 20% loss leaves the degraded validator
+      # tens of blocks behind even after the cooldown — < 30 was tighter than
+      # the recovery window allows and produced false-positive failures.
+      threshold: "< 50"
       critical: true
       post_fault_only: true
 

@@ -7,8 +7,10 @@ metadata:
     partitioned validator misses fork activation while isolated. After
     heal, it must accept majority post-fork blocks without consensus errors.
 
-    Deploy fresh devnet and run before block 200. At 1s/block the 8-minute
-    duration covers rio=256, madhugiri=320, madhugiriPro=384, dandeli=448.
+    Deploy fresh devnet and run before block 200. At 1s/block the 3-minute
+    fault window covers ~180 blocks; starting near block 200 hits rio (256),
+    madhugiri (320), and madhugiriPro (384). Later forks are exercised by the
+    post-fault sync check (partitioned_validator_resync expects > 448).
 
     Target code paths:
     - params/forks/ — fork activation by block number
@@ -35,7 +37,10 @@ spec:
 
   duration: 3m
   warmup: 20s
-  cooldown: 1m
+  # 2m cooldown matches sibling 3m-fault partition scenarios. After full P2P drop
+  # for 3m, the partitioned validator must re-establish peers and chain-sync the
+  # gap before partitioned_validator_resync and chain_head_converges evaluate.
+  cooldown: 2m
 
   faults:
     - phase: partition_bor_1

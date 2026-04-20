@@ -44,7 +44,10 @@ spec:
 
   duration: 3m
   warmup: 30s
-  cooldown: 1m
+  # 2m cooldown matches sibling 3m-fault partition scenarios. After 3m of full
+  # P2P drop, the isolated validator must re-establish peers and chain-sync the
+  # gap before isolated_node_recovers and chain_head_converges evaluate.
+  cooldown: 2m
 
   faults:
     - phase: isolate_bor_6
