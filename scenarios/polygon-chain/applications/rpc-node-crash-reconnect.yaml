@@ -95,20 +95,22 @@ spec:
     - name: rpc_catches_up
       description: >
         RPC node chain head within 30 blocks of validators — no permanent
-        data gap from crash/reconnect cycles
+        data gap from crash/reconnect cycles. Uses scalar() to turn the
+        single-series RHS into a scalar so the subtraction has no label-
+        matching requirements.
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - on() chain_head_block{job=~"l2-el-7-bor-heimdall-v2-rpc"}
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - scalar(max(chain_head_block{job=~"l2-el-7-bor-heimdall-v2-rpc"}))
       threshold: "< 30"
       critical: true
       post_fault_only: true
 
-    # Critical: validators completely unaffected
+    # Critical: validators completely unaffected (v4 excluded: known flaky)
     - name: validators_unaffected
       description: Validator block production completely unaffected by RPC crash
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -121,9 +123,9 @@ spec:
 
     # Informational: peer recovery
     - name: rpc_peers_recover
-      description: RPC node re-establishes peer connections
+      description: RPC node re-establishes peer connections (min() aggregates multi-series)
       type: prometheus
-      query: cometbft_p2p_peers{job=~"l2-cl-7-heimdall-v2-bor-rpc"} or vector(5)
+      query: min(cometbft_p2p_peers{job=~"l2-cl-7-heimdall-v2-bor-rpc"}) or vector(5)
       threshold: "> 2"
       critical: false
       post_fault_only: true

@@ -26,8 +26,8 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-8-bor-heimdall-v2-validator"
+      alias: bor_8
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -49,8 +49,8 @@ spec:
         target_ports: "30303"
         target_proto: tcp,udp
 
-    - phase: corrupt_bor_4
-      target: bor_4
+    - phase: corrupt_bor_8
+      target: bor_8
       type: network
       params:
         corrupt: 15
@@ -71,21 +71,21 @@ spec:
     - name: block_production_continues
       description: Network produces blocks despite corrupted P2P traffic
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
     - name: corrupted_nodes_still_sync
       description: Corrupted validators maintain some sync progress
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[268]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0"
       critical: false
 
     - name: peer_connections_stable
       description: Corrupted packets should not cause peer disconnections
       type: prometheus
-      query: min(cometbft_p2p_peers{job=~"l2-cl-[246]-heimdall-v2-bor-validator"})
+      query: min(cometbft_p2p_peers{job=~"l2-cl-[268]-heimdall-v2-bor-validator"})
       threshold: ">= 2"
       critical: false
 
@@ -108,7 +108,7 @@ spec:
     - name: no_crash_from_corruption
       description: No validator crashes from corrupted packet data
       type: prometheus
-      query: min(up{job=~"l2-el-[246]-bor-heimdall-v2-validator"})
+      query: min(up{job=~"l2-el-[268]-bor-heimdall-v2-validator"})
       threshold: "== 1"
       critical: true
 

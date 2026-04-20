@@ -20,7 +20,7 @@ metadata:
     Note: duration must exceed span length (128s). 3-minute fault guarantees
     crossing at least 1 span boundary regardless of start offset within span.
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, span, partition, cache-divergence, high-severity]
   author: DevTools
   version: "0.1.0"

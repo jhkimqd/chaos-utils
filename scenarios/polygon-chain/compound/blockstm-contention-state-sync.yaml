@@ -13,7 +13,7 @@ metadata:
     - core/parallel_state_processor.go:95-151 — state sync in BlockSTM
     - core/blockstm/mvhashmap.go:132 — panic on incarnation order violation
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, blockstm, contention, state-sync, parallel-execution]
   author: DevTools
   version: "0.1.0"

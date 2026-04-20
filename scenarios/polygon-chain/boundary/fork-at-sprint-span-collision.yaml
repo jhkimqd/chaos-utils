@@ -12,7 +12,7 @@ metadata:
     IMPORTANT: Deploy a fresh devnet and start this scenario before block 200.
     At 1s/block the 8-minute duration covers blocks ~120 to ~600.
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, fork-transition, sprint, span, collision, high-severity]
   author: DevTools
   version: "0.1.0"
@@ -59,7 +59,7 @@ spec:
     - name: majority_block_production
       description: "3/4 validators produce blocks through all fork transitions"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[135678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 

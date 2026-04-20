@@ -1,0 +1,117 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-bug-bounty-026-wit-dispatcher-double-close
+  description: >
+    Best-effort reproduction of BOR-2026-04-16-026 (wit dispatcher
+    double-close panic). eth/protocols/wit/dispatcher.go:65 calls
+    `close(r.cancel)` without the double-close select guard that the
+    eth dispatcher at eth/protocols/eth/dispatcher.go:80-87 has. When
+    `Request.Close()` is invoked twice on the same request (once by
+    peer-leave handler, once by a late response), the second close
+    panics with "close of closed channel".
+
+    CAVEAT — triggering this reliably needs a wit-speaking chaos peer
+    that can accept a GetBlockWitness, delay, and then disconnect
+    mid-response. Current chaos-peer advertises only eth/68,69 and
+    will never be asked for a witness. This scenario uses real-peer
+    churn instead: SIGKILL a validator while witness sync traffic is
+    ongoing, then quickly restart it, and hope the timing window
+    races a Close() with a late response.
+
+    Reproduction rate expected to be low on this path. Reported rate
+    MUST be honest; we do not inflate to 7/10 if reality is lower.
+
+    Observable signals (either is sufficient per trial):
+    1. PRESENCE of the log line "close of closed channel" on any
+       faulted bor container during the trial window. This is the
+       primary signal — scenario asserts ABSENCE with `critical:
+       false` so each trial still runs to completion, and the
+       harness counts "the absence check failed" as a repro hit.
+    2. Docker container RestartCount delta > (# SIGKILLs injected)
+       on a faulted container. If bor panics it exits non-zero and
+       the container-proc-manager restarts it, bumping RestartCount
+       beyond what our intentional kills caused. Captured host-side
+       by the trial runner harness.
+
+    Cluster: 3 validators (1,2,3) + 1 RPC (4). SIGKILL validator 2
+    only — keeps validator 1+3 as quorum. Two SIGKILL cycles.
+
+    STATUS: DOCUMENTED-ONLY (2026-04-17). Reclassified by user; no
+    trial run was executed. Reliable trigger requires a wit-protocol-
+    speaking chaos-peer (accepts GetBlockWitness, delays response,
+    disconnects) which does not yet exist in chaos-utils. Finding is
+    already cross-validated 2/2 via direct code comparison between
+    eth/protocols/wit/dispatcher.go:65 and the eth dispatcher's
+    double-close guard at eth/protocols/eth/dispatcher.go:77-87. This
+    YAML is retained as a reference for future chaos-peer extension
+    work.
+
+  tags: [bor-bug-bounty, 026, wit, panic, concurrency, best-effort]
+  author: impl-concurrency
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 90s
+
+  faults:
+    - phase: sigkill_bor_2_cycle_1
+      description: "SIGKILL bor 2 to race with in-flight witness request"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 2
+
+    - phase: sigkill_bor_2_cycle_2
+      description: "Second SIGKILL cycle — more chances to hit the race"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 2
+      delay: 45s
+
+  success_criteria:
+    - name: no_wit_double_close_panic
+      description: >
+        Probe assertion. We WANT the panic line to appear — that is
+        the repro signal. This check fails (with critical:false so
+        the run completes) when the panic DID occur, and the trial
+        runner records that as a hit.
+      type: log
+      pattern: "close of closed channel"
+      container_pattern: "l2-el-2-bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+
+    - name: cluster_continues
+      description: "Unfaulted majority (1,3) keeps producing blocks during the SIGKILL storm"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: faulted_validator_recovers
+      description: "SIGKILLed validator comes back and resumes sync"
+      type: prometheus
+      query: up{job="l2-el-2-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up

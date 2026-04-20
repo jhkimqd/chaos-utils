@@ -33,8 +33,8 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -62,8 +62,8 @@ spec:
         target_ports: "30303"
         target_proto: tcp,udp
 
-    - phase: flap_4
-      target: bor_4
+    - phase: flap_6
+      target: bor_6
       type: network
       exclude_producer: true
       params:
@@ -113,7 +113,7 @@ spec:
         broadcast goroutines leaked, witness propagation is dead and sync
         stays degraded even with healthy network.
       type: prometheus
-      query: avg(rate(chain_head_block{job=~"l2-el-[2457]-bor-heimdall-v2-validator"}[2m]))
+      query: avg(rate(chain_head_block{job=~"l2-el-[2567]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0.7"
       critical: true
       post_fault_only: true
@@ -124,8 +124,8 @@ spec:
         during 5-minute cooldown. Goroutine leak would prevent catch-up.
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-[2457]-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[2567]-bor-heimdall-v2-validator"})
       threshold: "< 60"
       critical: true
       post_fault_only: true

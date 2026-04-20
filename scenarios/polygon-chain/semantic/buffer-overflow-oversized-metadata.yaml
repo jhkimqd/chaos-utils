@@ -220,7 +220,7 @@ spec:
     - name: block_production_continues
       description: CRITICAL - Block production continues despite oversized responses
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -232,18 +232,35 @@ spec:
       critical: true
 
     # Memory monitoring -- detect resource exhaustion
-    - name: memory_bounded
-      description: Heap memory should not spike above 4GB from oversized payloads
+    - name: heimdall_heap_bounded
+      description: >
+        Heimdall heap memory should not spike above 4GB from oversized
+        payloads. go_memstats_* only exists on Heimdall (CL) via
+        client_golang default collectors; Bor (EL) uses go-ethereum metrics
+        and does not export heap_inuse_bytes.
       type: prometheus
-      query: max(go_memstats_heap_inuse_bytes{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"}) / 1073741824
+      query: max(go_memstats_heap_inuse_bytes{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}) / 1073741824
       threshold: "< 4"
       critical: false
       during_fault: true
 
-    - name: goroutine_count_stable
-      description: Goroutine count should not spike (no goroutine leak from retries)
+    - name: heimdall_goroutine_count_stable
+      description: >
+        Heimdall goroutine count should not spike. go_goroutines only
+        exists on Heimdall (CL). For Bor goroutine counts use
+        system_cpu_goroutines in a separate criterion.
       type: prometheus
-      query: max(go_goroutines{job=~"l2-(cl|el)-.*-(heimdall-v2-bor|bor-heimdall-v2)-validator"})
+      query: max(go_goroutines{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"})
+      threshold: "< 5000"
+      critical: false
+
+    - name: bor_goroutine_count_stable
+      description: >
+        Bor goroutine count should not spike from retries under oversized-
+        metadata load. Bor (go-ethereum metrics) exports
+        `system_cpu_goroutines`, not `go_goroutines`.
+      type: prometheus
+      query: max(system_cpu_goroutines{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 5000"
       critical: false
 

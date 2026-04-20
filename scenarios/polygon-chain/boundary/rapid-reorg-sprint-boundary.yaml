@@ -12,7 +12,7 @@ metadata:
     - snapshot.go:129 — delete(snap.Recents, number-sprintLength) non-atomic
     - State sync TX loss/duplication when reorg crosses sprint boundary
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, sprint, reorg, snapshot, medium-severity]
   author: DevTools
   version: "0.1.0"

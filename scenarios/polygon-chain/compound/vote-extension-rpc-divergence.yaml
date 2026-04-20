@@ -16,7 +16,7 @@ metadata:
     - milestone/abci.go:48 — GetBorChainBlock() inside ExtendVote
     - vote_ext_utils.go:338-343 — unsorted map in FilterVoteExtensions
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, vote-extension, rpc-divergence, milestone, non-determinism]
   author: DevTools
   version: "0.1.0"
@@ -61,7 +61,7 @@ spec:
     - name: heimdall_consensus_continues
       description: "Heimdall consensus advances despite slow Bor RPC on 2 validators"
       type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[1m])) or vector(0)
       threshold: "> 0"
       critical: true
 
@@ -83,7 +83,7 @@ spec:
     - name: block_times_acceptable
       description: "Block intervals reasonable despite RPC latency"
       type: prometheus
-      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]), 0.001)
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 15.0"
       critical: false
 

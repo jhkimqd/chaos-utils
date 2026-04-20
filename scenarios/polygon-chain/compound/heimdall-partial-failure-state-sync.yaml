@@ -11,7 +11,7 @@ metadata:
     - bor.go:1764-1768 — StateSyncEvents() error → empty list (silent)
     - heimdall/client.go:101-145 — paginated event fetch
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, state-sync, divergence, silent-failure, high-severity]
   author: DevTools
   version: "0.1.0"

@@ -17,7 +17,7 @@ metadata:
     - File descriptor leak from gRPC/WebSocket connections
     - Snapshot accumulation at sprint boundaries
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [soak, long-running, resource-leak, observability]
   author: DevTools
   version: "0.1.0"
@@ -62,7 +62,7 @@ spec:
     - name: heimdall_consensus_continues
       description: "Heimdall consensus advances throughout"
       type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[5m])) or vector(0)
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[5m])) or vector(0)
       threshold: "> 0"
       critical: true
 

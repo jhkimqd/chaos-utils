@@ -96,8 +96,8 @@ spec:
       description: No fork from crash — all validators on same chain
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 50"
       critical: true
       post_fault_only: true

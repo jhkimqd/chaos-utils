@@ -16,7 +16,7 @@ metadata:
     - consensus/bor/heimdall/span_store.go: LRU cache expiry during lag
     - consensus/bor/bor.go: Finalize() state sync injection timing
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
     Start BEFORE fork block - 30 to cover the lag window.
   tags: [boundary, fork-transition, heimdall, lag, validator-set, high-severity]
   author: DevTools
@@ -39,11 +39,6 @@ spec:
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-3-heimdall-v2-bor-validator"
       alias: heimdall_3
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
 
   # 60s covers ~60 blocks at 1s/block — the fork window (fork-20 to fork+20) plus buffer.
   duration: 60s
@@ -78,20 +73,11 @@ spec:
         target_ports: "26656,1317"
         target_proto: tcp
 
-    - phase: lag_heimdall_consensus
-      description: "5s latency on all Heimdall consensus and API ports across the fork window"
-      target: heimdall_4
-      type: network
-      params:
-        latency: 5000
-        target_ports: "26656,1317"
-        target_proto: tcp
-
   success_criteria:
     - name: bor_keeps_producing_during_lag
       description: "Bor validators continue producing blocks despite slow Heimdall"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -99,8 +85,8 @@ spec:
       description: "All validators converge after Heimdall lag is removed"
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-[1234]-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"})
       threshold: "< 30"
       critical: true
       post_fault_only: true

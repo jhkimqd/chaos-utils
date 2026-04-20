@@ -43,8 +43,8 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_restart_4
+        pattern: "l2-el-8-bor-heimdall-v2-validator"
+      alias: bor_restart_8
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -83,9 +83,9 @@ spec:
         delay_ms: 5000
 
     # Restart 2 validators (they need DNS to rediscover peers)
-    - phase: restart_4
-      description: Restart validator 4 — must rediscover peers via slow DNS
-      target: bor_restart_4
+    - phase: restart_8
+      description: Restart validator 8 — must rediscover peers via slow DNS
+      target: bor_restart_8
       type: container_restart
       params:
         grace_period: 5
@@ -103,7 +103,7 @@ spec:
     - name: block_production_continues
       description: Remaining validators keep producing blocks
       type: prometheus
-      query: sum(increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m])) or vector(0)
+      query: sum(increase(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[2m])) or vector(0)
       threshold: "> 0"
       critical: true
 
@@ -127,7 +127,7 @@ spec:
     - name: restarted_validators_recover
       description: Restarted validators come back online
       type: prometheus
-      query: min(up{job=~"l2-el-[46]-bor-heimdall-v2-validator"})
+      query: min(up{job=~"l2-el-[68]-bor-heimdall-v2-validator"})
       threshold: "== 1"
       critical: true
       post_fault_only: true
@@ -135,7 +135,7 @@ spec:
     - name: restarted_validators_sync
       description: Restarted validators resume block sync during cooldown
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[46]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[68]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: false
       post_fault_only: true

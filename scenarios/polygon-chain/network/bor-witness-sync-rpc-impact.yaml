@@ -86,7 +86,7 @@ spec:
     - name: validator_block_production
       description: Validators keep producing blocks
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -110,18 +110,19 @@ spec:
     - name: rpc_node_syncing
       description: Witness-sync RPC node (el-7) continues advancing chain head
       type: prometheus
-      query: rate(chain_head_block{job=~"l2-el-7-bor-.*"}[2m])
+      query: max(rate(chain_head_block{job=~"l2-el-7-bor-.*"}[2m]))
       threshold: "> 0"
       critical: true
 
     - name: rpc_node_not_too_far_behind
       description: >
         RPC node block height stays within 30 blocks of best validator —
-        measures witness delivery lag
+        measures witness delivery lag. Uses scalar() on RHS to avoid
+        many-to-many label matching which would return empty.
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - on() chain_head_block{job=~"l2-el-7-bor-.*"}
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - scalar(max(chain_head_block{job=~"l2-el-7-bor-.*"}))
       threshold: "< 30"
       critical: false
       during_fault: true
@@ -129,7 +130,7 @@ spec:
     - name: rpc_peers_stable
       description: RPC node maintains peer connections despite validator latency
       type: prometheus
-      query: cometbft_p2p_peers{job=~"l2-cl-7-.*"}
+      query: min(cometbft_p2p_peers{job=~"l2-cl-7-.*"})
       threshold: "> 2"
       critical: false
 

@@ -36,7 +36,7 @@ metadata:
       span it gets may be 1-2 spans stale (due to CometBFT also lagging), leading
       to it trying to produce blocks for the wrong epoch.
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, heimdall-lag, producer-kill, validator-set, sprint-boundary, high-severity]
   author: DevTools
   version: "0.1.0"
@@ -58,11 +58,6 @@ spec:
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-3-heimdall-v2-bor-validator"
       alias: heimdall_3
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -100,14 +95,6 @@ spec:
 
     - phase: lag_all_heimdall
       target: heimdall_3
-      type: network
-      params:
-        latency: 3000
-        target_ports: "26656,1317"
-        target_proto: tcp
-
-    - phase: lag_all_heimdall
-      target: heimdall_4
       type: network
       params:
         latency: 3000

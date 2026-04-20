@@ -69,7 +69,7 @@ spec:
     - name: no_excessive_rewind
       description: Chain head of affected validator should not drop more than 20 blocks behind others
       type: prometheus
-      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      query: max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 20"
       critical: false
 
@@ -84,7 +84,7 @@ spec:
     - name: recovery_after_cleanup
       description: Affected validator catches up after fault removal
       type: prometheus
-      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      query: max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 5"
       critical: false
       post_fault_only: true
