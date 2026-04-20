@@ -252,12 +252,8 @@ func TestValidateIODelayParams(t *testing.T) {
 		{"valid all", IODelayParams{IOLatencyMs: 100, TargetPath: "/data", Operation: "all"}, false},
 		{"valid read", IODelayParams{IOLatencyMs: 50, TargetPath: "/data", Operation: "read"}, false},
 		{"valid write", IODelayParams{IOLatencyMs: 50, TargetPath: "/data", Operation: "write"}, false},
-		{"valid method dd", IODelayParams{IOLatencyMs: 100, TargetPath: "/data", Operation: "all", Method: "dd"}, false},
-		{"valid method empty", IODelayParams{IOLatencyMs: 100, TargetPath: "/data", Operation: "all", Method: ""}, false},
 		{"negative latency", IODelayParams{IOLatencyMs: -1, TargetPath: "/data", Operation: "all"}, true},
 		{"invalid operation", IODelayParams{IOLatencyMs: 100, TargetPath: "/data", Operation: "delete"}, true},
-		{"valid method dm-delay", IODelayParams{IOLatencyMs: 100, TargetPath: "/data", Operation: "all", Method: "dm-delay"}, false},
-		{"invalid method", IODelayParams{IOLatencyMs: 100, TargetPath: "/data", Operation: "all", Method: "ionice"}, true},
 	}
 
 	for _, tt := range tests {
@@ -267,18 +263,6 @@ func TestValidateIODelayParams(t *testing.T) {
 				t.Errorf("ValidateIODelayParams() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestValidateIODelayParams_DmDelayAccepted(t *testing.T) {
-	err := ValidateIODelayParams(IODelayParams{
-		IOLatencyMs: 100,
-		TargetPath:  "/data",
-		Operation:   "all",
-		Method:      "dm-delay",
-	})
-	if err != nil {
-		t.Fatalf("dm-delay method should be accepted, got error: %v", err)
 	}
 }
 

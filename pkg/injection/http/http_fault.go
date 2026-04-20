@@ -140,8 +140,7 @@ func (hw *HTTPFaultWrapper) InjectHTTPFault(ctx context.Context, targetContainer
 		fmt.Printf("  iptables: %s\n", strings.Join(cmd, " "))
 		output, err = hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
 		if err != nil {
-			// Log but don't fail for uid-owner rule (envoy user may not exist)
-			fmt.Printf("  Warning: iptables command failed: %v (output: %s)\n", err, output)
+			return fmt.Errorf("install PREROUTING redirect on %s: %w (output: %s)", targetContainerID[:12], err, output)
 		}
 	}
 
@@ -216,9 +215,11 @@ func (hw *HTTPFaultWrapper) RemoveAllFaults(ctx context.Context, targetContainer
 	if !exists || len(ports) == 0 {
 		// Fallback: kill envoy and remove only chaos-http-fault iptables rules
 		if _, ok := hw.sidecarMgr.GetSidecarID(targetContainerID); ok {
+			// Match only chaos-injected envoys by config-path prefix, so we
+			// don't kill unrelated envoys sharing the network namespace.
 			killCmd := []string{"sh", "-c",
 				"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); " +
-					"if tr '\\0' ' ' < $p 2>/dev/null | grep -q envoy; then kill -9 $PID 2>/dev/null; fi; done; " +
+					"if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'envoy-chaos-'; then kill -9 $PID 2>/dev/null; fi; done; " +
 					"while iptables -t nat -D PREROUTING -m comment --comment chaos-http-fault -j REDIRECT 2>/dev/null; do true; done; " +
 					"rm -f /tmp/envoy-chaos-*.yaml /tmp/envoy-chaos-*.log 2>/dev/null; " +
 					"echo done"}

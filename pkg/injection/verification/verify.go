@@ -120,8 +120,9 @@ func (v *Verifier) checkIPTablesRules(ctx context.Context, containerID string, p
 		return false, nil, fmt.Errorf("iptables check failed (cannot verify clean state): %w", err)
 	}
 
-	// Check if output contains chaos_utils chains or rules
-	if strings.Contains(output, "chaos_utils") || strings.Contains(output, "CHAOS") {
+	// Check for the CHAOS_DROP chain installed by firewall.IptablesWrapper
+	// or the chaos-engineering comment applied to the INPUT jump.
+	if strings.Contains(output, "CHAOS_DROP") || strings.Contains(output, "chaos-engineering") {
 		return true, []string{fmt.Sprintf("iptables rules found: %s", output)}, nil
 	}
 
@@ -140,8 +141,8 @@ func (v *Verifier) checkNFTablesRules(ctx context.Context, containerID string, p
 		return false, nil, nil
 	}
 
-	// Check if output contains chaos_utils table
-	if strings.Contains(output, "chaos_utils") {
+	// chaos-utils never installs nftables; any chaos-tagged table is stale.
+	if strings.Contains(output, "chaos") {
 		return true, []string{fmt.Sprintf("nftables rules found: %s", output)}, nil
 	}
 

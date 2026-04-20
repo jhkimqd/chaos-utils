@@ -29,7 +29,7 @@ type KillParams struct {
 }
 
 // InjectProcessKill kills a process by pattern within a container
-func (pw *PriorityWrapper) InjectProcessKill(ctx context.Context, targetContainerID string, params KillParams) error {
+func (pw *Wrapper) InjectProcessKill(ctx context.Context, targetContainerID string, params KillParams) error {
 	fmt.Printf("Injecting process kill on target %s (pattern: %s, signal: %s)\n",
 		targetContainerID[:12], params.ProcessPattern, params.Signal)
 

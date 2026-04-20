@@ -4,34 +4,30 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 )
 
 // IODelayParams defines parameters for disk I/O delay injection.
-//
-// The Method field selects between two fundamentally different approaches:
-//   - "dd" (default): Spawns background dd processes to create I/O contention.
-//     IOLatencyMs controls worker count (not actual latency): <100ms=1, 100-199=2, 200+=3.
-//   - "dm-delay": Uses Linux device-mapper to add deterministic kernel-level latency.
-//     IOLatencyMs is the exact delay in milliseconds applied to every I/O operation.
-//     Requires privileged container with dmsetup installed.
+// Only Method="dd" (default) is implemented; Method="dm-delay" is parsed so
+// scenarios using it fail loudly via ValidateIODelayParams rather than silently
+// falling through to dd.
 type IODelayParams struct {
-	// IOLatencyMs has different semantics per method:
-	//   - "dd": Controls contention intensity (worker count scaling, not precise latency)
-	//   - "dm-delay": Exact I/O delay in milliseconds applied at the block device level
+	// IOLatencyMs controls contention intensity via dd worker-count scaling
+	// (<100ms=1 worker, 100-199=2, 200+=3), not precise per-I/O latency.
 	IOLatencyMs int
 
-	// TargetPath is the filesystem path to target (e.g., "/var/lib/bor/bor/chaindata").
-	// For "dd": directory where contention files are written.
-	// For "dm-delay": used to discover the backing block device.
+	// TargetPath is the directory where contention files are written
+	// (e.g., "/var/lib/bor/bor/chaindata").
 	TargetPath string
 
-	// Operation is the operation type: "read", "write", or "all" (dd method only;
-	// dm-delay always delays both reads and writes)
+	// Operation is the operation type: "read", "write", or "all".
 	Operation string
 
-	// Method selects the injection approach: "dd" (default), "dm-delay", or "" (uses dd).
+	// Method selects the injection approach. Only "dd" (the default) and ""
+	// are accepted. Passing "dm-delay" results in a validation error; see
+	// dm_delay.go for why that mode is unsupported in this framework.
 	Method string
 }
 
@@ -44,19 +40,26 @@ type DockerClient interface {
 type IODelayWrapper struct {
 	dockerClient DockerClient
 	dmDelay      *DmDelayWrapper
+
+	// injectedPaths tracks the TargetPath supplied at InjectIODelay time so
+	// RemoveFault can scrub the correct directory even when the orchestrator
+	// passes an empty IODelayParams at teardown.
+	mu            sync.Mutex
+	injectedPaths map[string]string
 }
 
 // New creates a new I/O delay wrapper
 func New(dockerClient DockerClient) *IODelayWrapper {
 	return &IODelayWrapper{
-		dockerClient: dockerClient,
-		dmDelay:      NewDmDelayWrapper(dockerClient),
+		dockerClient:  dockerClient,
+		dmDelay:       NewDmDelayWrapper(dockerClient),
+		injectedPaths: make(map[string]string),
 	}
 }
 
-// InjectIODelay injects I/O delay using the configured method.
-// Method "dm-delay" uses kernel-level device-mapper delay for deterministic latency.
-// Method "dd" (default) creates I/O contention by running background dd processes.
+// InjectIODelay creates I/O contention by running background dd processes that
+// saturate the I/O queue. The "dm-delay" method is intentionally rejected —
+// see dm_delay.go for details.
 func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID string, params IODelayParams) error {
 	if params.Method == "dm-delay" {
 		return iw.dmDelay.InjectDmDelay(ctx, targetContainerID, params)
@@ -125,23 +128,19 @@ func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID s
 		return fmt.Errorf("I/O contention failed: no dd processes running")
 	}
 
+	iw.mu.Lock()
+	if iw.injectedPaths == nil {
+		iw.injectedPaths = make(map[string]string)
+	}
+	iw.injectedPaths[targetContainerID] = targetPath
+	iw.mu.Unlock()
+
 	fmt.Printf("  I/O contention active: %s dd workers on %s (%s)\n", count, targetPath, params.Operation)
 	return nil
 }
 
-// RemoveFault removes I/O delay faults. If a dm-delay mapping is active for the
-// container, it is removed and the function returns. Otherwise, dd stress
-// processes and temp files are cleaned up.
+// RemoveFault kills dd stress processes and cleans up temp files.
 func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID string, params IODelayParams) error {
-	// Remove dm-delay mapping if one exists for this container
-	if iw.dmDelay != nil && iw.dmDelay.HasActiveMapping(targetContainerID) {
-		if err := iw.dmDelay.RemoveDmDelay(ctx, targetContainerID); err != nil {
-			return err
-		}
-		// dm-delay was the active method — no dd cleanup needed
-		return nil
-	}
-
 	fmt.Printf("Removing I/O contention from target %s\n", targetContainerID[:12])
 
 	// Kill chaos dd processes AND their parent shell loops.
@@ -177,17 +176,35 @@ func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID str
 		log.Warn().Err(verifyErr).Str("container", targetContainerID[:12]).Msg("failed to verify I/O contention removal")
 	}
 
-	// Clean up stress files
+	// Clean up stress files. Prefer the TargetPath recorded at inject time,
+	// fall back to the caller's params, then to /tmp, then sweep common roots
+	// so files are removed even when tracking is lost (e.g. process crash).
 	targetPath := params.TargetPath
+	if targetPath == "" {
+		iw.mu.Lock()
+		if p, ok := iw.injectedPaths[targetContainerID]; ok {
+			targetPath = p
+		}
+		iw.mu.Unlock()
+	}
 	if targetPath == "" {
 		targetPath = "/tmp"
 	}
 	chaosFile := fmt.Sprintf("%s/.chaos_io_stress", strings.TrimRight(targetPath, "/"))
-	cleanCmd := []string{"sh", "-c", fmt.Sprintf("rm -f \"%s\"_* 2>/dev/null; echo done", chaosFile)}
+	cleanCmd := []string{"sh", "-c", fmt.Sprintf(
+		"rm -f \"%s\"_* 2>/dev/null; "+
+			"find /tmp /root /var/lib -maxdepth 6 -name '.chaos_io_stress_*' -delete 2>/dev/null; "+
+			"echo done",
+		chaosFile,
+	)}
 	_, cleanErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, cleanCmd)
 	if cleanErr != nil {
 		log.Warn().Err(cleanErr).Str("container", targetContainerID[:12]).Msg("failed to clean up I/O stress files")
 	}
+
+	iw.mu.Lock()
+	delete(iw.injectedPaths, targetContainerID)
+	iw.mu.Unlock()
 
 	fmt.Printf("  I/O contention removed from target %s\n", targetContainerID[:12])
 	return nil
@@ -203,8 +220,13 @@ func ValidateIODelayParams(params IODelayParams) error {
 		return fmt.Errorf("operation must be 'read', 'write', or 'all'")
 	}
 
-	if params.Method != "" && params.Method != "dd" && params.Method != "dm-delay" {
-		return fmt.Errorf("unsupported method '%s'; valid values: 'dd', 'dm-delay', or '' (empty)", params.Method)
+	switch params.Method {
+	case "", "dd":
+		// ok
+	case "dm-delay":
+		return ErrDmDelayUnsupported
+	default:
+		return fmt.Errorf("unsupported method %q; valid values: 'dd' or '' (empty)", params.Method)
 	}
 
 	return nil

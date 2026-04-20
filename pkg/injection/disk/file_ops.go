@@ -32,7 +32,7 @@ type FileCorruptParams struct {
 	// CorruptOffset is the byte offset where corruption starts (default: 0 = random)
 	CorruptOffset int
 
-	// Method is the corruption method: "zero" (write zeros), "random" (write random), "flip" (bit flip)
+	// Method is the corruption method: "zero" (write zeros) or "random" (write random bytes)
 	Method string
 
 	// BackupFirst creates a backup before corruption (for restoration)
@@ -127,7 +127,7 @@ func (fw *FileOpsWrapper) InjectFileCorrupt(ctx context.Context, targetContainer
 			params.TargetPath, corruptBytes, offsetExpr,
 		)}
 	default:
-		return fmt.Errorf("unknown corruption method: %s (use zero, random, or flip)", params.Method)
+		return fmt.Errorf("unknown corruption method: %s (use zero or random)", params.Method)
 	}
 
 	output, err := fw.dockerClient.ExecCommand(ctx, targetContainerID, cmd)

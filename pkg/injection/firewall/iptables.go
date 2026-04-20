@@ -21,9 +21,6 @@ type ConnectionDropParams struct {
 
 	// Probability is the drop rate (0.0-1.0, e.g., 0.1 = 10%)
 	Probability float64
-
-	// Stateful tracks connection state if true
-	Stateful bool
 }
 
 // IptablesWrapper wraps iptables for connection manipulation

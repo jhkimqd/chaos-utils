@@ -131,10 +131,15 @@ func (c *Coordinator) verifySidecarNamespace(ctx context.Context, targetID strin
 		clean = false
 	}
 
-	// Check iptables rules
+	// Check iptables rules (filter + nat tables).
 	output, err = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-L", "-n"})
-	if err == nil && (strings.Contains(output, "chaos_utils") || strings.Contains(output, "CHAOS")) {
-		c.logAudit("verify_namespace", targetID, "iptables chaos rules still present", nil)
+	if err == nil && (strings.Contains(output, "CHAOS_DROP") || strings.Contains(output, "chaos-engineering")) {
+		c.logAudit("verify_namespace", targetID, "iptables CHAOS_DROP rules still present", nil)
+		clean = false
+	}
+	natOutput, natErr := c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-t", "nat", "-L", "-n"})
+	if natErr == nil && (strings.Contains(natOutput, "chaos-http-fault") || strings.Contains(natOutput, "chaos-corruption-proxy")) {
+		c.logAudit("verify_namespace", targetID, "iptables PREROUTING redirect rules still present", nil)
 		clean = false
 	}
 
@@ -145,8 +150,25 @@ func (c *Coordinator) verifySidecarNamespace(ctx context.Context, targetID strin
 func (c *Coordinator) cleanViaSidecar(ctx context.Context, targetID string) {
 	// Remove tc qdisc (covers all tc-based faults)
 	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"tc", "qdisc", "del", "dev", "eth0", "root"})
-	// Flush iptables chaos chain if it exists
-	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-F", "chaos_utils"})
+
+	// Remove firewall CHAOS_DROP chain and INPUT jump (connection_drop fault).
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-D", "INPUT", "-j", "CHAOS_DROP", "-m", "comment", "--comment", "chaos-engineering"})
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-F", "CHAOS_DROP"})
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"iptables", "-X", "CHAOS_DROP"})
+
+	// Remove HTTP-fault and corruption-proxy PREROUTING redirects. Walk
+	// iptables-save so each install's exact rule spec is matched without
+	// needing to remember every target port.
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"sh", "-c",
+		"iptables-save -t nat 2>/dev/null | grep -E 'chaos-(http-fault|corruption-proxy)' | " +
+			"sed 's/^-A /-D /' | while IFS= read -r rule; do iptables -t nat $rule 2>/dev/null; done; true",
+	})
+
+	// Remove clock-skew NTP-block rule (installed by time.ClockSkewWrapper
+	// when disable_ntp=true).
+	_, _ = c.sidecarMgr.ExecInSidecar(ctx, targetID, []string{"sh", "-c",
+		"iptables -D OUTPUT -p udp --dport 123 -j DROP -m comment --comment chaos-ntp-block 2>/dev/null || true",
+	})
 }
 
 // logAudit adds an entry to the audit log

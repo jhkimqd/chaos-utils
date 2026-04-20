@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestFillRemoveFault_FallbackNoFindDelete(t *testing.T) {
+func TestFillRemoveFault_FallbackBoundedFind(t *testing.T) {
 	var capturedCmd string
 	mock := &mockDockerClientDisk{
 		execFunc: func(ctx context.Context, containerID string, cmd []string) (string, error) {
@@ -21,16 +21,21 @@ func TestFillRemoveFault_FallbackNoFindDelete(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The fallback should NOT use 'find / -delete' (dangerous system-wide search)
-	if strings.Contains(capturedCmd, "find /") {
-		t.Errorf("fallback should not use 'find / -delete', got: %s", capturedCmd)
+	// The fallback must be bounded to common data roots, never system-wide.
+	if strings.Contains(capturedCmd, "find / -") {
+		t.Errorf("fallback must not traverse the root filesystem, got: %s", capturedCmd)
 	}
-	if strings.Contains(capturedCmd, "-delete") {
-		t.Errorf("fallback should not use '-delete', got: %s", capturedCmd)
+	// Must restrict to specific roots and cap depth.
+	for _, root := range []string{"/tmp", "/root", "/var/lib"} {
+		if !strings.Contains(capturedCmd, root) {
+			t.Errorf("fallback must search %s, got: %s", root, capturedCmd)
+		}
 	}
-	// Should use targeted rm instead
-	if !strings.Contains(capturedCmd, "rm -f") {
-		t.Errorf("fallback should use 'rm -f' for targeted cleanup, got: %s", capturedCmd)
+	if !strings.Contains(capturedCmd, "-maxdepth") {
+		t.Errorf("fallback must cap traversal depth, got: %s", capturedCmd)
+	}
+	if !strings.Contains(capturedCmd, "chaos_fill_data") {
+		t.Errorf("fallback must target chaos_fill_data files, got: %s", capturedCmd)
 	}
 }
 

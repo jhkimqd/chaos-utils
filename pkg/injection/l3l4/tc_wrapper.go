@@ -8,9 +8,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// TCWrapper handles all network fault injection using tc directly.
-// This replaces comcast which used iptables mangle marks for port filtering —
-// a mechanism that doesn't work reliably in Docker shared network namespaces.
+// TCWrapper handles network fault injection using tc directly. Port-filtered
+// faults use a prio root qdisc with u32 filters; whole-device faults use a
+// netem root qdisc.
 type TCWrapper struct {
 	sidecarMgr SidecarManager
 }
