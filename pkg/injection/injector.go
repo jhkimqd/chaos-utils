@@ -36,7 +36,7 @@ type Injector struct {
 	stressInjector   *stress.StressWrapper
 	firewallInjector *firewall.IptablesWrapper
 	dnsInjector      *dns.DNSWrapper
-	processInjector  *process.PriorityWrapper
+	processInjector  *process.Wrapper
 	diskInjector     *disk.IODelayWrapper
 	diskFillInjector *disk.FillWrapper
 	fileOpsInjector  *disk.FileOpsWrapper
@@ -84,8 +84,6 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 		return i.injectConnectionDrop(ctx, fault, targets)
 	case "dns":
 		return i.injectDNSDelay(ctx, fault, targets)
-	case "process_priority":
-		return i.injectProcessPriority(ctx, fault, targets)
 	case "disk_io":
 		return i.injectDiskIODelay(ctx, fault, targets)
 	case "disk_fill":
@@ -113,7 +111,7 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	// Parse network fault parameters
 	params := l3l4.FaultParams{
-		Device: "eth0", // default device
+		Device: "eth0",
 	}
 
 	if fault.Params != nil {
@@ -155,6 +153,10 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		}
 	}
 
+	if err := l3l4.ValidateFaultParams(params); err != nil {
+		return fmt.Errorf("invalid network fault parameters: %w", err)
+	}
+
 	// Use tc directly for all network faults (latency, loss, reorder, port filtering)
 	for _, target := range targets {
 		if err := i.tcInjector.InjectFault(ctx, target.ContainerID, params); err != nil {
@@ -169,7 +171,7 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 func (i *Injector) injectContainerRestart(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	// Parse restart parameters
 	params := container.RestartParams{
-		GracePeriod:  10, // default
+		GracePeriod:  10,
 		RestartDelay: 0,
 		Stagger:      0,
 	}
@@ -212,7 +214,7 @@ func (i *Injector) injectContainerRestart(ctx context.Context, fault *scenario.F
 func (i *Injector) injectContainerKill(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	// Parse kill parameters
 	params := container.KillParams{
-		Signal:       "SIGKILL", // default
+		Signal:       "SIGKILL",
 		Restart:      true,
 		RestartDelay: 0,
 	}
@@ -244,7 +246,7 @@ func (i *Injector) injectContainerPause(ctx context.Context, fault *scenario.Fau
 	// Parse pause parameters
 	params := container.PauseParams{
 		Duration: 0,
-		Unpause:  true, // default
+		Unpause:  true,
 	}
 
 	if fault.Params != nil {
@@ -274,10 +276,9 @@ func (i *Injector) injectContainerPause(ctx context.Context, fault *scenario.Fau
 func (i *Injector) injectCPUStress(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	// Parse CPU stress parameters
 	params := stress.StressParams{
-		Method:     "stress", // default
-		CPUPercent: 50,       // default
-		Duration:   "5m",     // default
-		Cores:      1,        // default - limiting to 50% of 1 core = 0.5 cores
+		Method:     "stress",
+		CPUPercent: 50,
+		Cores:      1,
 	}
 
 	if fault.Params != nil {
@@ -288,9 +289,6 @@ func (i *Injector) injectCPUStress(ctx context.Context, fault *scenario.Fault, t
 			params.CPUPercent = cpuPercent
 		} else if cpuPercent, ok := fault.Params["cpu_percent"].(float64); ok {
 			params.CPUPercent = int(cpuPercent)
-		}
-		if duration, ok := fault.Params["duration"].(string); ok {
-			params.Duration = duration
 		}
 		if cores, ok := fault.Params["cores"].(int); ok {
 			params.Cores = cores
@@ -319,8 +317,7 @@ func (i *Injector) injectMemoryStress(ctx context.Context, fault *scenario.Fault
 	// Parse memory stress parameters
 	params := stress.StressParams{
 		Method:   "stress",
-		MemoryMB: 512, // default
-		Duration: "5m",
+		MemoryMB: 512,
 	}
 
 	if fault.Params != nil {
@@ -331,9 +328,6 @@ func (i *Injector) injectMemoryStress(ctx context.Context, fault *scenario.Fault
 			params.MemoryMB = memoryMB
 		} else if memoryMB, ok := fault.Params["memory_mb"].(float64); ok {
 			params.MemoryMB = int(memoryMB)
-		}
-		if duration, ok := fault.Params["duration"].(string); ok {
-			params.Duration = duration
 		}
 	}
 
@@ -358,7 +352,6 @@ func (i *Injector) injectConnectionDrop(ctx context.Context, fault *scenario.Fau
 		RuleType:    "drop",
 		TargetProto: "tcp",
 		Probability: 0.1,
-		Stateful:    true,
 	}
 
 	if fault.Params != nil {
@@ -373,9 +366,6 @@ func (i *Injector) injectConnectionDrop(ctx context.Context, fault *scenario.Fau
 		}
 		if prob, ok := fault.Params["probability"].(float64); ok {
 			params.Probability = prob
-		}
-		if stateful, ok := fault.Params["stateful"].(bool); ok {
-			params.Stateful = stateful
 		}
 	}
 
@@ -397,7 +387,6 @@ func (i *Injector) injectDNSDelay(ctx context.Context, fault *scenario.Fault, ta
 	params := dns.DNSParams{
 		DelayMs:     2000,
 		FailureRate: 0,
-		Method:      "dnsmasq",
 	}
 
 	if fault.Params != nil {
@@ -406,9 +395,6 @@ func (i *Injector) injectDNSDelay(ctx context.Context, fault *scenario.Fault, ta
 		}
 		if failureRate, ok := fault.Params["failure_rate"].(float64); ok {
 			params.FailureRate = failureRate
-		}
-		if method, ok := fault.Params["method"].(string); ok {
-			params.Method = method
 		}
 	}
 
@@ -425,40 +411,11 @@ func (i *Injector) injectDNSDelay(ctx context.Context, fault *scenario.Fault, ta
 	return nil
 }
 
-// injectProcessPriority handles process priority fault injection
-func (i *Injector) injectProcessPriority(ctx context.Context, fault *scenario.Fault, targets []Target) error {
-	params := process.PriorityParams{
-		Priority: 19,
-	}
-
-	if fault.Params != nil {
-		if priority, ok := fault.Params["priority"].(int); ok {
-			params.Priority = priority
-		}
-		if processPattern, ok := fault.Params["process_pattern"].(string); ok {
-			params.ProcessPattern = processPattern
-		}
-	}
-
-	if err := process.ValidatePriorityParams(params); err != nil {
-		return fmt.Errorf("invalid priority parameters: %w", err)
-	}
-
-	for _, target := range targets {
-		if err := i.processInjector.InjectPriorityChange(ctx, target.ContainerID, params); err != nil {
-			return fmt.Errorf("failed to inject priority change on %s: %w", target.Name, err)
-		}
-	}
-
-	return nil
-}
-
 // injectDiskIODelay handles disk I/O delay fault injection
 func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	params := disk.IODelayParams{
 		IOLatencyMs: 200,
 		Operation:   "all",
-		Method:      "dd",
 	}
 
 	if fault.Params != nil {
@@ -507,12 +464,8 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 		return i.firewallInjector.RemoveFault(ctx, containerID)
 	case "dns":
 		return i.dnsInjector.RemoveFault(ctx, containerID)
-	case "process_priority":
-		// For process priority, we need the params to know which process
-		// For now, just return nil - priority will reset on process restart
-		return nil
 	case "disk_io":
-		// Removes dm-delay mapping if active, otherwise kills dd stress processes
+		// Kills dd stress processes and cleans up temp files.
 		return i.diskInjector.RemoveFault(ctx, containerID, disk.IODelayParams{Operation: "all"})
 	case "disk_fill":
 		return i.diskFillInjector.RemoveFault(ctx, containerID)
@@ -640,7 +593,10 @@ func (i *Injector) injectFileCorrupt(ctx context.Context, fault *scenario.Fault,
 	return nil
 }
 
-// injectClockSkew handles clock skew injection
+// injectClockSkew handles clock skew injection. The underlying mechanism uses
+// `date -s` which affects the host kernel clock; InjectClockSkew itself
+// enforces the CHAOS_ALLOW_HOST_CLOCK_SKEW opt-in, so the dispatcher does
+// nothing here beyond param parsing and validation.
 func (i *Injector) injectClockSkew(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	params := chaostime.ClockSkewParams{}
 
@@ -929,13 +885,8 @@ func (i *Injector) getContainerIP(ctx context.Context, containerID string) strin
 //	target_port  int    – the port to intercept (e.g. 1317, 8545, 26657)
 //	rules_yaml   string – inline YAML rules content to write to the sidecar
 //
-// The corruption-proxy binary must already be present at
-// /usr/local/bin/corruption-proxy in the sidecar image. Build and include it:
-//
-//	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-//	  -o bin/corruption-proxy ./cmd/corruption-proxy
-//	# Then in Dockerfile.sidecar:
-//	# COPY bin/corruption-proxy /usr/local/bin/corruption-proxy
+// The corruption-proxy binary must be present at /usr/local/bin/corruption-proxy
+// in the sidecar image; Dockerfile.chaos-utils already builds and installs it.
 func (i *Injector) injectCorruptionProxy(ctx context.Context, fault *scenario.Fault, targets []Target) error {
 	targetPort := 1317 // default: Heimdall REST API
 	rulesYAML := ""
@@ -1014,7 +965,7 @@ func (i *Injector) injectCorruptionProxy(ctx context.Context, fault *scenario.Fa
 		}
 		fmt.Printf("  iptables: %s\n", strings.Join(iptCmd, " "))
 		if out, err := i.sidecarMgr.ExecInSidecar(ctx, target.ContainerID, iptCmd); err != nil {
-			fmt.Printf("  Warning: iptables command failed: %v (output: %s)\n", err, out)
+			return fmt.Errorf("install PREROUTING redirect on %s: %w (output: %s)", target.Name, err, out)
 		}
 
 		fmt.Printf("Corruption proxy active on target %s (port %d → proxy:%d, control:%d)\n",

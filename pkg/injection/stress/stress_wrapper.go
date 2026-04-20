@@ -11,7 +11,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// StressParams defines parameters for CPU/memory stress injection
+// StressParams defines parameters for CPU/memory stress injection.
+// Stress runs until the orchestrator's teardown phase calls RemoveFault;
+// there is no per-fault auto-expiry.
 type StressParams struct {
 	// Method is the stress method ("stress" for active load, "limit" for resource constraints)
 	Method string
@@ -21,9 +23,6 @@ type StressParams struct {
 
 	// MemoryMB is the amount of memory to allocate in megabytes
 	MemoryMB int
-
-	// Duration is the stress duration (e.g., "4m", "30s")
-	Duration string
 
 	// Cores is the number of CPU cores to stress (0 = default 4)
 	Cores int

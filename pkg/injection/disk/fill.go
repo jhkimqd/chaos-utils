@@ -112,9 +112,12 @@ func (fw *FillWrapper) RemoveFault(ctx context.Context, targetContainerID string
 	paths, exists := fw.injectedFills[targetContainerID]
 	fw.mu.Unlock()
 	if !exists || len(paths) == 0 {
-		// Fallback: try to remove fill files from common locations only
-		// (avoid dangerous system-wide 'find / -delete')
-		cmd := []string{"sh", "-c", "rm -f /tmp/chaos_fill_data /var/lib/*/chaos_fill_data /root/chaos_fill_data 2>/dev/null; echo done"}
+		// Fallback: bounded find under common data roots. Required when
+		// tracking is lost (e.g. process crash) and the scenario filled a
+		// non-default path like /root/.bor/data.
+		cmd := []string{"sh", "-c",
+			"find /tmp /root /var/lib /home -maxdepth 6 -name 'chaos_fill_data' -delete 2>/dev/null; echo done",
+		}
 		_, cleanupErr := fw.dockerClient.ExecCommand(ctx, targetContainerID, cmd)
 		if cleanupErr != nil {
 			log.Warn().Err(cleanupErr).Str("container", targetContainerID[:12]).Msg("failed to remove fallback fill files during cleanup")
