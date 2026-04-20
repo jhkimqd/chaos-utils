@@ -48,7 +48,11 @@ spec:
 
   duration: 5m
   warmup: 30s
-  cooldown: 1m
+  # 3m cooldown: full chaindata wipe forces v6 to resync from genesis after
+  # restart. Cold start + peer discovery + initial header sync + bulk block
+  # download takes well over 1m on an 8-validator devnet. State-root consensus
+  # is overridden below to skip v6 (still-resyncing node would mark unreachable).
+  cooldown: 3m
 
   faults:
     # Phase 1: Wipe Bor chaindata while running — PebbleDB loses its
@@ -164,6 +168,17 @@ spec:
       container_pattern: "l2-.*-6-.*-validator"
       absence: true
       critical: false
+      post_fault_only: true
+
+    # Override universal state_root_consensus: v6 is being fully resynced from
+    # genesis and may still be unreachable / behind when the universal check
+    # runs. Without this override the universal check would false-fail on the
+    # exact "wiped node still catching up" condition this scenario tests.
+    - name: "[universal] state_root_consensus"
+      description: All non-wiped validators converge on the same state root after resync (v6 excluded — still resyncing)
+      type: state_root_consensus
+      container_pattern: "l2-el-[123578]-bor-heimdall-v2-validator"
+      critical: true
       post_fault_only: true
 
   metrics:

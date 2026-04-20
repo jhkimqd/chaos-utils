@@ -57,7 +57,11 @@ spec:
 
   duration: 3m
   warmup: 30s
-  cooldown: 1m
+  # 2m cooldown: three-phase isolate+stress+kill of two nodes, then full recovery
+  # (partition heal + container restart + peer reconnect + chain catch-up). 1m
+  # left state_root_consensus racing with ongoing resync. Matches sibling 3m-fault
+  # scenarios (span-boundary-partition, fork-at-sprint-span-collision).
+  cooldown: 2m
 
   faults:
     # ============ PHASE 1: STRESS + KILL (listed first so connection_drop
