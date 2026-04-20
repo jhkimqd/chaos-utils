@@ -32,7 +32,7 @@ Dependencies: PyYAML  (pip install pyyaml)
 Usage
 -----
     python3 scripts/generate_scenarios.py                       # 264 scenarios
-    python3 scripts/generate_scenarios.py --pairwise            # ~24 scenarios
+    python3 scripts/generate_scenarios.py --pairwise            # ~88 scenarios
     python3 scripts/generate_scenarios.py --list                # preview table
     python3 scripts/generate_scenarios.py --output ./gen/
     python3 scripts/generate_scenarios.py --enclave my-enclave  # embed enclave

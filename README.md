@@ -111,15 +111,14 @@ chaos-utils/
 1. **Service Discovery**: Finds target containers in Kurtosis enclave by pattern matching. Any selector that resolves to `prometheus` or `grafana` is rejected — monitoring infrastructure is never a fault target.
 2. **Sidecar Creation**: Attaches chaos-utils sidecar to target's network namespace
 3. **Pre-fault health check**: Evaluates all success criteria before injection. If any critical criterion fails the experiment aborts — the system must be in steady state before faults are applied.
-4. **Fault Injection**: Injects faults via sidecar (comcast/tc for network, Docker API for container lifecycle, stress for resources)
+4. **Fault Injection**: Injects faults via sidecar (tc netem for network, Docker API for container lifecycle, stress-ng for resources)
 5. **Monitoring**: Collects Prometheus metrics during test execution
 6. **Teardown**: Removes all faults and sidecars *before* evaluating criteria, ensuring Prometheus can scrape cleanly without network faults on the scrape path
 7. **Post-fault evaluation**: Checks success criteria after recovery (e.g., "validators resumed block production")
 8. **Cleanup**: Destroys sidecars and verifies no tc/iptables rules remain
 
 **Safety Features**:
-- Pre-flight cleanup removes remnants from previous tests
-- Automatic `comcast --stop` before each fault injection
+- Pre-flight cleanup removes remnants from previous tests (remnant sidecars, stale tc qdiscs)
 - Emergency stop via Ctrl+C (SIGINT/SIGTERM handling)
 - Cleanup verification ensures no tc/iptables rules remain
 - Prometheus is never a fault target — enforced at container resolution time
@@ -214,7 +213,7 @@ spec:
 
 ### Fault Parameters
 
-**Network Faults** (`type: network`, via comcast/tc):
+**Network Faults** (`type: network`, via tc netem):
 - `latency`: Delay in milliseconds (e.g., 500)
 - `packet_loss`: Percentage 0-100 (e.g., 50.0)
 - `bandwidth`: Limit in kbit/s (e.g., 1000)
@@ -233,10 +232,9 @@ spec:
 - `memory_mb`: Memory to consume in MB
 
 **Disk I/O** (`type: disk_io`):
-- `io_latency_ms`: I/O delay intensity (dd: controls worker count; dm-delay: exact ms)
-- `target_path`: Filesystem path to target (e.g., `/var/lib/bor/bor/chaindata`)
-- `operation`: `read`, `write`, or `all` (default: `all`, dd method only)
-- `method`: `dd` (default) or `dm-delay` (requires privileged container + dmsetup)
+- `io_latency_ms`: controls `dd` worker count (higher = more contention)
+- `target_path`: filesystem path to target (e.g., `/var/lib/bor/bor/chaindata`)
+- `operation`: `read`, `write`, or `all` (default: `all`)
 
 ## Built-in Scenarios
 
@@ -494,13 +492,9 @@ The sidecar image (`jhkimqd/chaos-utils:latest`, built from `Dockerfile.chaos-ut
 
 The image requires `--cap-add=NET_ADMIN,NET_RAW` at runtime. `chaos-runner` manages the sidecar lifecycle automatically — you only need to build the image.
 
-## License
-
-Based on [tylertreat/comcast](https://github.com/tylertreat/comcast)
-
 ## References
 
 - [O'Reilly Chaos Engineering](https://www.oreilly.com/library/view/chaos-engineering/9781491988459/)
-- [Comcast Network Fault Injection](https://github.com/tylertreat/comcast)
 - [Kurtosis](https://docs.kurtosis.com/)
 - [Prometheus PromQL](https://prometheus.io/docs/prometheus/latest/querying/basics/)
+- [tc-netem(8)](https://man7.org/linux/man-pages/man8/tc-netem.8.html)
