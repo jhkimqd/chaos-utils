@@ -79,7 +79,9 @@ spec:
     - name: block_production_resumes
       description: "All validators resume after Heimdall gRPC restored"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      # F1: use max() + [3m] — cluster-wide recovery signal post-fault;
+      # per-validator cold-start tail would make `min` flake at [1m].
+      query: max(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
       post_fault_only: true

@@ -110,8 +110,10 @@ spec:
     - name: chain_continues
       description: "Healthy validator 3 keeps producing blocks during fault"
       type: prometheus
+      # C1: rate() of a counter is always ≥ 0 — threshold `">= 0"` is a no-op that passes
+      # even when the chain is stalled. Tighten to `"> 0"` so real stalls fail the criterion.
       query: rate(chain_head_block{job="l2-el-3-bor-heimdall-v2-validator"}[2m])
-      threshold: ">= 0"
+      threshold: "> 0"
       critical: false
 
     - name: faulted_validator_catches_up

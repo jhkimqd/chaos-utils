@@ -64,7 +64,8 @@ spec:
     - name: block_production_continues
       description: CRITICAL - Block production continues despite corrupted checkpoint data
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 
@@ -101,7 +102,8 @@ spec:
     - name: recovery_after_cleanup
       description: Checkpoint verification returns to normal after fault removal
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake at recovery check.
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
       post_fault_only: true

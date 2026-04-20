@@ -54,8 +54,10 @@ spec:
   - name: bridge_deposits_resume
     description: Bridge operations resume after cascade recovery
     type: prometheus
+    # C2: increase() of a counter is always ≥ 0 — threshold `">= 0"` is a no-op that
+    # passes even when bridge deposits have fully stalled. Tighten to `"> 0"`.
     query: increase(panoptichain_rpc_bridge_deposit_count[2m])
-    threshold: '>= 0'
+    threshold: '> 0'
     window: 4m
     critical: false
   - name: gas_used_increases

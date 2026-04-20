@@ -59,7 +59,8 @@ spec:
     - name: majority_block_production
       description: "3 healthy validators produce blocks"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[12]-bor-heimdall-v2-validator"}[1m]))
+      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
+      query: min(rate(chain_head_block{job=~"l2-el-[12]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 

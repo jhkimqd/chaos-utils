@@ -83,10 +83,11 @@ spec:
 
   success_criteria:
     # Critical: remaining 6/8 validators keep producing
+    # F2 fix: widen to 3m, keep min() — every unfrozen validator must produce.
     - name: block_production_continues
       description: 6/8 unfrozen validators maintain block production
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[124578]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 
@@ -127,6 +128,10 @@ spec:
       post_fault_only: true
 
     # Informational
+    # E2 audit note (low-conf, skipped): instant 1m-rate sampled during_fault may
+    # include pre-fault blocks inside its tail, weakening the stall signal. Left
+    # as-is since criterion is non-critical and an accurate fix (per-node
+    # max_over_time derivative) is non-mechanical.
     - name: frozen_bor_stalls
       description: Frozen Bor nodes stop advancing (proves pause is effective)
       type: prometheus

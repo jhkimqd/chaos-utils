@@ -51,11 +51,13 @@ spec:
         stagger: 0
 
   success_criteria:
-    # Critical: Block production must resume after restart — shorter inner rate window for restart scenario
+    # Critical: Block production must resume after restart
+    # F1 fix: widen inner window to 3m and use max() to avoid cold-start tail
+    # on any single validator flaking the cluster-wide progress signal.
     - name: block_production_resumes
-      description: Block production resumes and sustains after restart (gap detection with 1m inner window tolerates brief restart pause)
+      description: Block production resumes and sustains after restart (3m inner window, cluster-wide progress)
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      query: max(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 

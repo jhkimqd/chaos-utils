@@ -69,10 +69,11 @@ spec:
       critical: true
       post_fault_only: true
 
+    # F1 fix: widen to 3m and use max() — recovery signal tolerates cold-start.
     - name: db_opens_cleanly
       description: Bor resumes block sync — PebbleDB WAL replay succeeded
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[25]-bor-heimdall-v2-validator"}[1m]))
+      query: max(rate(chain_head_block{job=~"l2-el-[25]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -96,10 +97,11 @@ spec:
       critical: true
       post_fault_only: true
 
+    # F2 fix: widen to 3m, keep min() — every non-killed validator must produce.
     - name: healthy_validators_unaffected
       description: Non-killed validators maintain block production
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[134678]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[134678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 

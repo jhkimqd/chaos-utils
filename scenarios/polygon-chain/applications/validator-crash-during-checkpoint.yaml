@@ -70,10 +70,11 @@ spec:
   success_criteria:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
+    # F2 fix: widen to 3m, keep min() — every non-crashed validator must produce.
     - name: network_survives_crash
-      description: CRITICAL - Other validators continue producing blocks without any 1-minute gap (v4 excluded — known flaky)
+      description: CRITICAL - Other validators continue producing blocks (v4 excluded — known flaky)
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 

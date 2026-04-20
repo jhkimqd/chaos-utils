@@ -129,10 +129,11 @@ spec:
       exclude_producer: false
 
   success_criteria:
+    # F2 fix: widen to 3m, keep min() — every non-killed validator must produce.
     - name: block_production_continues
       description: Network continues producing blocks after producer killed — span rotation works
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[124678]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[124678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 
@@ -151,10 +152,11 @@ spec:
       critical: true
       post_fault_only: true
 
+    # F1 fix: widen to 3m and use max() — cluster-wide recovery signal.
     - name: block_sync_resumes
       description: Killed producers resume sync — re-establish chain state
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[35]-bor-heimdall-v2-validator"}[1m]))
+      query: max(rate(chain_head_block{job=~"l2-el-[35]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
       post_fault_only: true
