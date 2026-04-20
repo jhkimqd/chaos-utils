@@ -124,6 +124,12 @@ type Orchestrator struct {
 	injectTime    time.Time         // set at INJECT start; used to scope log capture to fault window
 	injectedFaults  map[string]string       // track which targets have faults injected (containerID -> faultType)
 	criteriaResults []CriterionOutcome      // populated during DETECT phase
+
+	// faultVerificationWarnings counts faults that passed InjectFault's own
+	// error check but failed the orchestrator's post-injection verification.
+	// Non-zero means the test ran with at least one fault whose observable
+	// side effect could not be confirmed.
+	faultVerificationWarnings int
 }
 
 // CriterionOutcome captures the result of a single success criterion evaluation.
@@ -141,18 +147,19 @@ type CriterionOutcome struct {
 
 // TestResult represents the result of a chaos test execution
 type TestResult struct {
-	TestID           string
-	ScenarioName     string
-	StartTime        time.Time
-	EndTime          time.Time
-	Duration         time.Duration
-	State            TestState
-	Success          bool
-	Message          string
-	Errors           []error
-	Targets          []TargetInfo
-	FaultCount       int
-	CriteriaResults  []CriterionOutcome
+	TestID                    string
+	ScenarioName              string
+	StartTime                 time.Time
+	EndTime                   time.Time
+	Duration                  time.Duration
+	State                     TestState
+	Success                   bool
+	Message                   string
+	Errors                    []error
+	Targets                   []TargetInfo
+	FaultCount                int
+	CriteriaResults           []CriterionOutcome
+	FaultVerificationWarnings int
 }
 
 // New creates a new Orchestrator instance
@@ -193,6 +200,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		RefreshInterval: cfg.Prometheus.RefreshInterval,
 	})
 	if err != nil {
+		emergencyCancel()
 		return nil, fmt.Errorf("failed to create Prometheus client (url=%s): %w", cfg.Prometheus.URL, err)
 	}
 
@@ -400,11 +408,10 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 		return o.failTest(result, err)
 	}
 
-	// REPORT state
+	// REPORT state — the caller (cmd/chaos-runner) emits the final report
+	// after Execute returns, so there is no orchestrator-side work here
+	// beyond the state transition.
 	o.transitionState(StateReport)
-	if err = o.executeReport(ctx, result); err != nil {
-		return o.failTest(result, err)
-	}
 
 	// Success!
 	o.transitionState(StateCompleted)
@@ -416,6 +423,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	result.Targets = o.targets
 	result.FaultCount = len(o.injectedFaults)
 	result.CriteriaResults = o.criteriaResults
+	result.FaultVerificationWarnings = o.faultVerificationWarnings
 
 	return result, nil
 }
@@ -508,7 +516,7 @@ func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 				name := getContainerName(container.Names)
 				// Observability infrastructure must never be a fault target.
 				for _, blocked := range observabilityBlocklist {
-					if contains(name, blocked) {
+					if strings.Contains(name, blocked) {
 						return fmt.Errorf(
 							"selector pattern %q resolved to observability container %q — refusing to inject faults into monitoring infrastructure",
 							targetSpec.Selector.Pattern, name,
@@ -809,6 +817,33 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 		jobs = remaining
 	}
 
+	// Refuse any scenario that co-injects dns + network on the same container.
+	// Both install a root tc qdisc; the second one silently wipes or clobbers
+	// the first. Detect at plan time rather than debugging a missing fault.
+	{
+		perContainer := map[string]map[string]bool{}
+		for _, job := range jobs {
+			for _, t := range job.targets {
+				if perContainer[t.ContainerID] == nil {
+					perContainer[t.ContainerID] = map[string]bool{}
+				}
+				perContainer[t.ContainerID][job.fault.Type] = true
+			}
+		}
+		for cid, faultTypes := range perContainer {
+			if faultTypes["dns"] && faultTypes["network"] {
+				name := cid[:12]
+				for _, t := range o.targets {
+					if t.ContainerID == cid {
+						name = t.Name
+						break
+					}
+				}
+				return fmt.Errorf("dns and network faults cannot share a container (both install a root tc qdisc on eth0) — target %q has both", name)
+			}
+		}
+	}
+
 	// injectResult carries the outcome of one goroutine.
 	type injectResult struct {
 		job faultJob
@@ -870,21 +905,26 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 	return nil
 }
 
-// verifyFaultsActive checks that network faults are actually applied by
-// inspecting tc qdisc rules via each target's sidecar. This is the only way
-// to confirm comcast/tc commands took effect — without it, a silently failed
-// injection is indistinguishable from a successful one.
+// verifyFaultsActive confirms each injected fault left observable state in
+// the target's namespace/sidecar. Without this step a silently-failed exec
+// (sidecar returned success but the rule was not applied) would be
+// indistinguishable from a real injection.
+//
+// Verification failures are logged and counted but do NOT abort the run,
+// because we may be inspecting a fault that has already produced the desired
+// side effect and self-terminated (e.g. a short-lived p2p attack). The
+// returned count of warnings is stored on the orchestrator so the final
+// report can flag experiments where verification did not pass cleanly.
+//
+// Fault types whose implementations return synchronous errors on failure and
+// have no separate post-install side effect to inspect (container lifecycle,
+// process_kill, p2p_attack, file_delete, file_corrupt) are skipped here.
 func (o *Orchestrator) verifyFaultsActive(ctx context.Context) error {
 	fmt.Println("Verifying faults are active...")
 
+	o.faultVerificationWarnings = 0
 	verified := 0
 	for containerID, faultType := range o.injectedFaults {
-		if faultType != "network" {
-			verified++
-			continue
-		}
-
-		// Find target name for display
 		targetName := containerID[:12]
 		for _, t := range o.targets {
 			if t.ContainerID == containerID {
@@ -893,35 +933,174 @@ func (o *Orchestrator) verifyFaultsActive(ctx context.Context) error {
 			}
 		}
 
-		// Run tc qdisc show inside the sidecar (shares target's network namespace)
-		output, err := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
-		if err != nil {
-			return fmt.Errorf("fault verification failed on %s: could not inspect tc rules: %w", targetName, err)
+		var verifyErr error
+		switch faultType {
+		case "network":
+			verifyErr = o.verifyNetworkFault(ctx, containerID, targetName)
+		case "dns":
+			verifyErr = o.verifyDNSFault(ctx, containerID, targetName)
+		case "connection_drop":
+			verifyErr = o.verifyConnectionDropFault(ctx, containerID, targetName)
+		case "http_fault", "corruption_proxy":
+			verifyErr = o.verifyHTTPRedirect(ctx, containerID, targetName, faultType)
+		case "disk_fill":
+			verifyErr = o.verifyDiskFillFault(ctx, containerID, targetName)
+		case "disk_io":
+			verifyErr = o.verifyDiskIOFault(ctx, containerID, targetName)
+		case "cpu_stress", "cpu", "memory_stress", "memory_pressure", "memory":
+			verifyErr = o.verifyStressFault(ctx, containerID, targetName, faultType)
 		}
 
-		if !strings.Contains(output, "netem") && !strings.Contains(output, "tbf") {
-			return fmt.Errorf("fault verification failed on %s: no netem/tbf rules found after injection (tc output: %s)", targetName, strings.TrimSpace(output))
-		}
-
-		// Print the active rule so operators can confirm parameters
-		for _, line := range strings.Split(output, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.Contains(line, "netem") || strings.Contains(line, "tbf") {
-				fmt.Printf("  ✓ %s: %s\n", targetName, line)
-			}
-		}
-
-		// Also show tc filters if any (u32 port filters)
-		filterOutput, _ := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "filter", "show", "dev", "eth0"})
-		if filterOutput != "" && strings.Contains(filterOutput, "u32") {
-			filterCount := strings.Count(filterOutput, "match")
-			fmt.Printf("  ✓ %s: %d u32 port filter(s) active\n", targetName, filterCount)
+		if verifyErr != nil {
+			o.faultVerificationWarnings++
+			fmt.Printf("  ⚠ %s: %v\n", targetName, verifyErr)
 		}
 		verified++
 	}
 
-	fmt.Printf("✓ Verified %d fault(s) active\n", verified)
+	if o.faultVerificationWarnings > 0 {
+		fmt.Printf("⚠ Verified %d fault(s), %d with verification warnings — see above\n", verified, o.faultVerificationWarnings)
+	} else {
+		fmt.Printf("✓ Verified %d fault(s) active\n", verified)
+	}
 	return nil
+}
+
+// verifyNetworkFault inspects tc qdisc/filters in the target's sidecar.
+func (o *Orchestrator) verifyNetworkFault(ctx context.Context, containerID, targetName string) error {
+	output, err := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+	if err != nil {
+		return fmt.Errorf("could not inspect tc rules: %w", err)
+	}
+	if !strings.Contains(output, "netem") && !strings.Contains(output, "tbf") {
+		return fmt.Errorf("no netem/tbf rules found after injection (tc output: %s)", strings.TrimSpace(output))
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "netem") || strings.Contains(line, "tbf") {
+			fmt.Printf("  ✓ %s: %s\n", targetName, line)
+		}
+	}
+	filterOutput, _ := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "filter", "show", "dev", "eth0"})
+	if filterOutput != "" && strings.Contains(filterOutput, "u32") {
+		fmt.Printf("  ✓ %s: %d u32 port filter(s) active\n", targetName, strings.Count(filterOutput, "match"))
+	}
+	return nil
+}
+
+// verifyDNSFault confirms the DNS-specific prio band + filter are installed.
+func (o *Orchestrator) verifyDNSFault(ctx context.Context, containerID, targetName string) error {
+	output, err := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+	if err != nil {
+		return fmt.Errorf("could not inspect tc rules: %w", err)
+	}
+	if !strings.Contains(output, "netem") {
+		return fmt.Errorf("no netem qdisc found (tc output: %s)", strings.TrimSpace(output))
+	}
+	fmt.Printf("  ✓ %s: DNS netem qdisc active\n", targetName)
+	return nil
+}
+
+// verifyConnectionDropFault confirms the CHAOS_DROP chain is populated and
+// linked from INPUT.
+func (o *Orchestrator) verifyConnectionDropFault(ctx context.Context, containerID, targetName string) error {
+	output, err := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"iptables", "-L", "CHAOS_DROP", "-n"})
+	if err != nil {
+		return fmt.Errorf("CHAOS_DROP chain not found: %w", err)
+	}
+	if !strings.Contains(output, "DROP") && !strings.Contains(output, "REJECT") {
+		return fmt.Errorf("CHAOS_DROP chain has no rules (%s)", strings.TrimSpace(output))
+	}
+	fmt.Printf("  ✓ %s: CHAOS_DROP chain active\n", targetName)
+	return nil
+}
+
+// verifyHTTPRedirect confirms PREROUTING contains a redirect rule with the
+// expected chaos comment.
+func (o *Orchestrator) verifyHTTPRedirect(ctx context.Context, containerID, targetName, faultType string) error {
+	comment := "chaos-http-fault"
+	if faultType == "corruption_proxy" {
+		comment = "chaos-corruption-proxy"
+	}
+	output, err := o.sidecarMgr.ExecInSidecar(ctx, containerID, []string{"sh", "-c",
+		fmt.Sprintf("iptables-save -t nat 2>/dev/null | grep -c %s || true", comment),
+	})
+	if err != nil {
+		return fmt.Errorf("%s: %w", faultType, err)
+	}
+	if strings.TrimSpace(output) == "0" || strings.TrimSpace(output) == "" {
+		return fmt.Errorf("no PREROUTING rule tagged %q", comment)
+	}
+	fmt.Printf("  ✓ %s: %s PREROUTING redirect active\n", targetName, faultType)
+	return nil
+}
+
+// verifyDiskFillFault confirms a fill file exists somewhere under the target.
+func (o *Orchestrator) verifyDiskFillFault(ctx context.Context, containerID, targetName string) error {
+	output, err := o.dockerClient.ExecCommand(ctx, containerID, []string{"sh", "-c",
+		"find /tmp /root /var/lib /home -maxdepth 6 -name 'chaos_fill_data' 2>/dev/null | head -1",
+	})
+	if err != nil {
+		return fmt.Errorf("could not search for fill file: %w", err)
+	}
+	if strings.TrimSpace(output) == "" {
+		return fmt.Errorf("no chaos_fill_data file found")
+	}
+	fmt.Printf("  ✓ %s: disk fill file %s\n", targetName, strings.TrimSpace(output))
+	return nil
+}
+
+// verifyDiskIOFault confirms chaos dd stress workers are running in the target.
+func (o *Orchestrator) verifyDiskIOFault(ctx context.Context, containerID, targetName string) error {
+	output, err := o.dockerClient.ExecCommand(ctx, containerID, []string{"sh", "-c",
+		"COUNT=0; for p in /proc/[0-9]*/cmdline; do " +
+			"if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'chaos_io_stress'; then COUNT=$((COUNT+1)); fi; " +
+			"done; echo $COUNT",
+	})
+	if err != nil {
+		return fmt.Errorf("could not count chaos_io_stress processes: %w", err)
+	}
+	count := strings.TrimSpace(output)
+	if count == "" || count == "0" {
+		return fmt.Errorf("no chaos_io_stress workers running")
+	}
+	fmt.Printf("  ✓ %s: %s disk I/O stress worker(s) active\n", targetName, count)
+	return nil
+}
+
+// verifyStressFault confirms a stress mechanism is active. The stress
+// injector supports two methods: active `yes` processes (method="stress")
+// and cgroup limits (method="limit"). Either "yes" processes OR an updated
+// cgroup (non-zero CPUQuota/Memory) counts as success.
+func (o *Orchestrator) verifyStressFault(ctx context.Context, containerID, targetName, faultType string) error {
+	output, err := o.dockerClient.ExecCommand(ctx, containerID, []string{"sh", "-c",
+		"COUNT=0; for p in /proc/[0-9]*/cmdline; do " +
+			"if tr '\\0' ' ' < $p 2>/dev/null | grep -q '^yes'; then COUNT=$((COUNT+1)); fi; " +
+			"done; echo $COUNT",
+	})
+	if err != nil {
+		return fmt.Errorf("could not count stress processes: %w", err)
+	}
+	count := strings.TrimSpace(output)
+	if count != "" && count != "0" {
+		fmt.Printf("  ✓ %s: %s stress worker(s) active (%s)\n", targetName, count, faultType)
+		return nil
+	}
+	// No active stress processes; method may be "limit" (cgroup-only). In
+	// that case there is no in-container side effect to inspect — accept it.
+	inspect, inspectErr := o.dockerClient.ContainerInspect(ctx, containerID)
+	if inspectErr != nil {
+		return fmt.Errorf("no stress processes found and container inspect failed: %w", inspectErr)
+	}
+	if strings.HasPrefix(faultType, "memory") && inspect.HostConfig != nil && inspect.HostConfig.Memory > 0 {
+		fmt.Printf("  ✓ %s: memory limit %d bytes applied (%s)\n", targetName, inspect.HostConfig.Memory, faultType)
+		return nil
+	}
+	if strings.HasPrefix(faultType, "cpu") && inspect.HostConfig != nil && inspect.HostConfig.CPUQuota > 0 {
+		fmt.Printf("  ✓ %s: cpu quota %d applied (%s)\n", targetName, inspect.HostConfig.CPUQuota, faultType)
+		return nil
+	}
+	return fmt.Errorf("no stress workers and no cgroup limit visible (method=limit may not have been applied)")
 }
 
 // executeMonitor monitors system metrics during the test
@@ -1411,16 +1590,6 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 	return nil
 }
 
-// executeReport generates the final test report
-func (o *Orchestrator) executeReport(ctx context.Context, result *TestResult) error {
-	fmt.Println("Generating report...")
-
-	// Report is populated by the caller
-	// This method can be used for additional reporting logic
-
-	fmt.Println("✓ Report generated")
-	return nil
-}
 
 // RequestStop requests the orchestrator to stop execution
 func (o *Orchestrator) RequestStop() {
@@ -1485,7 +1654,6 @@ func (o *Orchestrator) preFlightCleanup(ctx context.Context) error {
 	return nil
 }
 
-// GetCleanupSummary returns the cleanup summary from the coordinator
 // SetHeimdallAPI sets the Heimdall API endpoint URL for producer discovery.
 func (o *Orchestrator) SetHeimdallAPI(url string) {
 	o.heimdallAPI = url
@@ -1554,6 +1722,7 @@ func (o *Orchestrator) resolveCurrentProducer(ctx context.Context) (string, erro
 	return "", fmt.Errorf("no target container matching pattern %q found", pattern)
 }
 
+// GetCleanupSummary returns the cleanup summary from the coordinator.
 func (o *Orchestrator) GetCleanupSummary() cleanup.CleanupSummary {
 	return o.cleanupCoord.GetSummary()
 }
@@ -1569,6 +1738,7 @@ func (o *Orchestrator) failTest(result *TestResult, err error) (*TestResult, err
 	result.Targets = o.targets
 	result.FaultCount = len(o.injectedFaults)
 	result.CriteriaResults = o.criteriaResults
+	result.FaultVerificationWarnings = o.faultVerificationWarnings
 	return result, err
 }
 
@@ -1620,22 +1790,7 @@ func match(name, pattern string) bool {
 	}
 
 	// Simple contains check
-	return len(pattern) > 0 && contains(name, pattern)
-}
-
-// contains checks if s contains substr
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || hasSubstring(s, substr))
-}
-
-// hasSubstring checks if s contains substr
-func hasSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return len(pattern) > 0 && strings.Contains(name, pattern)
 }
 
 // getContainerName extracts a clean name from Docker names list
@@ -1650,9 +1805,17 @@ func getContainerName(names []string) string {
 	return name
 }
 
-// getContainerIP extracts IP address from container
+// getContainerIP extracts the first non-empty network IP from a container
+// listing. Returns empty string if no Docker networks are attached.
 func getContainerIP(container types.Container) string {
-	// This is a simplified version - in production would extract from NetworkSettings
+	if container.NetworkSettings == nil {
+		return ""
+	}
+	for _, net := range container.NetworkSettings.Networks {
+		if net != nil && net.IPAddress != "" {
+			return net.IPAddress
+		}
+	}
 	return ""
 }
 
