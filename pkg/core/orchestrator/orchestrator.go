@@ -32,6 +32,16 @@ import (
 	"github.com/jihwankim/chaos-utils/pkg/scenario/validator"
 )
 
+// CriteriaFailureError marks a test that completed orchestration cleanly but
+// had one or more critical success criteria fail. Callers use errors.As to
+// distinguish these legitimate test findings (exit 1) from true infrastructure
+// errors (exit 2) so CI doesn't halt the suite on a plain criteria miss.
+type CriteriaFailureError struct {
+	Msg string
+}
+
+func (e *CriteriaFailureError) Error() string { return e.Msg }
+
 // TestState represents the current state of a chaos test execution
 type TestState int
 
@@ -1252,7 +1262,7 @@ func (o *Orchestrator) evaluateDuringFaultCriteria(ctx context.Context) error {
 	}
 
 	if criticalFailed {
-		return fmt.Errorf("one or more critical during-fault criteria failed")
+		return &CriteriaFailureError{Msg: "one or more critical during-fault criteria failed"}
 	}
 
 	return nil
@@ -1465,7 +1475,7 @@ func (o *Orchestrator) executeDetect(ctx context.Context) error {
 	}
 
 	if criticalFailed {
-		return fmt.Errorf("one or more critical success criteria failed")
+		return &CriteriaFailureError{Msg: "one or more critical success criteria failed"}
 	}
 
 	if allPassed {
