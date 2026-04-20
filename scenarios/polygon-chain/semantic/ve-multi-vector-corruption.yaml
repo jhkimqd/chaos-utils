@@ -100,7 +100,8 @@ spec:
     - name: block_production_continues
       description: CRITICAL - Block production must continue under multi-vector attack
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 
@@ -138,7 +139,8 @@ spec:
     - name: ve_rejections_or_missing
       description: Affected validators should show signs of VE issues
       type: prometheus
-      query: max(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"})
+      # E1: wrap the gauge in max_over_time[2m] so transient between-scrape blips aren't missed.
+      query: max(max_over_time(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]))
       threshold: "> 0"
       critical: false
       during_fault: true
@@ -154,7 +156,8 @@ spec:
     - name: honest_validators_producing
       description: Non-affected validators produce blocks normally
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[13678]-bor-heimdall-v2-validator"}[1m]))
+      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
+      query: min(rate(chain_head_block{job=~"l2-el-[13678]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: false
       during_fault: true

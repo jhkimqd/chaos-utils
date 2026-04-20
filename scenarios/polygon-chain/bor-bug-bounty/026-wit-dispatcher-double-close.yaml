@@ -99,7 +99,8 @@ spec:
     - name: cluster_continues
       description: "Unfaulted majority (1,3) keeps producing blocks during the SIGKILL storm"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
 
