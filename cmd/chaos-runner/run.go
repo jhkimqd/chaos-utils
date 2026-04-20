@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -188,10 +189,16 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 	// Display final summary
 	progressReporter.ReportTestCompleted(report)
 
-	// Return error if test failed
-	// err != nil means infrastructure failure (sidecar creation, container errors, etc.)
-	// — exit code 2 so the CI treats it as a real breakage, not an expected test finding.
+	// Return error if test failed.
+	// A CriteriaFailureError is a legitimate test finding (criteria missed after
+	// a clean orchestration run) and must exit 1 so CI treats it as a test
+	// failure rather than an infra breakage. Everything else (sidecar creation,
+	// container errors, Prometheus unreachability, etc.) is infra → exit 2.
 	if err != nil {
+		var criteriaErr *orchestrator.CriteriaFailureError
+		if errors.As(err, &criteriaErr) {
+			return fmt.Errorf("chaos test failed: %w", err)
+		}
 		return NewInfraError("chaos test failed: %w", err)
 	}
 

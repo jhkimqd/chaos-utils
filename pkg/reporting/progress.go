@@ -112,6 +112,13 @@ func (pr *ProgressReporter) printSummary(report *TestReport) {
 				if c.Query != "" {
 					fmt.Printf("      query: %s\n", c.Query)
 				}
+				// Surface the detector's Message so diagnostic states like
+				// "no targets available for log scanning" (e.g. when a log
+				// criterion's target container was killed) aren't hidden
+				// behind a misleading "got 0, expected" line.
+				if c.Message != "" {
+					fmt.Printf("      reason: %s\n", c.Message)
+				}
 			}
 		}
 	} else {

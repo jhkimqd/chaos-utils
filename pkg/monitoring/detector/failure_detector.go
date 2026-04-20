@@ -344,7 +344,11 @@ func (fd *FailureDetector) discoverContainersByPattern(ctx context.Context, patt
 	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	containers, err := fd.dockerClient.ContainerList(tctx, dockertypes.ContainerListOptions{})
+	// All: true so scenarios that kill or crash-loop their target (e.g.
+	// container_kill, db-corruption) can still have post-fault logs scanned
+	// from the exited container. Without this, discovery returns 0 targets
+	// and log criteria fail silently with a misleading "0 matches".
+	containers, err := fd.dockerClient.ContainerList(tctx, dockertypes.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
