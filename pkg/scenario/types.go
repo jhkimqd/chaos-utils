@@ -139,7 +139,7 @@ type SuccessCriterion struct {
 	// Description of what this checks
 	Description string `yaml:"description,omitempty"`
 
-	// Type: prometheus, health_check, custom
+	// Type: prometheus, log, state_root_consensus
 	Type string `yaml:"type"`
 
 	// Query for Prometheus-based criteria
@@ -150,12 +150,6 @@ type SuccessCriterion struct {
 
 	// Window is the time window for evaluation
 	Window time.Duration `yaml:"window,omitempty"`
-
-	// URL for health check criteria
-	URL string `yaml:"url,omitempty"`
-
-	// ExpectedStatus for HTTP health checks
-	ExpectedStatus int `yaml:"expected_status,omitempty"`
 
 	// Critical marks this as a critical criterion (test fails if this fails)
 	Critical bool `yaml:"critical,omitempty"`

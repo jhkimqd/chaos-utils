@@ -276,7 +276,7 @@ func (v *Validator) validateFaultType(fault scenario.Fault, index int) {
 		"container_restart", "container_kill", "container_pause",
 		"connection_drop",
 		"dns",
-		"process_priority", "process_kill",
+		"process_kill",
 		"disk_io", "disk_fill", "file_delete", "file_corrupt",
 		"clock_skew",
 		"http_fault", "corruption_proxy", "p2p_attack",
@@ -343,15 +343,19 @@ func (v *Validator) validateSuccessCriteria(s *scenario.Scenario) {
 				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].threshold is required for prometheus type", i))
 			}
 
-		case "health_check":
-			if criterion.URL == "" {
-				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].url is required for health_check type", i))
-			}
-
 		case "log":
 			if criterion.Pattern == "" {
 				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].pattern is required for log type", i))
 			}
+
+		case "state_root_consensus":
+			// no required fields; uses ContainerPattern with a default
+
+		case "health_check":
+			v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d]: health_check criterion type has been removed; use type: prometheus or type: log", i))
+
+		default:
+			v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].type '%s' is invalid (must be prometheus, log, or state_root_consensus)", i, criterion.Type))
 		}
 	}
 }

@@ -41,13 +41,17 @@ type FailureDetector struct {
 
 // CriterionResult represents the evaluation result of a success criterion
 type CriterionResult struct {
-	Criterion    scenario.SuccessCriterion
-	Passed       bool
-	LastValue    float64
-	LastChecked  time.Time
-	Evaluations  int
-	Failures     int
-	Message      string
+	Criterion   scenario.SuccessCriterion
+	Passed      bool
+	LastValue   float64
+	LastChecked time.Time
+	Evaluations int
+	Failures    int
+	Message     string
+	// SeriesCount is the number of Prometheus series returned by the last
+	// evaluation. >1 means the query did not aggregate and the detector
+	// reduced them deterministically (see evaluatePrometheus).
+	SeriesCount int
 }
 
 // New creates a new failure detector
@@ -89,9 +93,6 @@ func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.Succ
 	case "prometheus":
 		return fd.evaluatePrometheus(ctx, criterion, result)
 
-	case "health_check":
-		return fd.evaluateHealthCheck(ctx, criterion, result)
-
 	case "log":
 		return fd.evaluateLog(ctx, criterion, result)
 
@@ -126,14 +127,28 @@ func (fd *FailureDetector) evaluatePrometheus(ctx context.Context, criterion sce
 	if len(queryResults) == 0 {
 		result.Passed = false
 		result.LastValue = 0
+		result.SeriesCount = 0
 		result.Message = "query returned no results"
 		result.Failures++
 		return result, nil
 	}
 
-	// Get the first result value
-	value := queryResults[0].Value
+	result.SeriesCount = len(queryResults)
+
+	// When the query returns multiple series the detector must aggregate
+	// deterministically — otherwise it would evaluate an arbitrary
+	// first-series sample. Pick the worst-case value for the threshold
+	// direction: MAX for `<`/`<=` (a single high value must trip the check),
+	// MIN for `>`/`>=` (a single low value must trip it), and the smallest
+	// value for `==`/`!=` (stable across runs). Scenario authors should wrap
+	// queries in min()/max()/avg() — this is a safety net, not a workaround.
+	value := aggregateSeries(queryResults, criterion.Threshold)
 	result.LastValue = value
+
+	if len(queryResults) > 1 {
+		fmt.Printf("    [detector] warning: criterion %q returned %d series; aggregated to %.4f for threshold %q — consider wrapping the query in min()/max()/avg()\n",
+			criterion.Name, len(queryResults), value, criterion.Threshold)
+	}
 
 	// Parse and evaluate threshold
 	passed, err := fd.evaluateThreshold(value, criterion.Threshold)
@@ -146,21 +161,51 @@ func (fd *FailureDetector) evaluatePrometheus(ctx context.Context, criterion sce
 
 	result.Passed = passed
 	if passed {
-		result.Message = fmt.Sprintf("value %.2f meets threshold %s", value, criterion.Threshold)
+		if len(queryResults) > 1 {
+			result.Message = fmt.Sprintf("aggregated value %.2f (across %d series) meets threshold %s", value, len(queryResults), criterion.Threshold)
+		} else {
+			result.Message = fmt.Sprintf("value %.2f meets threshold %s", value, criterion.Threshold)
+		}
 	} else {
-		result.Message = fmt.Sprintf("value %.2f does not meet threshold %s", value, criterion.Threshold)
+		if len(queryResults) > 1 {
+			result.Message = fmt.Sprintf("aggregated value %.2f (across %d series) does not meet threshold %s", value, len(queryResults), criterion.Threshold)
+		} else {
+			result.Message = fmt.Sprintf("value %.2f does not meet threshold %s", value, criterion.Threshold)
+		}
 		result.Failures++
 	}
 
 	return result, nil
 }
 
-// evaluateHealthCheck evaluates an HTTP health check criterion
-func (fd *FailureDetector) evaluateHealthCheck(ctx context.Context, criterion scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
-	// TODO: Implement HTTP health check
-	result.Passed = false
-	result.Message = "health check not yet implemented"
-	return result, fmt.Errorf("health check not yet implemented")
+// aggregateSeries reduces a multi-sample Prometheus result to a single value
+// using worst-case semantics for the threshold direction. For `<`/`<=` it
+// returns the max; for `>`/`>=` it returns the min; for `==`/`!=` (or any
+// unrecognized threshold) it returns the numerically smallest value to keep
+// runs reproducible.
+func aggregateSeries(samples []prometheus.QueryResult, threshold string) float64 {
+	t := strings.TrimSpace(threshold)
+	useMax := strings.HasPrefix(t, "<=") || strings.HasPrefix(t, "<")
+	useMin := strings.HasPrefix(t, ">=") || strings.HasPrefix(t, ">")
+
+	value := samples[0].Value
+	for _, s := range samples[1:] {
+		switch {
+		case useMax:
+			if s.Value > value {
+				value = s.Value
+			}
+		case useMin:
+			if s.Value < value {
+				value = s.Value
+			}
+		default:
+			if s.Value < value {
+				value = s.Value
+			}
+		}
+	}
+	return value
 }
 
 // evaluateLog evaluates a log-pattern-based criterion by scanning container logs.
