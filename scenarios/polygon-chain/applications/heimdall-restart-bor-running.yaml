@@ -23,7 +23,7 @@ metadata:
     This test runs on 2 validators (1 and 3) to verify the majority
     continues producing blocks while both recover.
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [applications, operator-error, upgrade, heimdall-restart, websocket]
   author: DevTools
   version: "0.1.0"
@@ -82,7 +82,7 @@ spec:
       post_fault_only: true
 
     - name: heimdall_consensus_survives
-      description: "Heimdall consensus continues — killing 2/4 still leaves quorum"
+      description: "Heimdall consensus continues — killing 2/8 still leaves > 2/3 quorum"
       type: prometheus
       query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
       threshold: "> 0"

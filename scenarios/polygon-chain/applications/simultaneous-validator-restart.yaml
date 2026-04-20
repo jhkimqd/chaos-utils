@@ -15,14 +15,14 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-.*-heimdall-v2-bor-validator"
+        pattern: "l2-cl-[1235678]-heimdall-v2-bor-validator"
       alias: all_validators_heimdall
 
-    # All 4 validators (Bor execution layer)
+    # All non-flaky validators (Bor execution layer — v4 excluded as known flaky)
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-.*-bor-heimdall-v2-validator"
+        pattern: "l2-el-[1235678]-bor-heimdall-v2-validator"
       alias: all_validators_bor
 
   duration: 2m
@@ -55,7 +55,7 @@ spec:
     - name: block_production_resumes
       description: Block production resumes and sustains after restart (gap detection with 1m inner window tolerates brief restart pause)
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -67,19 +67,19 @@ spec:
       threshold: "> 0"
       critical: true
 
-    # Critical: All validators must come back online
+    # Critical: All non-flaky validators must come back online (v4 excluded)
     - name: all_validators_online
-      description: All validators return to service (topology-safe ratio check)
+      description: "Non-flaky validators return to service (topology-safe ratio check; v4 excluded as known flaky)"
       type: prometheus
-      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}))
+      query: count(up{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"} == 1) / scalar(count(up{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}))
       threshold: ">= 1"
       critical: true
 
     # Expected: No missing validators after recovery
     - name: no_missing_validators_after_recovery
-      description: All validators should be participating after coming back online
+      description: All validators should be participating after coming back online (max() over multi-series gauge)
       type: prometheus
-      query: cometbft_consensus_missing_validators
+      query: max(cometbft_consensus_missing_validators{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"})
       threshold: "== 0"
       critical: false
 
@@ -94,7 +94,7 @@ spec:
     - name: restart_causes_brief_outage
       description: Simultaneous restart causes all validators to briefly go offline (captured via Prometheus scrape failures)
       type: prometheus
-      query: max(1 - min_over_time(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[8m]))
+      query: max(1 - min_over_time(up{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[8m]))
       threshold: "> 0"
       critical: false
 

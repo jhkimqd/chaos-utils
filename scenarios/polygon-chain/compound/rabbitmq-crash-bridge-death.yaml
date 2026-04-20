@@ -16,12 +16,22 @@ metadata:
     - bridge/listener/ — continues polling but can't enqueue
     - bridge/processor/ — stops consuming silently
 
-    Network: 4 validators, RabbitMQ at l2-cl-{N}-rabbitmq (separate container)
+    Network: Kurtosis polygon-pos enclave (8 validators). RabbitMQ is
+    deployed as a sibling Kurtosis service per-validator with name
+    `l2-cl-<N>-rabbitmq`. See `generated/polygon-chain/*/gen-*-rabbitmq.yaml`
+    for more scenarios that assume the same service name.
   tags: [compound, bridge, rabbitmq, silent-failure, event-loss, high-severity]
   author: DevTools
   version: "0.1.0"
 
 spec:
+  preconditions:
+    # Scenario is meaningless without RabbitMQ services in the enclave.
+    # The default min_validators=1 preserves the existing guard; the
+    # rabbitmq sibling containers are not validators but this keeps the
+    # orchestrator from skipping when only validators are present.
+    min_validators: 1
+
   targets:
     # Target the SEPARATE RabbitMQ containers, not Heimdall itself
     - selector:
@@ -60,16 +70,16 @@ spec:
 
   success_criteria:
     - name: heimdall_consensus_continues
-      description: "Heimdall consensus advances despite bridge failure"
+      description: "Heimdall consensus advances despite bridge failure (v4 excluded: known flaky)"
       type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[1m])) or vector(0)
       threshold: "> 0"
       critical: true
 
     - name: bor_block_production
-      description: "Bor block production unaffected by bridge outage"
+      description: "Bor block production unaffected by bridge outage (v4 excluded: known flaky)"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 

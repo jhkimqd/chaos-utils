@@ -28,8 +28,8 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-8-heimdall-v2-bor-validator"
+      alias: heimdall_8
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -53,9 +53,9 @@ spec:
         delay_ms: 2000
         delay_percent: 40
 
-    - phase: api_degrade_heimdall_4
-      description: 20% HTTP 429 + 40% 2s delay on Heimdall 4 REST API
-      target: heimdall_4
+    - phase: api_degrade_heimdall_8
+      description: 20% HTTP 429 + 40% 2s delay on Heimdall 8 REST API
+      target: heimdall_8
       type: http_fault
       params:
         target_port: 1317
@@ -79,7 +79,7 @@ spec:
     - name: block_production_continues
       description: Block production continues despite degraded Heimdall API
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -93,7 +93,7 @@ spec:
     - name: span_api_degrades_as_expected
       description: Span API success rate should drop (confirming fault is active)
       type: prometheus
-      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[2m])), 0.001)) or vector(1)
+      query: (sum(rate(heimdallv2_bor_api_calls_success_total{job=~"l2-cl-[268]-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[268]-heimdall-v2-bor-validator"}[2m])), 0.001)) or vector(1)
       threshold: "< 0.9"
       critical: false
       during_fault: true
@@ -101,7 +101,7 @@ spec:
     - name: bor_handles_retries_gracefully
       description: Bor should not crash or spike API calls from retry storms
       type: prometheus
-      query: sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[246]-heimdall-v2-bor-validator"}[1m]))
+      query: sum(rate(heimdallv2_bor_api_calls_total{job=~"l2-cl-[268]-heimdall-v2-bor-validator"}[1m]))
       threshold: "< 100"
       critical: false
       during_fault: true

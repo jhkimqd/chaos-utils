@@ -32,7 +32,7 @@ metadata:
     This test runs on validators 1 and 3 (opposite of heimdall-restart-bor-running.yaml)
     to verify that Bor reconnects cleanly to its live Heimdall.
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [applications, operator-error, upgrade, bor-restart, websocket]
   author: DevTools
   version: "0.1.0"

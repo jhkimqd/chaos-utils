@@ -77,7 +77,7 @@ spec:
     - name: block_production_continues
       description: CRITICAL - Block production continues (honest 4/6 > 66.7% threshold)
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 

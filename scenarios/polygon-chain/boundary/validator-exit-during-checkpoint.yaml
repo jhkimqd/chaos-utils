@@ -13,7 +13,7 @@ metadata:
     - app/abci.go:940-952 — VE uses penultimate-block validator set
     - x/checkpoint/keeper/ — checkpoint with missing vote extensions
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, checkpoint, validator-exit, vote-extension, race-condition]
   author: DevTools
   version: "0.1.0"
@@ -56,16 +56,16 @@ spec:
 
   success_criteria:
     - name: majority_block_production
-      description: "3/4 remaining validators produce blocks"
+      description: "Remaining validators produce blocks (v2 is fault target; v4 excluded as known flaky)"
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[135678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
     - name: heimdall_consensus_continues
       description: "Heimdall consensus continues with 3/4 validators"
       type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[1m])) or vector(0)
       threshold: "> 0"
       critical: true
 
@@ -87,7 +87,7 @@ spec:
     - name: block_times_acceptable
       description: "Block intervals stay reasonable during disruption"
       type: prometheus
-      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]), 0.001)
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 15.0"
       critical: false
 

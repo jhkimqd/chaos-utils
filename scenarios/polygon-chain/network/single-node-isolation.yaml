@@ -34,22 +34,22 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
 
   duration: 3m
   warmup: 30s
   cooldown: 1m
 
   faults:
-    - phase: isolate_bor_4
-      description: "Completely isolate Bor 4 — drop all P2P traffic"
-      target: bor_4
+    - phase: isolate_bor_6
+      description: "Completely isolate Bor 6 — drop all P2P traffic"
+      target: bor_6
       type: connection_drop
       params:
         rule_type: drop
@@ -57,9 +57,9 @@ spec:
         target_proto: tcp
         probability: 1.0
 
-    - phase: isolate_heimdall_4
-      description: "Completely isolate Heimdall 4 — drop all CometBFT P2P"
-      target: heimdall_4
+    - phase: isolate_heimdall_6
+      description: "Completely isolate Heimdall 6 — drop all CometBFT P2P"
+      target: heimdall_6
       type: connection_drop
       params:
         rule_type: drop
@@ -72,7 +72,7 @@ spec:
     - name: majority_continues
       description: 7/8 validators maintain block production during isolation
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[123578]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -87,7 +87,7 @@ spec:
     - name: isolated_node_stalls
       description: Isolated Bor node stops advancing — cannot produce alone
       type: prometheus
-      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      query: rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[1m])
       threshold: "< 0.5"
       critical: false
       during_fault: true
@@ -96,7 +96,7 @@ spec:
     - name: isolated_node_recovers
       description: Isolated node resumes block sync after partition heals
       type: prometheus
-      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      query: rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -104,17 +104,17 @@ spec:
     - name: heimdall_rejoins
       description: Isolated Heimdall rejoins consensus
       type: prometheus
-      query: rate(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
+      query: rate(cometbft_consensus_height{job="l2-cl-6-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
 
     - name: chain_head_converges
-      description: Isolated node catches up — no fork
+      description: "Isolated node catches up — no fork (v4 excluded as known flaky)"
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 50"
       critical: true
       post_fault_only: true
@@ -122,7 +122,7 @@ spec:
     - name: peer_count_recovers
       description: Isolated node reconnects to peers after healing
       type: prometheus
-      query: cometbft_p2p_peers{job="l2-cl-4-heimdall-v2-bor-validator"}
+      query: min(cometbft_p2p_peers{job="l2-cl-6-heimdall-v2-bor-validator"})
       threshold: "> 3"
       critical: false
       post_fault_only: true

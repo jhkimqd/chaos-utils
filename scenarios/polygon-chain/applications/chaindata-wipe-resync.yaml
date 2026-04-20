@@ -38,13 +38,13 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
 
   duration: 5m
   warmup: 30s
@@ -55,7 +55,7 @@ spec:
     # data directory underneath it, causing immediate read/write failures
     - phase: wipe_bor_chaindata
       description: "Delete Bor chaindata directory while running — simulate disk failure"
-      target: bor_4
+      target: bor_6
       type: file_delete
       params:
         target_path: "/var/lib/bor/bor/chaindata"
@@ -63,8 +63,8 @@ spec:
 
     # Phase 2: Kill and restart both layers to force clean resync from peers
     - phase: kill_restart_bor
-      description: "SIGKILL Bor 4 — restart with empty chaindata, must resync"
-      target: bor_4
+      description: "SIGKILL Bor 6 — restart with empty chaindata, must resync"
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -73,8 +73,8 @@ spec:
       delay: 10s
 
     - phase: kill_restart_heimdall
-      description: "SIGKILL Heimdall 4 — restart alongside Bor"
-      target: heimdall_4
+      description: "SIGKILL Heimdall 6 — restart alongside Bor"
+      target: heimdall_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -87,7 +87,7 @@ spec:
     - name: wiped_validator_online
       description: Wiped validator process starts and becomes healthy
       type: prometheus
-      query: up{job="l2-el-4-bor-heimdall-v2-validator"}
+      query: up{job="l2-el-6-bor-heimdall-v2-validator"}
       threshold: "== 1"
       critical: true
       post_fault_only: true
@@ -95,7 +95,7 @@ spec:
     - name: heimdall_online
       description: Heimdall comes back online
       type: prometheus
-      query: up{job="l2-cl-4-heimdall-v2-bor-validator"}
+      query: up{job="l2-cl-6-heimdall-v2-bor-validator"}
       threshold: "== 1"
       critical: true
       post_fault_only: true
@@ -106,7 +106,7 @@ spec:
         Wiped Bor node begins syncing from peers — chain head is advancing.
         This proves the P2P sync protocol handles a completely empty peer.
       type: prometheus
-      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[2m])
+      query: rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[2m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -117,7 +117,7 @@ spec:
         Other 7 validators maintain block production — resync load from
         wiped node doesn't degrade healthy peers
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[123578]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -133,7 +133,7 @@ spec:
     - name: heimdall_rejoins
       description: Wiped Heimdall validator rejoins consensus
       type: prometheus
-      query: rate(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[2m])
+      query: rate(cometbft_consensus_height{job="l2-cl-6-heimdall-v2-bor-validator"}[2m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -142,7 +142,7 @@ spec:
     - name: wiped_node_finds_peers
       description: Wiped node re-establishes peer connections
       type: prometheus
-      query: cometbft_p2p_peers{job="l2-cl-4-heimdall-v2-bor-validator"}
+      query: min(cometbft_p2p_peers{job="l2-cl-6-heimdall-v2-bor-validator"})
       threshold: "> 3"
       critical: false
       post_fault_only: true
@@ -152,7 +152,7 @@ spec:
       description: Wiped node doesn't crash during resync (stable after wipe)
       type: log
       pattern: "(panic|fatal|SIGSEGV|unexpected.*fault)"
-      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
       absence: true
       critical: false
       post_fault_only: true
@@ -161,7 +161,7 @@ spec:
       description: No validator identity issues after resync with retained keys
       type: log
       pattern: "(wrong.*validator|invalid.*key|identity.*mismatch)"
-      container_pattern: "l2-.*-4-.*-validator"
+      container_pattern: "l2-.*-6-.*-validator"
       absence: true
       critical: false
       post_fault_only: true

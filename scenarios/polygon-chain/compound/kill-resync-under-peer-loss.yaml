@@ -27,7 +27,7 @@ metadata:
     case. A PASS means the node correctly resyncs through peer-loss without
     deadlocking.
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, kill, resync, peer-loss, ghost-state, regression-test, high-severity]
   author: DevTools
   version: "0.1.0"
@@ -66,7 +66,7 @@ spec:
       target: bor_2
       type: network
       params:
-        loss: 25
+        packet_loss: 25
         target_ports: "30303"
         target_proto: tcp,udp
 

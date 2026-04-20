@@ -30,13 +30,13 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
 
   duration: 2m
   warmup: 30s
@@ -46,7 +46,7 @@ spec:
     # Restart cycle 1 — first kill, DB was healthy
     - phase: flap_bor_1
       description: "Restart 1/5 — SIGKILL healthy Bor, 3s down"
-      target: bor_4
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -55,7 +55,7 @@ spec:
 
     - phase: flap_heimdall_1
       description: "Restart 1/5 — SIGKILL Heimdall alongside Bor"
-      target: heimdall_4
+      target: heimdall_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -65,7 +65,7 @@ spec:
     # Restart cycle 2 — kill during WAL replay / cold start
     - phase: flap_bor_2
       description: "Restart 2/5 — SIGKILL Bor during startup/WAL replay"
-      target: bor_4
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -75,7 +75,7 @@ spec:
 
     - phase: flap_heimdall_2
       description: "Restart 2/5 — SIGKILL Heimdall during CometBFT init"
-      target: heimdall_4
+      target: heimdall_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -86,7 +86,7 @@ spec:
     # Restart cycle 3 — compounding pressure
     - phase: flap_bor_3
       description: "Restart 3/5 — Bor killed again, DB has seen 2 unclean shutdowns"
-      target: bor_4
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -96,7 +96,7 @@ spec:
 
     - phase: flap_heimdall_3
       description: "Restart 3/5 — Heimdall killed again"
-      target: heimdall_4
+      target: heimdall_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -105,9 +105,9 @@ spec:
       delay: 30s
 
     # Restart cycle 4 — still hammering
-    - phase: flap_bor_4
+    - phase: flap_bor_6
       description: "Restart 4/5 — repeated crash stress on PebbleDB"
-      target: bor_4
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -115,9 +115,9 @@ spec:
         restart_delay: 3
       delay: 45s
 
-    - phase: flap_heimdall_4
+    - phase: flap_heimdall_6
       description: "Restart 4/5 — CometBFT state machine stress"
-      target: heimdall_4
+      target: heimdall_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -128,7 +128,7 @@ spec:
     # Restart cycle 5 — final crash, then let it recover
     - phase: flap_bor_5
       description: "Restart 5/5 — final SIGKILL, now let Bor recover fully"
-      target: bor_4
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -138,7 +138,7 @@ spec:
 
     - phase: flap_heimdall_5
       description: "Restart 5/5 — final SIGKILL, let Heimdall recover"
-      target: heimdall_4
+      target: heimdall_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -150,7 +150,7 @@ spec:
     - name: validator_recovers_after_flapping
       description: Validator comes back online after 5 rapid restart cycles
       type: prometheus
-      query: min(up{job=~"l2-el-4-bor-heimdall-v2-validator"})
+      query: min(up{job=~"l2-el-6-bor-heimdall-v2-validator"})
       threshold: "== 1"
       critical: true
       post_fault_only: true
@@ -158,7 +158,7 @@ spec:
     - name: block_sync_resumes
       description: Bor resumes block sync — PebbleDB survived 5 unclean shutdowns
       type: prometheus
-      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      query: rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -166,7 +166,7 @@ spec:
     - name: heimdall_rejoins_consensus
       description: Heimdall validator rejoins consensus after flapping
       type: prometheus
-      query: rate(cometbft_consensus_height{job="l2-cl-4-heimdall-v2-bor-validator"}[1m])
+      query: rate(cometbft_consensus_height{job="l2-cl-6-heimdall-v2-bor-validator"}[1m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -174,7 +174,7 @@ spec:
     - name: peer_count_recovers
       description: Validator reconnects to peers — not permanently jailed
       type: prometheus
-      query: cometbft_p2p_peers{job="l2-cl-4-heimdall-v2-bor-validator"}
+      query: min(cometbft_p2p_peers{job="l2-cl-6-heimdall-v2-bor-validator"})
       threshold: "> 3"
       critical: true
       post_fault_only: true
@@ -183,8 +183,8 @@ spec:
       description: Flapping validator catches up — no permanent fork
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 50"
       critical: true
       post_fault_only: true
@@ -192,7 +192,7 @@ spec:
     - name: healthy_validators_unaffected
       description: Other 7 validators maintain block production throughout
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[123578]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -207,7 +207,7 @@ spec:
       description: No PebbleDB corruption errors despite 5 unclean shutdowns
       type: log
       pattern: "(corruption|MANIFEST.*error|pebble.*panic|LOCK.*held)"
-      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
       absence: true
       critical: false
       post_fault_only: true
@@ -215,7 +215,7 @@ spec:
     - name: goroutine_count_stable
       description: No goroutine leak from repeated startup/shutdown cycles
       type: prometheus
-      query: system_cpu_goroutines{job="l2-el-4-bor-heimdall-v2-validator"}
+      query: system_cpu_goroutines{job="l2-el-6-bor-heimdall-v2-validator"}
       threshold: "< 5000"
       critical: false
       post_fault_only: true

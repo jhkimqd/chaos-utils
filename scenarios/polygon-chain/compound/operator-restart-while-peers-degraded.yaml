@@ -29,7 +29,7 @@ metadata:
     - p2p/server.go: peer discovery after restart through lossy network — are
       enough peers found to enable fast-sync?
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, operator-restart, peer-loss, sigterm, span-fetch, production-pattern]
   author: DevTools
   version: "0.1.0"
@@ -91,7 +91,7 @@ spec:
       target: bor_1
       type: network
       params:
-        loss: 30
+        packet_loss: 30
         target_ports: "30303"
         target_proto: tcp,udp
 
@@ -101,7 +101,7 @@ spec:
       target: bor_3
       type: network
       params:
-        loss: 30
+        packet_loss: 30
         target_ports: "30303"
         target_proto: tcp,udp
 

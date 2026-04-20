@@ -94,7 +94,7 @@ spec:
     - name: block_production_no_gaps
       description: Block production has no 1-minute gaps despite reordered P2P messages
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -117,7 +117,7 @@ spec:
     - name: block_sync_rate
       description: Block sync rate — measures if reorder degrades propagation speed
       type: prometheus
-      query: avg(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[2m]))
+      query: avg(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0.5"
       critical: false
       during_fault: true

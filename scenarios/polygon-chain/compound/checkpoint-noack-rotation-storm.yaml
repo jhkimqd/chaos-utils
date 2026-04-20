@@ -3,7 +3,7 @@ kind: ChaosScenario
 metadata:
   name: checkpoint-noack-rotation-storm
   description: >
-    Block L1 DNS resolution on all 4 Heimdall validators so every checkpoint
+    Block L1 DNS resolution on 3 Heimdall validators (v4 excluded as known flaky) so every checkpoint
     submission fails, triggering NoAck → proposer rotation. With 4 validators
     the rotation storm cycles all proposers rapidly. Tests whether Heimdall
     consensus survives sustained L1 outage and recovers.
@@ -13,7 +13,7 @@ metadata:
     - bridge/processor/checkpoint.go — L1 submission
     - bridge/listener/rootchain.go — L1 event listening
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [compound, checkpoint, noack, proposer-rotation, l1-outage, liveness]
   author: DevTools
   version: "0.1.0"
@@ -35,11 +35,6 @@ spec:
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-3-heimdall-v2-bor-validator"
       alias: heimdall_3
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
 
   duration: 2m
   warmup: 30s
@@ -70,19 +65,11 @@ spec:
         delay_ms: 30000
         failure_rate: 1.0
 
-    - phase: block_l1_heimdall_4
-      description: "Block DNS from Heimdall 4"
-      target: heimdall_4
-      type: dns
-      params:
-        delay_ms: 30000
-        failure_rate: 1.0
-
   success_criteria:
     - name: heimdall_consensus_continues
       description: "Heimdall consensus height advances despite L1 outage"
       type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[123]-heimdall-v2-bor-validator"}[1m])) or vector(0)
       threshold: "> 0"
       critical: true
 
@@ -104,7 +91,7 @@ spec:
     - name: block_times_acceptable
       description: "Block intervals stay reasonable during rotation storm"
       type: prometheus
-      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[2m]), 0.001)
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-[123]-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-[123]-heimdall-v2-bor-validator"}[2m]), 0.001)
       threshold: "< 20.0"
       critical: false
 

@@ -31,13 +31,13 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
 
   duration: 3m
   warmup: 30s
@@ -46,8 +46,8 @@ spec:
   faults:
     # Fill disk to 90% on Bor's data volume
     - phase: fill_bor_disk
-      description: "Fill Bor 4 chaindata volume to 90% capacity"
-      target: bor_4
+      description: "Fill Bor 6 chaindata volume to 90% capacity"
+      target: bor_6
       type: disk_fill
       params:
         target_path: "/var/lib/bor"
@@ -58,7 +58,7 @@ spec:
     - name: healthy_validators_continue
       description: Other validators maintain block production during disk exhaustion
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[123578]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -75,7 +75,7 @@ spec:
         Bor resumes block sync after disk fill is removed during teardown —
         PebbleDB recovers from near-full state
       type: prometheus
-      query: rate(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      query: rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[1m])
       threshold: "> 0"
       critical: true
       post_fault_only: true
@@ -84,8 +84,8 @@ spec:
       description: Affected validator catches up after disk space freed
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 100"
       critical: true
       post_fault_only: true
@@ -95,7 +95,7 @@ spec:
       description: Node reports disk full errors (expected — proves detection works)
       type: log
       pattern: "(no space|disk.*full|ENOSPC|write.*fail)"
-      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
       absence: false
       critical: false
       during_fault: true
@@ -104,7 +104,7 @@ spec:
       description: No unrecoverable PebbleDB state after disk exhaustion
       type: log
       pattern: "(unrecoverable|MANIFEST.*corrupt|fatal.*compaction)"
-      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
       absence: true
       critical: true
       post_fault_only: true

@@ -30,8 +30,8 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-8-bor-heimdall-v2-validator"
+      alias: bor_8
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -45,8 +45,8 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-8-heimdall-v2-bor-validator"
+      alias: heimdall_8
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
@@ -68,8 +68,8 @@ spec:
         target_ports: "30303"
         target_proto: tcp,udp
 
-    - phase: net_latency_4
-      target: bor_4
+    - phase: net_latency_8
+      target: bor_8
       type: network
       params:
         latency: 3000
@@ -94,8 +94,8 @@ spec:
         target_path: "/var/lib/bor/bor/chaindata"
         operation: all
 
-    - phase: disk_io_bor_4
-      target: bor_4
+    - phase: disk_io_bor_8
+      target: bor_8
       type: disk_io
       params:
         io_latency_ms: 150
@@ -117,15 +117,15 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 150
-        target_path: "/etc/heimdall/data"
+        target_path: "/var/lib/heimdall/data"
         operation: all
 
-    - phase: disk_io_heimdall_4
-      target: heimdall_4
+    - phase: disk_io_heimdall_8
+      target: heimdall_8
       type: disk_io
       params:
         io_latency_ms: 150
-        target_path: "/etc/heimdall/data"
+        target_path: "/var/lib/heimdall/data"
         operation: all
 
     - phase: disk_io_heimdall_6
@@ -133,14 +133,14 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 150
-        target_path: "/etc/heimdall/data"
+        target_path: "/var/lib/heimdall/data"
         operation: all
 
   success_criteria:
     - name: block_production_no_gaps
       description: Block production never fully stalls under compound fault
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -164,7 +164,7 @@ spec:
     - name: degraded_nodes_sync_rate
       description: Compound-faulted validators' sync rate — measures multiplicative impact
       type: prometheus
-      query: avg(rate(chain_head_block{job=~"l2-el-[246]-bor-heimdall-v2-validator"}[2m]))
+      query: avg(rate(chain_head_block{job=~"l2-el-[268]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0.2"
       critical: false
       during_fault: true
@@ -172,7 +172,7 @@ spec:
     - name: healthy_nodes_unaffected
       description: Non-faulted validators maintain normal sync
       type: prometheus
-      query: avg(rate(chain_head_block{job=~"l2-el-[13578]-bor-heimdall-v2-validator"}[2m]))
+      query: avg(rate(chain_head_block{job=~"l2-el-[1357]-bor-heimdall-v2-validator"}[2m]))
       threshold: "> 0.8"
       critical: false
 

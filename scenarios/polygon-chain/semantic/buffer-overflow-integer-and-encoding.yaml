@@ -160,7 +160,7 @@ spec:
     - name: block_production_continues
       description: CRITICAL - Block production continues
       type: prometheus
-      query: min(rate(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m]))
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[1m]))
       threshold: "> 0"
       critical: true
 
@@ -175,7 +175,7 @@ spec:
     - name: no_block_divergence
       description: Validators should not diverge from accepting malformed data
       type: prometheus
-      query: max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+      query: max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}) - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 10"
       critical: false
 

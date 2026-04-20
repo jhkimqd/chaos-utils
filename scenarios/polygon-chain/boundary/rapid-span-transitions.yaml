@@ -13,7 +13,7 @@ metadata:
     - snapshot.go — checkpoint storage at sprint boundaries
     - bor.go:checkAndCommitSpan() — commit at boundary blocks
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, span, cache, memory]
   author: DevTools
   version: "0.1.0"
@@ -23,25 +23,25 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
 
   duration: 5m
   warmup: 20s
   cooldown: 30s
 
   faults:
-    - phase: cpu_stress_bor_4
-      description: "30% CPU stress on Bor 4 — slower span processing"
-      target: bor_4
+    - phase: cpu_stress_bor_6
+      description: "30% CPU stress on Bor 6 — slower span processing"
+      target: bor_6
       type: cpu_stress
       params:
         cpu_percent: 30
         cores: 1
 
-    - phase: disk_io_bor_4
+    - phase: disk_io_bor_6
       description: "50ms disk I/O latency — stress snapshot writes"
-      target: bor_4
+      target: bor_6
       type: disk_io
       params:
         io_latency_ms: 50

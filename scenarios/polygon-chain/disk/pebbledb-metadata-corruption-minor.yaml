@@ -34,13 +34,13 @@ spec:
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-el-4-bor-heimdall-v2-validator"
-      alias: bor_4
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
     - selector:
         type: kurtosis_service
         enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
 
   duration: 3m
   warmup: 30s
@@ -52,7 +52,7 @@ spec:
     # effect until the next restart. This mirrors a real disk bitflip.
     - phase: corrupt_current_file
       description: "Corrupt PebbleDB CURRENT file — 16 random bytes while running"
-      target: bor_4
+      target: bor_6
       type: file_corrupt
       params:
         target_path: "/var/lib/bor/bor/chaindata/CURRENT"
@@ -62,8 +62,8 @@ spec:
 
     # Phase 2: Kill and restart to force PebbleDB to re-read CURRENT
     - phase: kill_restart_bor
-      description: "SIGKILL Bor 4 — forces PebbleDB to re-open with corrupted CURRENT"
-      target: bor_4
+      description: "SIGKILL Bor 6 — forces PebbleDB to re-open with corrupted CURRENT"
+      target: bor_6
       type: container_kill
       params:
         signal: SIGKILL
@@ -93,7 +93,7 @@ spec:
         Corrupted node process is running (may be in error state).
         PebbleDB should crash cleanly if it can't read CURRENT file.
       type: prometheus
-      query: up{job="l2-el-4-bor-heimdall-v2-validator"}
+      query: up{job="l2-el-6-bor-heimdall-v2-validator"}
       threshold: "== 1"
       critical: false
       post_fault_only: true
@@ -106,7 +106,7 @@ spec:
         file and may be serving inconsistent state.
       type: log
       pattern: "(CURRENT|MANIFEST|corrupt|pebble.*error|open.*database.*fail)"
-      container_pattern: "l2-el-4-bor-heimdall-v2-validator"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
       absence: false
       critical: true
       post_fault_only: true
@@ -115,8 +115,8 @@ spec:
       description: Corrupted node catches up if it recovers (via backup restoration)
       type: prometheus
       query: >
-        max(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
-        - min(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"})
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
       threshold: "< 100"
       critical: false
       post_fault_only: true

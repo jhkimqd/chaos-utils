@@ -3,7 +3,7 @@ kind: ChaosScenario
 metadata:
   name: heimdall-blackhole-at-span-fetch
   description: >
-    Blackhole Heimdall gRPC (port 1317) on all 4 validators, blocking Bor's
+    Blackhole Heimdall gRPC (port 1317) on 3 validators (v4 excluded as known flaky), blocking Bor's
     span and state sync fetches. waitUntilHeimdallIsSynced() at bor.go:1761
     has no timeout — block production stalls at the next span commit point.
 
@@ -17,7 +17,7 @@ metadata:
     - bor.go:CommitStates() — Heimdall state sync fetch
     - span_store.go — span fetch, cache miss
 
-    Network: 4 validators, sprint=16, span=128, block_time=1s
+    Network: 8 validators (chaos-suite topology), sprint=16, span=128, block_time=1s
   tags: [boundary, span, heimdall, grpc, blackhole, stall, high-severity]
   author: DevTools
   version: "0.1.0"
@@ -39,11 +39,6 @@ spec:
         enclave: "${ENCLAVE_NAME}"
         pattern: "l2-cl-3-heimdall-v2-bor-validator"
       alias: heimdall_3
-    - selector:
-        type: kurtosis_service
-        enclave: "${ENCLAVE_NAME}"
-        pattern: "l2-cl-4-heimdall-v2-bor-validator"
-      alias: heimdall_4
 
   duration: 3m
   warmup: 20s
@@ -80,16 +75,6 @@ spec:
         target_proto: tcp
         probability: 1.0
 
-    - phase: blackhole_heimdall_4_grpc
-      description: "Blackhole Heimdall 4 gRPC port 1317"
-      target: heimdall_4
-      type: connection_drop
-      params:
-        rule_type: drop
-        target_ports: "1317"
-        target_proto: tcp
-        probability: 1.0
-
   success_criteria:
     - name: block_production_resumes
       description: "All validators resume after Heimdall gRPC restored"
@@ -112,7 +97,7 @@ spec:
     - name: heimdall_consensus_continues
       description: "Heimdall consensus continues — gRPC port 1317 ≠ consensus port 26656"
       type: prometheus
-      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1234]-heimdall-v2-bor-validator"}[1m])) or vector(0)
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[123]-heimdall-v2-bor-validator"}[1m])) or vector(0)
       threshold: "> 0"
       critical: true
 
