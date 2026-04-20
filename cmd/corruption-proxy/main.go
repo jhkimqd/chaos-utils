@@ -12,22 +12,14 @@
 //
 // # Sidecar integration
 //
-// To add this binary to the sidecar Docker image:
+// Dockerfile.chaos-utils already builds and installs this binary at
+// /usr/local/bin/corruption-proxy in the sidecar image. The injector
+// (pkg/injection/injector.go injectCorruptionProxy) starts it in each
+// target's sidecar via ExecInSidecar:
 //
-//  1. Build a static binary:
-//       CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-//         go build -trimpath -ldflags="-s -w" \
-//         -o bin/corruption-proxy ./cmd/corruption-proxy
-//
-//  2. In Dockerfile.sidecar (create alongside Dockerfile.chaos-utils), copy
-//     the binary next to the Envoy binary:
-//       COPY bin/corruption-proxy /usr/local/bin/corruption-proxy
-//
-//  3. The injector starts the proxy with ExecInSidecar using the same pattern
-//     as for Envoy:
-//       corruption-proxy --listen :<proxyPort> --target <targetPort> \
-//         --rules /tmp/corruption-rules-<targetPort>.yaml \
-//         --control :<proxyPort+1> &
+//	corruption-proxy --listen :<proxyPort> --target <targetPort> \
+//	  --rules /tmp/corruption-rules-<targetPort>.yaml \
+//	  --control :<proxyPort+1> &
 //
 // # iptables redirect
 //

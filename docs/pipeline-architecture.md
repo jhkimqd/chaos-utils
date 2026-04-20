@@ -35,14 +35,17 @@ This document explains the complete flow from YAML scenario file to fault inject
 │                                                                  │
 │  PARSE → DISCOVER → PREPARE → WARMUP → INJECT                  │
 │    ↓                                                            │
-│  MONITOR → DETECT → COOLDOWN → TEARDOWN → REPORT               │
+│  MONITOR → COOLDOWN → TEARDOWN → DETECT → REPORT               │
+│                                                                  │
+│  DETECT runs AFTER TEARDOWN so criteria evaluate on a clean     │
+│  Prometheus scrape path (no tc/iptables faults in flight).      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Detailed State Flow
 
 ### State 1: PARSE
-**File**: `pkg/core/orchestrator/orchestrator.go:383-403`
+**Function**: `executeParse` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executeParse(ctx context.Context, scenarioPath string) error {
@@ -79,7 +82,7 @@ spec:
 ---
 
 ### State 2: DISCOVER
-**File**: `pkg/core/orchestrator/orchestrator.go:408-454`
+**Function**: `executeDiscover` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executeDiscover(ctx context.Context) error {
@@ -115,7 +118,7 @@ func (o *Orchestrator) executeDiscover(ctx context.Context) error {
 ---
 
 ### State 3: PREPARE
-**File**: `pkg/core/orchestrator/orchestrator.go:457-514`
+**Function**: `executePrepare` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executePrepare(ctx context.Context) error {
@@ -134,7 +137,7 @@ func (o *Orchestrator) executePrepare(ctx context.Context) error {
 ---
 
 ### State 4: WARMUP
-**File**: `pkg/core/orchestrator/orchestrator.go:516-527`
+**Function**: `executeWarmup` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executeWarmup(ctx context.Context) error {
@@ -151,7 +154,7 @@ func (o *Orchestrator) executeWarmup(ctx context.Context) error {
 ---
 
 ### State 5: INJECT 🎯
-**File**: `pkg/core/orchestrator/orchestrator.go:529-578`
+**Function**: `executeInject` in `pkg/core/orchestrator/orchestrator.go`
 
 This is where the actual fault injection happens!
 
@@ -271,7 +274,7 @@ docker update --memory 512M --memory-swap 512M <container-id>
 ---
 
 ### State 6: MONITOR 📊
-**File**: `pkg/core/orchestrator/orchestrator.go:581-610`
+**Function**: `executeMonitor` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executeMonitor(ctx context.Context) error {
@@ -321,7 +324,7 @@ Every 15 seconds for 8 minutes = ~32 data points
 ---
 
 ### State 7: DETECT ✅
-**File**: `pkg/core/orchestrator/orchestrator.go:613-663`
+**Function**: `executeDetect` in `pkg/core/orchestrator/orchestrator.go`. Runs AFTER TEARDOWN so Prometheus can scrape cleanly.
 
 ```go
 func (o *Orchestrator) executeDetect(ctx context.Context) error {
@@ -392,7 +395,7 @@ success_criteria:
 ---
 
 ### State 8: COOLDOWN
-**File**: `pkg/core/orchestrator/orchestrator.go:666-677`
+**Function**: `executeCooldown` in `pkg/core/orchestrator/orchestrator.go`. Note: faults remain active during cooldown.
 
 ```go
 func (o *Orchestrator) executeCooldown(ctx context.Context) error {
@@ -409,7 +412,7 @@ func (o *Orchestrator) executeCooldown(ctx context.Context) error {
 ---
 
 ### State 9: TEARDOWN 🧹
-**File**: `pkg/core/orchestrator/orchestrator.go:679-720`
+**Function**: `executeTeardown` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executeTeardown(ctx context.Context) error {
@@ -428,7 +431,7 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 #### Cleanup Flow for Memory Limits
 
 **Step 1**: Orchestrator calls `injector.RemoveFault()`
-**File**: `pkg/injection/injector.go:290-308`
+**Function**: `(*Injector).RemoveFault` in `pkg/injection/injector.go`
 
 ```go
 func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerID string) error {
@@ -440,7 +443,7 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 ```
 
 **Step 2**: Restore original cgroup limits
-**File**: `pkg/injection/stress/stress_wrapper.go:262-321`
+**Function**: `(*StressWrapper).RemoveFault` in `pkg/injection/stress/stress_wrapper.go`
 
 ```go
 func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID string) error {
@@ -485,7 +488,7 @@ func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID stri
 ---
 
 ### State 10: REPORT
-**File**: `pkg/core/orchestrator/orchestrator.go:722-736`
+**Function**: `executeReport` in `pkg/core/orchestrator/orchestrator.go`
 
 ```go
 func (o *Orchestrator) executeReport(ctx context.Context, result *TestResult) error {
@@ -608,7 +611,7 @@ passed := (12.5 > 0)  // true ✓
 | **Discovery** | `pkg/discovery/docker/client.go` | Docker container discovery |
 | **Injection** | `pkg/injection/injector.go` | Fault type router |
 | | `pkg/injection/stress/stress_wrapper.go` | CPU/Memory stress |
-| | `pkg/injection/l3l4/comcast_wrapper.go` | Network faults |
+| | `pkg/injection/l3l4/tc_wrapper.go` | Network faults (tc netem) |
 | | `pkg/injection/container/manager.go` | Container lifecycle |
 | **Monitoring** | `pkg/monitoring/collector/collector.go` | Metric collection |
 | | `pkg/monitoring/prometheus/client.go` | Prometheus queries |
@@ -713,7 +716,7 @@ The orchestrator uses a finite state machine to ensure consistent execution:
 
 ### 2. Strategy Pattern
 Different fault types use different injection strategies:
-- Network faults → Sidecar + comcast
+- Network faults → Sidecar + tc netem
 - Container lifecycle → Direct Docker API
 - CPU stress → Shell commands in target
 - Memory pressure → Cgroup limits via Docker API
