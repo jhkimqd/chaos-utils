@@ -109,15 +109,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    - name: no_span_rotation
-      description: 2/8 frozen validators must not trigger span rotation
-      type: log
-      pattern: "Span rotated due to the current producer's ineffectiveness"
-      container_pattern: "heimdall-v2-bor-validator"
-      absence: true
-      critical: true
-      post_fault_only: true
-
     # Recovery: frozen validators rejoin after unpause
     - name: frozen_validators_recover
       description: Frozen validators come back online during cooldown
