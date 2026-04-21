@@ -36,13 +36,16 @@ version that survives the session).
 | F-13 | LOW      | fixed  | `CleanupAll` fired twice on success |
 | F-14 | CRITICAL | fixed + live-verified | Concurrent-map-writes fatal on emergency/teardown overlap |
 | F-15 | MEDIUM   | fixed  | `heimdall_websocket_reconnects` structurally unsatisfiable criterion |
-| F-16 | LOW      | open   | `or vector(1)` PromQL fallback doesn't fire on rate=0 |
-| F-17 | LOW      | open   | `missing_validators` measures blocked-round stalls, not per-validator absence |
+| F-16 | LOW      | fixed  | `or vector(1)` PromQL fallback doesn't fire on rate=0; swapped to counter-delta |
+| F-17 | LOW      | fixed  | `missing_validators` measures blocked-round stalls; criterion dropped |
 | F-18 | LOW      | wontfix | `frozen_bor_stalls` 1m-rate tail contamination; documented in-scenario |
 
-## Commits landed (17)
+**17 fixed (1 live-verified) / 0 open / 1 wontfix.**
+
+## Commits landed (18)
 
 ```
+e79a03e fix(scenarios): F-16 + F-17 non-critical criterion fixes
 1971384 fix(sidecar): serialise Manager.createdSidecars with RWMutex (F-14)
 ee5b51a fix(cleanup): serialize concurrent Coordinator.CleanupAll entrants (F-14)
 b872b23 scenarios: remove structurally unsatisfiable WS-reconnect criterion (F-15)
@@ -86,20 +89,18 @@ a48adb2 fix(injection): accept int|float64 for remaining numeric params (F-01)
 
 ## Open items carried forward
 
-1. **F-16** `sigkill-immediate-restart.yaml::bor_heimdall_rpc_healthy`:
-   the `or vector(1)` PromQL fallback only triggers on the empty set, not on
-   a zero-valued series. Suggested fix: switch to
-   `increase(client_requests_latestspan_valid{…}[3m]) > 0`. Scenario-lane,
-   YAML-only.
-2. **F-17** `validator-crash-during-checkpoint.yaml::crash_causes_missing_validator`:
-   `cometbft_consensus_missing_validators` measures stalled-on-vote rounds,
-   not per-validator absence, and a 3s restart_delay typically closes inside a
-   single round. Either swap to a `consensus_height − validator_last_signed_height`
-   lag signal or drop the non-critical criterion.
-3. **Seven scenario directories unsampled**: compound, network, semantic,
-   disk (safe), boundary, bor-bug-bounty, cpu-memory. The `or vector(1)`
-   PromQL pattern (F-16) is likely present on other criteria and should be
-   swept in the next live pass.
+1. **Seven scenario directories unsampled**: compound, network, semantic,
+   disk (safe subset), boundary, bor-bug-bounty, cpu-memory. The `or vector(1)`
+   PromQL pattern (F-16 class) is likely present on other criteria across
+   these directories and should be swept for in the next live pass — a grep
+   for `or vector(` in `scenarios/polygon-chain/` is a good starting point.
+2. **F-16 / F-17 YAML fixes were not live-re-run** this session (time budget).
+   Next session should re-run `sigkill-immediate-restart` and
+   `validator-crash-during-checkpoint` to confirm the patched criteria
+   behave as expected against the devnet.
+3. **F-18** `frozen_bor_stalls` remains `wontfix` with in-scenario
+   documentation. A per-node `max_over_time` derivative is the right long-term
+   shape; deferred until the monitor-side sampler gains that semantic.
 
 ## References
 
