@@ -129,13 +129,14 @@ spec:
       threshold: "> 0"
       critical: false
 
-    # Fault effectiveness: crashed validator briefly shows missing validators
-    - name: crash_causes_missing_validator
-      description: Crash causes validator 2 to briefly disappear from consensus
-      type: prometheus
-      query: max_over_time(cometbft_consensus_missing_validators{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[5m])
-      threshold: "> 0"
-      critical: false
+    # Removed: crash_causes_missing_validator (F-17)
+    # cometbft_consensus_missing_validators only increments on rounds blocked
+    # on absent votes. With restart_delay=3s the validator returns inside a
+    # single round, so the metric stays at 0 even though the crash landed.
+    # Non-critical fault-effectiveness probe; other subtle-degradation
+    # criteria above (missed_proposals_during_recovery, peer_reconnection_after_crash,
+    # late_votes_during_sync) cover the downstream effect. Dropped per
+    # monitor-auditor triage (explicit approved path).
 
     # ========== SLOW BLOCK & SPAN ROTATION DETECTION ==========
 
