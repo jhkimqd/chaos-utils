@@ -27,12 +27,17 @@ REPORT_DIR="reports/ci-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${REPORT_DIR}"
 
 # ── Resolve RPC URLs for health checks and recovery ──
-# Health gate checks validators 1, 3, 6 — spread across the set so a
-# single faulted validator doesn't false-alarm.
-# Recovery scan resolves all 8 upfront so it can identify and restart
-# exactly the stuck nodes, regardless of which scenario caused the issue.
-HEALTH_CHECK_VALIDATORS="1 3 6"
+# Health gate checks ALL 8 validators so a stuck-but-reachable validator
+# (common after scenarios that legitimately catch fork/divergence bugs)
+# is detected before it poisons the next scenario's pre-fault query.
+# Require a majority to advance; a single stuck node is tolerated so a
+# scenario still cooling down its target doesn't false-fail the gate.
 ALL_VALIDATORS="1 2 3 4 5 6 7 8"
+HEALTH_CHECK_VALIDATORS="${ALL_VALIDATORS}"
+# Minimum validators that must advance for the devnet to be considered healthy.
+# 7/8 tolerates one lagging node (typical scenario target recovering); fewer
+# advancing indicates real consensus trouble that will break the next scenario.
+HEALTH_CHECK_MIN_ADVANCING=7
 declare -A VALIDATOR_RPCS
 for v in ${ALL_VALIDATORS}; do
   raw="$(timeout 30 kurtosis port print "${ENCLAVE_NAME}" "l2-el-${v}-bor-heimdall-v2-validator" rpc 2>/dev/null || echo "")"
@@ -47,10 +52,13 @@ done
 # ═══════════════════════════════════════════════════════════════════════
 
 # ── Health gate: verify devnet is alive (blocks advancing) ──
-# Checks multiple validators; returns 0 if ANY show block advancement.
-# On total failure, dumps last 50 log lines from each checked validator.
+# Snapshots heights on all validators, waits 30s, requires at least
+# HEALTH_CHECK_MIN_ADVANCING to advance. Any-advancing was misleading:
+# after a scenario that legitimately stalls one validator's consensus,
+# the next scenario's pre-fault query (which usually spans multiple
+# validators with min()) would fail even though this gate said "OK".
 check_devnet_health() {
-  local any_advanced=false
+  local advanced_count=0
   local failed_validators=""
 
   # Snapshot block heights
@@ -85,20 +93,20 @@ check_devnet_health() {
     local delta=$((after - before))
     echo "  validator ${v}: blocks ${before} → ${after} (Δ${delta} in 30s)"
     if [[ "${delta}" -gt 0 ]]; then
-      any_advanced=true
+      advanced_count=$((advanced_count + 1))
     else
       failed_validators="${failed_validators} ${v}"
     fi
   done
 
-  if [[ "${any_advanced}" == "true" ]]; then
+  if [[ ${advanced_count} -ge ${HEALTH_CHECK_MIN_ADVANCING} ]]; then
+    echo "  ✓ Health gate: ${advanced_count} validator(s) advancing (min ${HEALTH_CHECK_MIN_ADVANCING})"
     return 0
   fi
 
-  # Total failure — collect diagnostic state instead of dumping INFO logs
   echo ""
   echo "  ╔══════════════════════════════════════════════════════╗"
-  echo "  ║  ALL HEALTH-CHECK VALIDATORS UNRESPONSIVE           ║"
+  echo "  ║  DEVNET UNHEALTHY: ${advanced_count} advancing, need ${HEALTH_CHECK_MIN_ADVANCING}"
   echo "  ╚══════════════════════════════════════════════════════╝"
   diagnose_network_state "${failed_validators}"
   echo ""
@@ -169,28 +177,6 @@ force_restart_all_validators() {
 
   echo "  Waiting 120s for full cluster cold-start and CometBFT P2P mesh re-establishment..."
   sleep 120
-}
-
-# ── Quick liveness probe: instant RPC reachability check (~3s) ──
-quick_liveness_probe() {
-  local reachable=0
-  local total=0
-  for v in ${HEALTH_CHECK_VALIDATORS}; do
-    local url="${VALIDATOR_RPCS[${v}]:-}"
-    [[ -z "${url}" ]] && continue
-    total=$((total + 1))
-    local height
-    height=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
-    if [[ "${height}" != "0" ]]; then
-      reachable=$((reachable + 1))
-    fi
-  done
-  if [[ ${reachable} -eq 0 ]]; then
-    echo "  ⚠ All probed validators unreachable (0/${total})"
-    return 1
-  fi
-  echo "  Liveness probe: ${reachable}/${total} validators reachable"
-  return 0
 }
 
 # ── Diagnostic panel: rich state dump when validators are unresponsive ──
@@ -510,22 +496,29 @@ for scenario in ${SELECTED}; do
     --format text 2>&1 | tee "${REPORT_DIR}/${name}.log" || EXIT_CODE=$?
 
   # ── Pre-fault steady-state failure: recover and retry ──
+  # A steady-state abort almost always means the PREVIOUS scenario degraded the
+  # devnet and our post-scenario probe missed it. Attribute the halt to the
+  # upstream scenario (not this one) and escalate: force-restart → full
+  # redeploy before giving up.
   if [[ ${EXIT_CODE} -ne 0 ]] && grep -q "pre-fault health check failed:.*steady state" "${REPORT_DIR}/${name}.log" 2>/dev/null; then
-    echo "::warning::${name}: pre-fault health check failed — system not in steady state"
+    echo "::warning::${name}: pre-fault health check failed — system not in steady state (likely upstream damage)"
     echo "Recovering network before retry..."
     force_restart_all_validators
     if ! check_devnet_health; then
-      echo "::error::Recovery failed after pre-fault check — devnet unrecoverable"
-      echo "ERROR  ${name} (steady-state check failed, recovery failed)" >> "${REPORT_DIR}/results.txt"
-      ERRORS=$((ERRORS + 1))
-      DEVNET_HALTED=true
-      if [[ -n "${LAST_ERROR_SCENARIO}" ]]; then
-        HALT_SUSPECT="${LAST_ERROR_SCENARIO} (degraded devnet; pre-fault check failed in ${name})"
-      else
-        HALT_SUSPECT="${name}"
+      echo "Force-restart did not restore consensus — attempting full redeploy..."
+      if ! redeploy_devnet; then
+        echo "::error::Recovery failed after pre-fault check — devnet unrecoverable"
+        echo "ERROR  ${name} (steady-state check failed, redeploy failed)" >> "${REPORT_DIR}/results.txt"
+        ERRORS=$((ERRORS + 1))
+        DEVNET_HALTED=true
+        if [[ -n "${LAST_ERROR_SCENARIO}" ]]; then
+          HALT_SUSPECT="${LAST_ERROR_SCENARIO} (degraded devnet; pre-fault check failed in ${name})"
+        else
+          HALT_SUSPECT="${name} (pre-fault: devnet already broken on entry)"
+        fi
+        echo "::endgroup::"
+        break
       fi
-      echo "::endgroup::"
-      break
     fi
     echo "Network recovered — retrying ${name}..."
     EXIT_CODE=0
@@ -536,21 +529,16 @@ for scenario in ${SELECTED}; do
   fi
 
   # ── Network-death detection: full redeploy + verify ──
-  # After infra errors (exit >= 2 or timeout), use the full 30s block-advancement
-  # check — quick_liveness_probe only tests RPC reachability, which misses degraded
-  # states where validators are reachable but consensus is stalled.
+  # quick_liveness_probe only tests RPC reachability, which misses degraded
+  # states where validators are reachable but consensus is stalled (e.g. after
+  # a scenario that legitimately caught a fork/divergence bug). Always use the
+  # full block-advancement check after exit != 0 so an upstream failure can't
+  # poison the pre-fault check of the next scenario.
   if [[ ${EXIT_CODE} -ne 0 ]]; then
     NETWORK_OK=true
-    if [[ ${EXIT_CODE} -ge 2 ]]; then
-      echo "Post-scenario health check (full — infra error detected)..."
-      if ! check_devnet_health; then
-        NETWORK_OK=false
-      fi
-    else
-      echo "Post-scenario liveness probe..."
-      if ! quick_liveness_probe; then
-        NETWORK_OK=false
-      fi
+    echo "Post-scenario health check (full block-advancement probe)..."
+    if ! check_devnet_health; then
+      NETWORK_OK=false
     fi
     if [[ "${NETWORK_OK}" == "false" ]]; then
       echo ""
@@ -576,8 +564,8 @@ for scenario in ${SELECTED}; do
         ${SET_FLAGS} \
         --format text 2>&1 | tee "${REPORT_DIR}/${name}-verify.log" || EXIT_CODE=$?
 
-      echo "Verification liveness probe..."
-      if ! quick_liveness_probe; then
+      echo "Verification health check (full block-advancement probe)..."
+      if ! check_devnet_health; then
         echo ""
         echo "  ╔══════════════════════════════════════════════════════════════════╗"
         echo "  ║  CONFIRMED: ${name} breaks the devnet reproducibly              ║"
