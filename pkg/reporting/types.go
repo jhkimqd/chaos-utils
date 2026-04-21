@@ -24,6 +24,14 @@ type TestReport struct {
 	Targets []TargetInfo `json:"targets"`
 	Faults  []FaultInfo  `json:"faults"`
 
+	// FaultInstalls is the total number of (container, faultType) installs
+	// executed during INJECT. For single-fault scenarios it equals
+	// len(Faults); for compound scenarios that target multiple containers
+	// (or multiple fault types on the same container post-F-02) it is
+	// strictly greater and reflects the true count of kernel-level
+	// installs that teardown had to remove.
+	FaultInstalls int `json:"fault_installs"`
+
 	// Success criteria evaluation
 	SuccessCriteria []CriterionResult `json:"success_criteria,omitempty"`
 

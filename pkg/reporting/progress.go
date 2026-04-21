@@ -65,7 +65,15 @@ func (pr *ProgressReporter) printSummary(report *TestReport) {
 	fmt.Printf("  Test ID:   %s\n", report.TestID)
 	fmt.Printf("  Duration:  %s\n", report.Duration)
 	fmt.Printf("  Targets:   %d\n", len(report.Targets))
-	fmt.Printf("  Faults:    %d\n", len(report.Faults))
+	// Show spec count and install count. Installs = the number of
+	// (container, faultType) pairs orchestrator actually injected, which
+	// differs from spec count for compound scenarios and multi-container
+	// targets. Equal-when-simple so the extra column stays quiet.
+	if report.FaultInstalls > len(report.Faults) {
+		fmt.Printf("  Faults:    %d specs, %d installs\n", len(report.Faults), report.FaultInstalls)
+	} else {
+		fmt.Printf("  Faults:    %d\n", len(report.Faults))
+	}
 	fmt.Println(strings.Repeat("─", w))
 
 	// Success criteria results
