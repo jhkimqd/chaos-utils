@@ -4,14 +4,26 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 )
 
-// Coordinator orchestrates cleanup of all chaos artifacts
+// Coordinator orchestrates cleanup of all chaos artifacts.
+//
+// CleanupAll and the audit-log accessors are safe to call concurrently.
+// This matters because Execute's outer-deferred cleanup and the emergency
+// controller's OnStop callback both call CleanupAll, and on an emergency
+// stop they fire from separate goroutines at roughly the same time
+// (F-14). The mutex serializes the two entrants — the first one drains
+// the sidecar map, the second wakes up, sees an empty map, logs
+// "No sidecars to clean up", and returns. Without it, both goroutines
+// raced over the same sidecar IDs, doubling docker stop/remove calls
+// and duplicating audit-log banners.
 type Coordinator struct {
 	sidecarMgr *sidecar.Manager
+	mu         sync.Mutex // guards CleanupAll and auditLog
 	auditLog   []AuditEntry
 }
 
@@ -33,8 +45,18 @@ func New(sidecarMgr *sidecar.Manager) *Coordinator {
 	}
 }
 
-// CleanupAll performs complete cleanup of all sidecars and verifies namespaces
+// CleanupAll performs complete cleanup of all sidecars and verifies namespaces.
+//
+// Safe to call concurrently. Concurrent callers are serialized by c.mu; the
+// first caller drains the sidecar map while subsequent callers block. When
+// the lock is released the follower sees an empty map and returns without
+// re-running destruction. The underlying sidecar.Manager is independently
+// protected (F-14 primary fix), so map access is also safe at that layer —
+// this mutex eliminates the double-walk/double-log at the coordinator layer.
 func (c *Coordinator) CleanupAll(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	fmt.Println("🧹 Starting cleanup of all chaos artifacts...")
 
 	sidecars := c.sidecarMgr.ListSidecars()
@@ -171,7 +193,12 @@ func (c *Coordinator) cleanViaSidecar(ctx context.Context, targetID string) {
 	})
 }
 
-// logAudit adds an entry to the audit log
+// logAudit adds an entry to the audit log.
+//
+// Caller must hold c.mu. In practice logAudit is only invoked from
+// cleanupSidecar, which runs inside CleanupAll under the lock — so this
+// requirement is satisfied without needing to re-acquire. (Re-locking
+// here would deadlock sync.Mutex.)
 func (c *Coordinator) logAudit(action, target, details string, err error) {
 	entry := AuditEntry{
 		Timestamp: time.Now(),
@@ -184,13 +211,22 @@ func (c *Coordinator) logAudit(action, target, details string, err error) {
 	c.auditLog = append(c.auditLog, entry)
 }
 
-// GetAuditLog returns the complete audit log
+// GetAuditLog returns a copy of the audit log. Copy, not slice reference,
+// because the caller may iterate while a concurrent CleanupAll appends.
 func (c *Coordinator) GetAuditLog() []AuditEntry {
-	return c.auditLog
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]AuditEntry, len(c.auditLog))
+	copy(out, c.auditLog)
+	return out
 }
 
-// PrintAuditLog prints the audit log in a readable format
+// PrintAuditLog prints the audit log in a readable format.
+// Locks c.mu to block cleanly against a concurrent CleanupAll (which
+// would otherwise race on auditLog slice growth).
 func (c *Coordinator) PrintAuditLog() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if len(c.auditLog) == 0 {
 		fmt.Println("No cleanup actions logged")
 		return
@@ -218,8 +254,13 @@ func (c *Coordinator) PrintAuditLog() {
 	fmt.Println("─────────────────────────────────────────────────────────────")
 }
 
-// GetSummary returns a summary of cleanup actions
+// GetSummary returns a summary of cleanup actions. Safe to call while
+// a concurrent CleanupAll is running — the summary reflects whatever
+// subset of the audit log has been written at the moment the lock is
+// acquired.
 func (c *Coordinator) GetSummary() CleanupSummary {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	summary := CleanupSummary{
 		TotalActions: len(c.auditLog),
 		Succeeded:    0,
