@@ -257,8 +257,16 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	}, nil
 }
 
-// Execute runs the complete chaos test lifecycle
-func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestResult, error) {
+// Execute runs the complete chaos test lifecycle against an already-parsed
+// scenario. Callers (cmd/chaos-runner) are responsible for parsing, applying
+// any --set overrides, and validating before handing the struct to Execute.
+// scenarioPath is purely for reporting/logging — the orchestrator does NOT
+// re-read the file, because doing so would silently discard any overrides
+// the caller applied to the in-memory struct (F-04).
+func (o *Orchestrator) Execute(ctx context.Context, scen *scenario.Scenario, scenarioPath string) (*TestResult, error) {
+	if scen == nil {
+		return nil, fmt.Errorf("orchestrator.Execute: scenario is nil")
+	}
 	o.startTime = time.Now()
 	o.testID = generateTestID()
 	o.scenarioPath = scenarioPath
@@ -316,9 +324,12 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 	// State machine execution
 	var err error
 
-	// PARSE state
+	// PARSE state — validate the pre-parsed scenario. We do NOT re-read
+	// scenarioPath here: the caller has already parsed it, applied --set
+	// overrides, and validated. Re-parsing would discard the overrides
+	// (historical bug: --set duration=1m silently became the in-file value).
 	o.transitionState(StateParse)
-	if err = o.executeParse(ctx, scenarioPath); err != nil {
+	if err = o.executeParse(ctx, scen); err != nil {
 		return o.failTest(result, err)
 	}
 	result.ScenarioName = o.scenario.Metadata.Name
@@ -464,23 +475,25 @@ func (o *Orchestrator) transitionState(newState TestState) {
 	o.currentState = newState
 }
 
-// executeParse parses and validates the scenario file
-func (o *Orchestrator) executeParse(ctx context.Context, scenarioPath string) error {
-	fmt.Printf("Parsing scenario: %s\n", scenarioPath)
+// executeParse attaches the pre-parsed scenario to the orchestrator and
+// re-runs validation as a defence-in-depth check. It does NOT read the
+// scenarioPath file — the caller has already parsed it and applied any
+// --set overrides to the struct. Re-reading here would silently discard
+// those overrides, which was the original F-04 bug.
+func (o *Orchestrator) executeParse(ctx context.Context, scen *scenario.Scenario) error {
+	fmt.Printf("Loading scenario: %s\n", o.scenarioPath)
 
-	// Parse scenario YAML
-	scen, err := o.parser.ParseFile(scenarioPath)
-	if err != nil {
-		return fmt.Errorf("failed to parse scenario: %w", err)
+	if scen == nil {
+		return fmt.Errorf("executeParse: scenario is nil")
 	}
 
-	// Validate scenario
+	// Re-validate (cheap, catches programmatic callers that skip validation).
 	if err := o.validator.Validate(scen); err != nil {
 		return fmt.Errorf("scenario validation failed: %w", err)
 	}
 
 	o.scenario = scen
-	fmt.Printf("✓ Parsed scenario: %s\n", scen.Metadata.Name)
+	fmt.Printf("✓ Loaded scenario: %s\n", scen.Metadata.Name)
 	fmt.Printf("  Duration: %s, Warmup: %s, Cooldown: %s\n",
 		scen.Spec.Duration, scen.Spec.Warmup, scen.Spec.Cooldown)
 	fmt.Printf("  Targets: %d, Faults: %d, Success Criteria: %d\n",
