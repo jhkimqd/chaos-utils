@@ -250,12 +250,31 @@ func (i *Injector) injectContainerPause(ctx context.Context, fault *scenario.Fau
 	}
 
 	if fault.Params != nil {
-		if durationStr, ok := fault.Params["duration"].(string); ok {
-			duration, err := time.ParseDuration(durationStr)
-			if err != nil {
-				return fmt.Errorf("invalid duration format: %w", err)
+		// Accept duration as:
+		//   - string ("45s", "2m") → time.ParseDuration
+		//   - bare int ("duration: 45") → seconds
+		//   - bare float64 ("duration: 1.5") → seconds
+		// YAML v3 decodes `duration: 45` as int, so an earlier string-only
+		// cast silently fell through with Duration=0 → pause-then-immediately-
+		// unpause (observed as a ~0-byte no-op on the target). Reject unknown
+		// types loudly so new YAML mistakes fail fast instead of vanishing.
+		if rawDuration, present := fault.Params["duration"]; present {
+			switch v := rawDuration.(type) {
+			case string:
+				duration, err := time.ParseDuration(v)
+				if err != nil {
+					return fmt.Errorf("invalid duration format %q: %w", v, err)
+				}
+				params.Duration = duration
+			case int:
+				params.Duration = time.Duration(v) * time.Second
+			case int64:
+				params.Duration = time.Duration(v) * time.Second
+			case float64:
+				params.Duration = time.Duration(float64(time.Second) * v)
+			default:
+				return fmt.Errorf("container_pause duration has unsupported type %T (expected string like \"45s\" or number of seconds)", v)
 			}
-			params.Duration = duration
 		}
 		if unpause, ok := fault.Params["unpause"].(bool); ok {
 			params.Unpause = unpause
@@ -366,6 +385,9 @@ func (i *Injector) injectConnectionDrop(ctx context.Context, fault *scenario.Fau
 		}
 		if prob, ok := fault.Params["probability"].(float64); ok {
 			params.Probability = prob
+		} else if prob, ok := fault.Params["probability"].(int); ok {
+			// `probability: 1` (bare int) would silently fall through otherwise.
+			params.Probability = float64(prob)
 		}
 	}
 
@@ -392,9 +414,13 @@ func (i *Injector) injectDNSDelay(ctx context.Context, fault *scenario.Fault, ta
 	if fault.Params != nil {
 		if delayMs, ok := fault.Params["delay_ms"].(int); ok {
 			params.DelayMs = delayMs
+		} else if delayMs, ok := fault.Params["delay_ms"].(float64); ok {
+			params.DelayMs = int(delayMs)
 		}
 		if failureRate, ok := fault.Params["failure_rate"].(float64); ok {
 			params.FailureRate = failureRate
+		} else if failureRate, ok := fault.Params["failure_rate"].(int); ok {
+			params.FailureRate = float64(failureRate)
 		}
 	}
 
@@ -421,6 +447,8 @@ func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault,
 	if fault.Params != nil {
 		if ioLatencyMs, ok := fault.Params["io_latency_ms"].(int); ok {
 			params.IOLatencyMs = ioLatencyMs
+		} else if ioLatencyMs, ok := fault.Params["io_latency_ms"].(float64); ok {
+			params.IOLatencyMs = int(ioLatencyMs)
 		}
 		if targetPath, ok := fault.Params["target_path"].(string); ok {
 			params.TargetPath = targetPath
@@ -680,6 +708,8 @@ func (i *Injector) injectHTTPFault(ctx context.Context, fault *scenario.Fault, t
 		}
 		if delayPercent, ok := fault.Params["delay_percent"].(int); ok {
 			params.DelayPercent = delayPercent
+		} else if delayPercent, ok := fault.Params["delay_percent"].(float64); ok {
+			params.DelayPercent = int(delayPercent)
 		}
 		if abortCode, ok := fault.Params["abort_code"].(int); ok {
 			params.AbortCode = abortCode
@@ -688,6 +718,8 @@ func (i *Injector) injectHTTPFault(ctx context.Context, fault *scenario.Fault, t
 		}
 		if abortPercent, ok := fault.Params["abort_percent"].(int); ok {
 			params.AbortPercent = abortPercent
+		} else if abortPercent, ok := fault.Params["abort_percent"].(float64); ok {
+			params.AbortPercent = int(abortPercent)
 		}
 		if bodyOverride, ok := fault.Params["body_override"].(string); ok {
 			params.BodyOverride = bodyOverride
