@@ -49,9 +49,9 @@ spec:
 
   faults:
     # Phase 1: Kill after 30s (simulates health check failure → orchestrator kill)
-    # Listed BEFORE connection_drop so that connection_drop is the last tracked
-    # fault type per container in injectedFaults map — ensures iptables rules
-    # are cleaned up at TEARDOWN (orchestrator only tracks one type per container)
+    # (As of b2819fd / F-02, per-container multi-fault teardown removes every
+    # tracked fault type on its own. The prior ordering workaround is no
+    # longer required; order retained for fault-sequence stability.)
     - phase: crash_bor_6
       description: "SIGKILL Bor 6 — orchestrator kills after health check timeout"
       target: bor_6
