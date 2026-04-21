@@ -60,10 +60,13 @@ done
 check_devnet_health() {
   local advanced_count=0
   local failed_validators=""
+  local total_validators=0
+  local min_delta=999999 max_delta=0
 
   # Snapshot block heights
   declare -A blocks_before
   for v in ${HEALTH_CHECK_VALIDATORS}; do
+    total_validators=$((total_validators + 1))
     local url="${VALIDATOR_RPCS[${v}]:-}"
     if [[ -z "${url}" ]]; then
       blocks_before[${v}]="0"
@@ -74,36 +77,44 @@ check_devnet_health() {
 
   sleep 30
 
-  # Re-check and compare
+  # Re-check and compare. Collect per-validator detail silently and only
+  # emit it if the gate FAILS — the healthy path prints a one-line summary.
+  local detail=""
   for v in ${HEALTH_CHECK_VALIDATORS}; do
     local url="${VALIDATOR_RPCS[${v}]:-}"
     local before="${blocks_before[${v}]}"
     if [[ -z "${url}" || "${before}" == "0" ]]; then
-      echo "  validator ${v}: ⚠ RPC unreachable"
+      detail+=$'\n'"  validator ${v}: ⚠ RPC unreachable"
       failed_validators="${failed_validators} ${v}"
       continue
     fi
     local after
     after=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
     if [[ "${after}" == "0" ]]; then
-      echo "  validator ${v}: ⚠ RPC unreachable after wait"
+      detail+=$'\n'"  validator ${v}: ⚠ RPC unreachable after wait"
       failed_validators="${failed_validators} ${v}"
       continue
     fi
     local delta=$((after - before))
-    echo "  validator ${v}: blocks ${before} → ${after} (Δ${delta} in 30s)"
+    detail+=$'\n'"  validator ${v}: blocks ${before} → ${after} (Δ${delta} in 30s)"
     if [[ "${delta}" -gt 0 ]]; then
       advanced_count=$((advanced_count + 1))
+      [[ ${delta} -lt ${min_delta} ]] && min_delta=${delta}
+      [[ ${delta} -gt ${max_delta} ]] && max_delta=${delta}
     else
       failed_validators="${failed_validators} ${v}"
     fi
   done
 
   if [[ ${advanced_count} -ge ${HEALTH_CHECK_MIN_ADVANCING} ]]; then
-    echo "  ✓ Health gate: ${advanced_count} validator(s) advancing (min ${HEALTH_CHECK_MIN_ADVANCING})"
+    local spread="Δ${min_delta}"
+    [[ ${min_delta} -ne ${max_delta} ]] && spread="Δ${min_delta}..${max_delta}"
+    echo "  ✓ Health gate: ${advanced_count}/${total_validators} validators advancing (${spread} in 30s)"
     return 0
   fi
 
+  # Unhealthy — now it matters. Emit the full per-validator detail we collected.
+  printf '%s\n' "${detail#$'\n'}"
   echo ""
   echo "  ╔══════════════════════════════════════════════════════╗"
   echo "  ║  DEVNET UNHEALTHY: ${advanced_count} advancing, need ${HEALTH_CHECK_MIN_ADVANCING}"
@@ -115,9 +126,9 @@ check_devnet_health() {
 
 # ── Recovery: scan all validators and docker-restart unresponsive ones ──
 recover_unresponsive_validators() {
-  echo "  Scanning all validators for responsiveness..."
-  local unresponsive=""
+  local unresponsive="" responsive_count=0
 
+  # Scan quietly; only call out problem validators.
   for v in ${ALL_VALIDATORS}; do
     local url="${VALIDATOR_RPCS[${v}]:-}"
     if [[ -z "${url}" ]]; then
@@ -129,12 +140,12 @@ recover_unresponsive_validators() {
       echo "  validator ${v}: ✗ unreachable"
       unresponsive="${unresponsive} ${v}"
     else
-      echo "  validator ${v}: ✓ responsive (block ${height})"
+      responsive_count=$((responsive_count + 1))
     fi
   done
 
   if [[ -z "$(echo "${unresponsive}" | tr -d ' ')" ]]; then
-    echo "  All validators reachable — waiting 60s for consensus recovery..."
+    echo "  All ${responsive_count} validators RPC-reachable — waiting 60s for consensus recovery..."
     sleep 60
     return 0
   fi
@@ -384,6 +395,7 @@ esac
 # When SAMPLES=0, run all scenarios in each directory.
 SELECTED=""
 TOTAL_AVAILABLE=0
+echo "::group::Scenario selection"
 for dir in ${SCENARIO_DIRS}; do
   [[ -d "${dir}" ]] || continue
   category=$(basename "${dir}")
@@ -411,6 +423,7 @@ done
 SCENARIO_COUNT=$(echo "${SELECTED}" | wc -w)
 echo ""
 echo "Total: ${SCENARIO_COUNT} scenarios selected (from ${TOTAL_AVAILABLE} available)"
+echo "::endgroup::"
 
 # ── Scenarios with hard timing floors that cannot be compressed ──
 SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
@@ -434,10 +447,27 @@ CONSECUTIVE_ERRORS=0
 MAX_CONSECUTIVE_ERRORS=2
 SCENARIO_TIMEOUT=900  # 15 minutes max per scenario run
 
+# Render a compact one-liner OUTSIDE the scenario group so operators can
+# skim results without expanding each group. Called after every ::endgroup::
+# in the scenario loop. Reads EXIT_CODE and SCENARIO_ELAPSED from caller.
+emit_scenario_summary() {
+  local label="$1" n="$2" dur="${3:-?s}" extra="${4:-}"
+  local suffix=""
+  [[ -n "${extra}" ]] && suffix=" ${extra}"
+  case "${label}" in
+    PASSED)    echo "✅ PASSED  ${n} (${dur})${suffix}" ;;
+    FAILED)    echo "❌ FAILED  ${n} (${dur})${suffix}" ;;
+    TIMEOUT)   echo "⏱  TIMEOUT ${n} (${dur})${suffix}" ;;
+    ERROR)     echo "⚠️  ERROR   ${n} (${dur})${suffix}" ;;
+    SKIPPED)   echo "⏭  SKIPPED ${n}${suffix}" ;;
+    CONFIRMED) echo "🔥 CONFIRMED-BUG ${n}${suffix}" ;;
+  esac
+}
+
 for scenario in ${SELECTED}; do
   name=$(basename "${scenario}" .yaml)
+  SCENARIO_START=$(date +%s)
   echo "::group::${name}"
-  echo "────────────────────────────────────"
 
   # ── Pre-flight health gate ──
   echo "Pre-flight health check..."
@@ -458,14 +488,12 @@ for scenario in ${SELECTED}; do
           HALT_SUSPECT="${name} (pre-flight: devnet was already broken)"
         fi
         echo "::endgroup::"
+        emit_scenario_summary SKIPPED "${name}" "" "(devnet halted at pre-flight)"
         break
       fi
     fi
     echo "Devnet recovered after restart"
   fi
-  echo "Health check passed ✓"
-
-  echo "Running: ${name}"
 
   # ── Build --set overrides for fast mode ──
   SET_FLAGS=""
@@ -517,6 +545,7 @@ for scenario in ${SELECTED}; do
           HALT_SUSPECT="${name} (pre-fault: devnet already broken on entry)"
         fi
         echo "::endgroup::"
+        emit_scenario_summary ERROR "${name}" "$(( $(date +%s) - SCENARIO_START ))s" "(steady-state check + redeploy failed)"
         break
       fi
     fi
@@ -554,6 +583,7 @@ for scenario in ${SELECTED}; do
         DEVNET_HALTED=true
         HALT_SUSPECT="${name}"
         echo "::endgroup::"
+        emit_scenario_summary ERROR "${name}" "$(( $(date +%s) - SCENARIO_START ))s" "(broke devnet; redeploy failed)"
         break
       fi
 
@@ -578,6 +608,7 @@ for scenario in ${SELECTED}; do
         DEVNET_HALTED=true
         HALT_SUSPECT="${name}"
         echo "::endgroup::"
+        emit_scenario_summary CONFIRMED "${name}" "" "(breaks devnet reproducibly on fresh enclave)"
         break
       fi
 
@@ -593,29 +624,38 @@ for scenario in ${SELECTED}; do
   fi
 
   # ── Classify result ──
+  SCENARIO_ELAPSED="$(( $(date +%s) - SCENARIO_START ))s"
+  SUMMARY_LABEL=""
+  SUMMARY_EXTRA=""
   if [[ ${EXIT_CODE} -eq 124 || ${EXIT_CODE} -eq 137 ]]; then
     echo "::error::TIMEOUT: ${name} — exceeded ${SCENARIO_TIMEOUT}s (network may be hung)"
     echo "ERROR  ${name} (timeout after ${SCENARIO_TIMEOUT}s)" >> "${REPORT_DIR}/results.txt"
     ERRORS=$((ERRORS + 1))
     CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
     LAST_ERROR_SCENARIO="${name}"
+    SUMMARY_LABEL="TIMEOUT"
+    SUMMARY_EXTRA="(exceeded ${SCENARIO_TIMEOUT}s)"
   elif [[ ${EXIT_CODE} -eq 0 ]]; then
-    echo "✅ PASSED: ${name}"
     echo "PASSED ${name}" >> "${REPORT_DIR}/results.txt"
     PASSED=$((PASSED + 1))
     CONSECUTIVE_ERRORS=0
     LAST_ERROR_SCENARIO=""
+    SUMMARY_LABEL="PASSED"
   elif [[ ${EXIT_CODE} -eq 1 ]]; then
     echo "::error::FAILED: ${name} — one or more critical success criteria did not pass"
     echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
     FAILED=$((FAILED + 1))
     TEST_FAILURES="${TEST_FAILURES}  - ${name}\n"
+    SUMMARY_LABEL="FAILED"
+    SUMMARY_EXTRA="(critical criteria missed — see log ${REPORT_DIR}/${name}.log)"
   else
     echo "::error::ERROR: ${name} (exit: ${EXIT_CODE})"
     echo "ERROR  ${name}" >> "${REPORT_DIR}/results.txt"
     ERRORS=$((ERRORS + 1))
     CONSECUTIVE_ERRORS=$((CONSECUTIVE_ERRORS + 1))
     LAST_ERROR_SCENARIO="${name}"
+    SUMMARY_LABEL="ERROR"
+    SUMMARY_EXTRA="(exit ${EXIT_CODE})"
   fi
 
   # ── Consecutive-error circuit breaker ──
@@ -627,6 +667,8 @@ for scenario in ${SELECTED}; do
       DEVNET_HALTED=true
       HALT_SUSPECT="${name}"
       echo "::endgroup::"
+      emit_scenario_summary "${SUMMARY_LABEL}" "${name}" "${SCENARIO_ELAPSED}" "${SUMMARY_EXTRA}"
+      echo "::warning::Devnet unrecoverable — halting suite after ${name}"
       break
     fi
     echo "Network recovered — resetting error counter"
@@ -634,6 +676,7 @@ for scenario in ${SELECTED}; do
   fi
 
   echo "::endgroup::"
+  emit_scenario_summary "${SUMMARY_LABEL}" "${name}" "${SCENARIO_ELAPSED}" "${SUMMARY_EXTRA}"
 done
 
 # ═══════════════════════════════════════════════════════════════════════
