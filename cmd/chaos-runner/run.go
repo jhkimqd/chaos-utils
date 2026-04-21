@@ -162,7 +162,11 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	logger.Info("Starting chaos test execution", "scenario", scenario.Metadata.Name)
 
-	result, err := orch.Execute(ctx, scenarioPath)
+	// Pass the in-memory, override-applied, validated scenario struct — NOT
+	// just the path. Orchestrator.Execute historically re-parsed the file
+	// and silently discarded --set overrides (F-04). scenarioPath is still
+	// passed for reporting/log context only.
+	result, err := orch.Execute(ctx, scenario, scenarioPath)
 
 	// Generate report regardless of success/failure
 	report := &reporting.TestReport{
