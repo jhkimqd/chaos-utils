@@ -645,7 +645,7 @@ for scenario in ${SELECTED}; do
     echo "::error::FAILED: ${name} — one or more critical success criteria did not pass"
     echo "FAILED ${name}" >> "${REPORT_DIR}/results.txt"
     FAILED=$((FAILED + 1))
-    TEST_FAILURES="${TEST_FAILURES}  - ${name}\n"
+    TEST_FAILURES="${TEST_FAILURES}${name}"$'\n'
     SUMMARY_LABEL="FAILED"
     SUMMARY_EXTRA="(critical criteria missed — see log ${REPORT_DIR}/${name}.log)"
   else
@@ -702,7 +702,7 @@ echo "════════════════════════�
 if [[ -n "${TEST_FAILURES}" ]]; then
   echo ""
   echo "Failed scenarios:"
-  echo -e "${TEST_FAILURES}"
+  printf '%s' "${TEST_FAILURES}" | sed 's/^/  - /'
 fi
 
 if [[ "${DEVNET_HALTED}" == "true" ]]; then
@@ -733,7 +733,7 @@ echo "REPORT_DIR=${REPORT_DIR}" >> "${GITHUB_ENV}"
   if [[ -n "${TEST_FAILURES}" ]]; then
     echo ""
     echo "**Failed scenarios:**"
-    echo -e "${TEST_FAILURES}" | sed 's/^/- /'
+    printf '%s' "${TEST_FAILURES}" | sed 's/^/- /'
   fi
   if [[ "${DEVNET_HALTED}" == "true" ]]; then
     echo ""
