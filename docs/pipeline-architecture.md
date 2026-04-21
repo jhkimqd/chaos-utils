@@ -297,6 +297,10 @@ func (o *Orchestrator) executeMonitor(ctx context.Context) error {
         // Stop collection
         o.collector.Stop()
     }
+
+    // Stop the during-fault sampler (started before INJECT) and write
+    // its worst-observed results into criteriaResults.
+    return o.evaluateDuringFaultCriteria(ctx)
 }
 ```
 
@@ -305,6 +309,24 @@ func (o *Orchestrator) executeMonitor(ctx context.Context) error {
 2. Queries metrics every `RefreshInterval` (default: 15s)
 3. Stores time-series data in memory
 4. Runs for `spec.duration` (e.g., 8 minutes)
+5. Stops the duringFaultSampler that was launched *before INJECT* and
+   records the worst reading per `during_fault: true` criterion
+
+**during_fault sampling model** (`pkg/core/orchestrator/during_fault_sampler.go`):
+
+Some fault injectors block their `InjectFault` call for the fault's
+full `duration` — most notably `container_pause`, which self-unpauses
+inside INJECT. If we only evaluated `during_fault` criteria at
+end-of-MONITOR, those faults would already be over and the criterion
+would observe post-fault state. So the orchestrator launches a
+sampler goroutine *before* calling `executeInject`; the sampler
+waits a 15 s warmup then polls every 15 s, keeping the worst reading
+per criterion. At end-of-MONITOR we stop it and read the results.
+
+If a criterion was never sampled (e.g. log criterion that needs log
+context only wired up at this stage), we fall back to a single
+`EvaluateOnce` — noted in the output so operators see the timing
+caveat.
 
 **Example Prometheus Query** (from YAML):
 ```yaml
