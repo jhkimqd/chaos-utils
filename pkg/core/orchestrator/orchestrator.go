@@ -135,6 +135,14 @@ type Orchestrator struct {
 	injectedFaults  map[string]string       // track which targets have faults injected (containerID -> faultType)
 	criteriaResults []CriterionOutcome      // populated during DETECT phase
 
+	// duringFaultSampler runs concurrently with INJECT/MONITOR and samples
+	// during_fault criteria repeatedly. Required because some inject calls
+	// (e.g. container_pause with Duration set) self-terminate inside INJECT
+	// and are already over by the time MONITOR completes — if we only
+	// evaluated once at end of MONITOR, the criterion would see post-fault
+	// state and report a misleading pass/fail.
+	dfSampler *duringFaultSampler
+
 	// faultVerificationWarnings counts faults that passed InjectFault's own
 	// error check but failed the orchestrator's post-injection verification.
 	// Non-zero means the test ran with at least one fault whose observable
@@ -366,9 +374,21 @@ func (o *Orchestrator) Execute(ctx context.Context, scenarioPath string) (*TestR
 		return o.failTest(result, err)
 	}
 
+	// Start the during-fault sampler BEFORE inject. Some fault types
+	// (notably container_pause with Duration set) block their InjectFault
+	// call for the full fault window and self-terminate inside INJECT.
+	// If we only evaluate during_fault criteria after MONITOR, those
+	// faults are already gone and the criteria observe post-fault state.
+	// The sampler polls every 15s throughout INJECT + MONITOR and keeps
+	// the worst reading per criterion, so a single violation is recorded
+	// no matter when it occurs.
+	o.dfSampler = newDuringFaultSampler(o.detector, o.scenario.Spec.SuccessCriteria, 15*time.Second)
+	o.dfSampler.Start(ctx)
+
 	// INJECT state
 	o.transitionState(StateInject)
 	if err = o.executeInject(ctx); err != nil {
+		o.dfSampler.Stop()
 		return o.failTest(result, err)
 	}
 
@@ -1187,24 +1207,37 @@ func (o *Orchestrator) executeMonitor(ctx context.Context) error {
 	return nil
 }
 
-// evaluateDuringFaultCriteria evaluates criteria marked during_fault: true
-// at the end of the MONITOR phase while faults are still injected.
+// evaluateDuringFaultCriteria consumes the background sampler's results.
+// The sampler has been running since before INJECT, so it will have captured
+// observations even when the fault self-terminates inside INJECT (which
+// blocks the caller — see startup in Execute). This method:
+//   - stops the sampler and retrieves the worst-observed result per criterion
+//   - records those outcomes into criteriaResults
+//   - returns CriteriaFailureError if any critical during_fault criterion
+//     failed at any point in the sampling window.
+//
+// If a criterion was NEVER sampled (sampler never got a chance to run, or
+// criterion is log-based and needed log context that wasn't available until
+// now) it is re-evaluated ONCE at end-of-monitor as a fallback. This catches
+// the "sampler saw no data" case instead of silently dropping the criterion.
 func (o *Orchestrator) evaluateDuringFaultCriteria(ctx context.Context) error {
-	var duringFault []int
-	for i, c := range o.scenario.Spec.SuccessCriteria {
-		if c.DuringFault {
-			duringFault = append(duringFault, i)
-		}
+	if o.dfSampler == nil {
+		return nil
 	}
+
+	duringFault := o.dfSampler.indices
 	if len(duringFault) == 0 {
+		o.dfSampler.Stop()
 		return nil
 	}
 
 	if o.detector == nil {
+		o.dfSampler.Stop()
 		return fmt.Errorf("detector is not configured but during_fault criteria are defined — cannot validate")
 	}
 
-	// Wire up log context for log-based criteria
+	// Wire up log context for log-based criteria (sampler goroutine already
+	// captured Prometheus-based readings; log criteria become evaluable here).
 	if o.dockerClient != nil {
 		var logTargets []detector.LogTarget
 		for _, t := range o.targets {
@@ -1221,16 +1254,29 @@ func (o *Orchestrator) evaluateDuringFaultCriteria(ctx context.Context) error {
 		o.detector.SetLogContext(o.dockerClient, logTargets, since)
 	}
 
-	fmt.Printf("\nEvaluating during-fault criteria (%d) while faults are active...\n", len(duringFault))
+	// Stop the sampler and collect worst-observed results.
+	worst := o.dfSampler.StopAndCollect()
+
+	fmt.Printf("\nEvaluating during-fault criteria (%d) — using worst-observed reading from %d samples across fault window...\n",
+		len(duringFault), o.dfSampler.SampleCount())
 
 	criticalFailed := false
 	for j, idx := range duringFault {
 		criterion := o.scenario.Spec.SuccessCriteria[idx]
 		fmt.Printf("  [%d/%d] Evaluating: %s\n", j+1, len(duringFault), criterion.Name)
 
-		result, err := o.detector.Evaluate(ctx, criterion)
-		if err != nil {
-			return fmt.Errorf("during-fault criteria query failed for %q: %w", criterion.Name, err)
+		result, haveSample := worst[criterion.Name]
+		if !haveSample {
+			// Fallback: sampler never got a reading (e.g. log criterion
+			// needing log context, or sampler stopped before first tick).
+			// Evaluate once now. This is LESS reliable than a during-fault
+			// sample but better than silently skipping the criterion.
+			fmt.Printf("      [fallback] no during-fault sample — evaluating once now (faults may already be torn down)\n")
+			r, err := o.detector.EvaluateOnce(ctx, criterion)
+			if err != nil {
+				return fmt.Errorf("during-fault criteria query failed for %q: %w", criterion.Name, err)
+			}
+			result = r
 		}
 
 		o.criteriaResults = append(o.criteriaResults, CriterionOutcome{
