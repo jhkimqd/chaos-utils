@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -322,8 +323,18 @@ func (o *Orchestrator) Execute(ctx context.Context, scen *scenario.Scenario, sce
 		}
 	}()
 
-	// Always run cleanup on exit
+	// Always run cleanup on exit. This path runs on success, failure, and
+	// panic. Besides sidecar destruction, it also tears down any faults
+	// that were recorded in injectedFaults but never went through the
+	// normal executeTeardown state (inject-error, early abort, emergency
+	// stop). Without this, a partial-inject failure leaves tc / iptables /
+	// stress state installed on the target kernel namespace until the next
+	// run's pre-flight tries to sweep it — and pre-flight only handles tc.
 	defer func() {
+		if len(o.injectedFaults) > 0 && o.currentState != StateCompleted {
+			fmt.Println("Cleaning up faults recorded before abort...")
+			o.removeTrackedFaults(ctx)
+		}
 		fmt.Println("Running cleanup...")
 		if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
 			fmt.Printf("Cleanup errors: %v\n", err)
@@ -943,13 +954,24 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 	wg.Wait()
 
 	// Collect outcomes (all goroutines finished — no races on injectedFaults).
+	//
+	// IMPORTANT (F-09): we must iterate EVERY result and record EVERY
+	// success before we decide to return an error. An earlier short-circuit
+	// that returned on the first failure dropped any later successes on the
+	// floor — those injections had already run, installed real tc / iptables
+	// / stress state on their targets, but teardown had no way to find them
+	// because they were never appended to injectedFaults. The symptom was
+	// leaked kernel-level chaos state surviving a partial-inject failure.
+	//
 	// Each (container, faultType) pair is recorded independently. Multiple
 	// faults can share a container (e.g. compound disk_io + network), and
 	// teardown will remove them in reverse order of injection.
 	distinctContainers := map[string]struct{}{}
+	var injectErrs []error
 	for _, r := range results {
 		if r.err != nil {
-			return fmt.Errorf("inject %q: %w", r.job.fault.Phase, r.err)
+			injectErrs = append(injectErrs, fmt.Errorf("inject %q: %w", r.job.fault.Phase, r.err))
+			continue
 		}
 		for _, t := range r.job.targets {
 			o.injectedFaults = append(o.injectedFaults, injectedFault{
@@ -959,6 +981,14 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 			distinctContainers[t.ContainerID] = struct{}{}
 			fmt.Printf("  ✓ %s on %s (%s)\n", r.job.fault.Phase, t.Name, t.ContainerID[:12])
 		}
+	}
+
+	if len(injectErrs) > 0 {
+		// Return the aggregated error AFTER every successful inject has
+		// been appended to injectedFaults. The caller (Execute) will route
+		// to failTest, which defers to the cleanup coordinator + teardown
+		// path to remove whatever did install cleanly.
+		return errors.Join(injectErrs...)
 	}
 
 	fmt.Printf("✓ %d fault(s) injected on %d distinct container(s)\n",
@@ -1652,6 +1682,50 @@ func (o *Orchestrator) interruptibleSleep(ctx context.Context, duration time.Dur
 	}
 }
 
+// removeTrackedFaults iterates o.injectedFaults in reverse insertion order
+// and calls injector.RemoveFault for each entry. Returns the count of
+// successful removals. Errors are logged but not aggregated — a single
+// failure must not leak the rest, since each call touches independent
+// kernel state (distinct tc qdiscs / iptables chains / stress processes).
+//
+// Called from:
+//   - executeTeardown (normal success path),
+//   - Execute's deferred cleanup when the state machine aborted after
+//     any faults were recorded — covers partial-inject failures (F-09)
+//     and early-exit paths that never reach StateTeardown.
+//
+// After this call injectedFaults is cleared so the deferred cleanup and
+// executeTeardown cannot double-remove. Idempotent by construction: if
+// called twice the second call is a no-op.
+func (o *Orchestrator) removeTrackedFaults(ctx context.Context) int {
+	removed := 0
+	for i := len(o.injectedFaults) - 1; i >= 0; i-- {
+		f := o.injectedFaults[i]
+		containerID := f.ContainerID
+		faultType := f.FaultType
+		// Find target name
+		targetName := containerID[:12]
+		for _, target := range o.targets {
+			if target.ContainerID == containerID {
+				targetName = target.Name
+				break
+			}
+		}
+
+		fmt.Printf("  Removing %s fault from %s...\n", faultType, targetName)
+
+		if err := o.injector.RemoveFault(ctx, faultType, containerID); err != nil {
+			fmt.Printf("    ⚠ Error removing fault: %v\n", err)
+			// Continue — one removal failure must not leak the rest.
+		} else {
+			fmt.Printf("    ✓ Fault removed\n")
+			removed++
+		}
+	}
+	o.injectedFaults = nil
+	return removed
+}
+
 // executeTeardown removes all faults
 func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 	fmt.Println("Tearing down faults...")
@@ -1659,37 +1733,7 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 	if len(o.injectedFaults) == 0 {
 		fmt.Println("  No faults to remove")
 	} else {
-		// Iterate in reverse insertion order (LIFO) so stacked tc qdiscs
-		// and iptables rules come off in the opposite order they went on.
-		// Each (container, faultType) pair is independent — prior to F-02
-		// a map keyed on containerID would silently collapse two faults
-		// on the same container into one and leak the first.
-		removed := 0
-		for i := len(o.injectedFaults) - 1; i >= 0; i-- {
-			f := o.injectedFaults[i]
-			containerID := f.ContainerID
-			faultType := f.FaultType
-			// Find target name
-			targetName := containerID[:12]
-			for _, target := range o.targets {
-				if target.ContainerID == containerID {
-					targetName = target.Name
-					break
-				}
-			}
-
-			fmt.Printf("  Removing %s fault from %s...\n", faultType, targetName)
-
-			if err := o.injector.RemoveFault(ctx, faultType, containerID); err != nil {
-				fmt.Printf("    ⚠ Error removing fault: %v\n", err)
-				// Continue with other faults — one removal failure must
-				// not leak the rest.
-			} else {
-				fmt.Printf("    ✓ Fault removed\n")
-				removed++
-			}
-		}
-
+		removed := o.removeTrackedFaults(ctx)
 		fmt.Printf("✓ Removed %d fault(s)\n", removed)
 	}
 
