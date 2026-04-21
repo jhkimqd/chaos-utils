@@ -159,25 +159,48 @@ func (sw *StressWrapper) injectCPULimit(ctx context.Context, targetContainerID s
 		cores = 1 // default 1 core worth of CPU
 	}
 
-	// CPUPeriod is typically 100000 microseconds (100ms)
-	cpuPeriod := int64(100000)
-	// Calculate quota: (percent / 100) * cores * period
-	cpuQuota := int64(float64(cpuPercent) / 100.0 * float64(cores) * float64(cpuPeriod))
-
-	fmt.Printf("Injecting CPU limit on target %s: %d%% of %d core(s) (quota=%d, period=%d)\n",
-		targetContainerID[:12], cpuPercent, cores, cpuQuota, cpuPeriod)
-
-	// Update container with CPU limits
-	updateConfig := container.UpdateConfig{
-		Resources: container.Resources{
-			CPUQuota:  cpuQuota,
-			CPUPeriod: cpuPeriod,
-		},
+	// Two ways Docker expresses CPU caps on a container:
+	//   - NanoCPUs (set by `docker run --cpus=N`, used by Kurtosis)
+	//   - CPUQuota/CPUPeriod (the cgroup-level knobs)
+	// Docker refuses to update CPUQuota/CPUPeriod while NanoCPUs is set,
+	// and refuses to update NanoCPUs while CPUQuota is set. Match whichever
+	// the original container used so the update succeeds and the fault
+	// actually lands — the previous code always wrote CPUQuota/CPUPeriod,
+	// which was a hard-fail on Kurtosis containers with `docker update:
+	// Conflicting options: CPU Period cannot be updated as NanoCPUs has
+	// already been set`.
+	var updateConfig container.UpdateConfig
+	if inspect.HostConfig.NanoCPUs > 0 {
+		// Container was started with --cpus=N. NanoCPUs counts 1 CPU as 1e9.
+		nanoCPUs := int64(float64(cpuPercent) / 100.0 * float64(cores) * 1e9)
+		fmt.Printf("Injecting CPU limit on target %s: %d%% of %d core(s) (NanoCPUs=%d)\n",
+			targetContainerID[:12], cpuPercent, cores, nanoCPUs)
+		updateConfig = container.UpdateConfig{
+			Resources: container.Resources{NanoCPUs: nanoCPUs},
+		}
+	} else {
+		// CPUPeriod default is 100000 microseconds (100ms).
+		cpuPeriod := int64(100000)
+		cpuQuota := int64(float64(cpuPercent) / 100.0 * float64(cores) * float64(cpuPeriod))
+		fmt.Printf("Injecting CPU limit on target %s: %d%% of %d core(s) (quota=%d, period=%d)\n",
+			targetContainerID[:12], cpuPercent, cores, cpuQuota, cpuPeriod)
+		updateConfig = container.UpdateConfig{
+			Resources: container.Resources{CPUQuota: cpuQuota, CPUPeriod: cpuPeriod},
+		}
 	}
 
-	_, err = sw.dockerClient.ContainerUpdate(ctx, targetContainerID, updateConfig)
-	if err != nil {
+	if _, err := sw.dockerClient.ContainerUpdate(ctx, targetContainerID, updateConfig); err != nil {
 		return fmt.Errorf("failed to update container CPU limits: %w", err)
+	}
+
+	// Verify the update actually took effect — ContainerUpdate sometimes
+	// silently accepts values it can't apply (e.g. cgroup v1 quirks).
+	post, err := sw.dockerClient.ContainerInspect(ctx, targetContainerID)
+	if err == nil {
+		applied := post.HostConfig.NanoCPUs > 0 || post.HostConfig.CPUQuota > 0
+		if !applied {
+			return fmt.Errorf("CPU limit update accepted but neither NanoCPUs nor CPUQuota is set on the container; the fault is not active")
+		}
 	}
 
 	fmt.Printf("CPU limit injected successfully on target %s\n", targetContainerID[:12])
@@ -298,12 +321,19 @@ func (sw *StressWrapper) RemoveFault(ctx context.Context, targetContainerID stri
 		}
 	}
 
-	// If original CPU quota was 0 (no limit), set to -1 to explicitly remove the limit
-	if originalRes.CPUQuota == 0 {
-		restoreConfig.CPUQuota = -1
-	} else {
+	// Restore whichever CPU-cap representation the original container used.
+	// If the container was started with --cpus=N (NanoCPUs > 0), we set
+	// NanoCPUs during inject; restore the exact original NanoCPUs so Docker
+	// doesn't reject the update due to the NanoCPUs <-> CPUQuota conflict.
+	switch {
+	case originalRes.NanoCPUs > 0:
+		restoreConfig.NanoCPUs = originalRes.NanoCPUs
+	case originalRes.CPUQuota > 0:
 		restoreConfig.CPUQuota = originalRes.CPUQuota
 		restoreConfig.CPUPeriod = originalRes.CPUPeriod
+	default:
+		// Container had no CPU cap; explicitly disarm the quota we set.
+		restoreConfig.CPUQuota = -1
 	}
 
 	updateConfig := container.UpdateConfig{

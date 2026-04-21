@@ -19,13 +19,17 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/chaos-peer       .
 FROM ubuntu:22.04
 
 # Install runtime tools for fault injection:
-#   iproute2    — tc (traffic control) for L3/L4 network faults (netem)
-#   iptables    — connection drop, port redirect (Envoy/proxy PREROUTING), NTP blocking
-#   nftables    — verification checks for leftover rules
-#   curl        — readiness checks (Envoy admin, corruption-proxy control API)
-#   jq          — JSON parsing
-#   procps      — ps (verify running processes)
-#   coreutils   — dd (I/O stress), date (clock skew), timeout/yes (CPU stress), cp/rm/find
+#   iproute2      — tc (traffic control) for L3/L4 network faults (netem)
+#   iptables      — connection drop, port redirect (Envoy/proxy PREROUTING), NTP blocking
+#   nftables      — verification checks for leftover rules
+#   curl          — readiness checks (Envoy admin, corruption-proxy control API)
+#   jq            — JSON parsing
+#   procps        — ps (verify running processes)
+#   coreutils     — dd (I/O stress), date (clock skew), timeout/yes (CPU stress), cp/rm/find
+#   iputils-ping  — ping for observing netem latency/loss from inside the sidecar
+#   dnsutils      — dig/nslookup for validating DNS fault effect (udp/53 delay/drop)
+#   netcat-openbsd — nc for TCP connectivity checks (validates connection_drop /
+#                    iptables REDIRECT target ports)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     iptables \
@@ -33,6 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     jq \
     procps \
+    iputils-ping \
+    dnsutils \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Envoy for L7 HTTP fault injection (abort, delay, body/header override).

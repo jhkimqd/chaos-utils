@@ -931,9 +931,14 @@ func (i *Injector) injectCorruptionProxy(ctx context.Context, fault *scenario.Fa
 			return fmt.Errorf("failed to write rules to sidecar %s: %w (output: %s)", target.Name, err, out)
 		}
 
-		// Step 2: Start corruption-proxy in background.
+		// Step 2: Start corruption-proxy in background with full stdio
+		// detachment (stdin → /dev/null, stdout/stderr → log file). Without
+		// `</dev/null` the backgrounded process keeps docker exec's stdin
+		// pipe referenced; daemons that never read stdin won't notice, but
+		// it leaves the attach stream inconsistent and has bitten us in
+		// io_delay and envoy.
 		startCmd := []string{"sh", "-c", fmt.Sprintf(
-			"corruption-proxy --listen :%d --target %d --rules %s --control 127.0.0.1:%d > %s 2>&1 &",
+			"corruption-proxy --listen :%d --target %d --rules %s --control 127.0.0.1:%d </dev/null > %s 2>&1 &",
 			proxyPort, targetPort, rulesPath, controlPort, logPath,
 		)}
 		fmt.Printf("Starting corruption proxy on port %d for target %s (port %d)\n",
@@ -996,11 +1001,17 @@ func (i *Injector) removeCorruptionProxy(ctx context.Context, containerID string
 		log.Warn().Err(iptErr).Str("container", containerID[:12]).Msg("failed to remove corruption-proxy iptables rules")
 	}
 
-	// Kill all corruption-proxy processes and remove temp files.
+	// Kill all corruption-proxy processes and remove temp files. The self-
+	// PID skip ($$) is required because this sh -c's own cmdline contains
+	// "corruption-proxy" as an argument to grep, which would otherwise
+	// cause the script to SIGKILL itself (exit 137) mid-run and leak the
+	// actual proxy processes.
 	killCmd := []string{"sh", "-c",
-		"for p in /proc/[0-9]*/cmdline; do " +
-			"PID=$(echo $p | cut -d/ -f3); " +
-			"if tr '\\0' ' ' < $p 2>/dev/null | grep -q corruption-proxy; then kill -9 $PID 2>/dev/null; fi; " +
+		"MY=$$; for p in /proc/[0-9]*/cmdline; do " +
+			"PID=$(basename \"$(dirname \"$p\")\"); " +
+			"[ \"$PID\" = \"$MY\" ] && continue; " +
+			"CMD=$({ tr '\\0' ' ' < \"$p\"; } 2>/dev/null); " +
+			"case \"$CMD\" in *corruption-proxy*) kill -9 \"$PID\" 2>/dev/null ;; esac; " +
 			"done; " +
 			"rm -f /tmp/corruption-rules-*.yaml /tmp/corruption-proxy-*.log 2>/dev/null; " +
 			"echo done"}

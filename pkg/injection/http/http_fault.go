@@ -96,9 +96,14 @@ func (hw *HTTPFaultWrapper) InjectHTTPFault(ctx context.Context, targetContainer
 		return fmt.Errorf("failed to write Envoy config: %w (output: %s)", err, output)
 	}
 
-	// Step 2: Start Envoy in background
+	// Step 2: Start Envoy in background with full stdio detachment. The
+	// `</dev/null >/dev/null 2>&1` is load-bearing: without it, Envoy keeps
+	// docker exec's attach pipes open, so ContainerExecAttach's StdCopy can
+	// block until Envoy exits (never) or until the daemon force-closes the
+	// stream. The --log-path flag already routes Envoy's own logs to a file,
+	// so the redirection only affects any uncaught stderr from startup.
 	envoyCmd := []string{"sh", "-c", fmt.Sprintf(
-		"envoy -c %s --log-level warn --log-path /tmp/envoy-chaos-%d.log &",
+		"envoy -c %s --log-level warn --log-path /tmp/envoy-chaos-%d.log </dev/null >/dev/null 2>&1 &",
 		configPath, params.TargetPort,
 	)}
 
@@ -191,11 +196,17 @@ func (hw *HTTPFaultWrapper) RemoveFault(ctx context.Context, targetContainerID s
 		}
 	}
 
-	// Stop Envoy using /proc scanning (sidecar is Ubuntu so pkill exists, but
-	// use /proc for consistency). Match by config file path to target the right instance.
+	// Stop Envoy using /proc scanning. Skip our own shell ($$) since the
+	// script's cmdline literally contains "envoy-chaos-<port>" as an
+	// argument to grep, which would otherwise self-match and SIGKILL the
+	// shell mid-run (leaking the real Envoy process and producing a
+	// spurious "exec exit 137" warning in the caller).
 	killCmd := []string{"sh", "-c", fmt.Sprintf(
-		"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); "+
-			"if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'envoy-chaos-%d'; then kill -9 $PID 2>/dev/null; fi; done; "+
+		"MY=$$; for p in /proc/[0-9]*/cmdline; do PID=$(basename \"$(dirname \"$p\")\"); "+
+			"[ \"$PID\" = \"$MY\" ] && continue; "+
+			"CMD=$({ tr '\\0' ' ' < \"$p\"; } 2>/dev/null); "+
+			"case \"$CMD\" in *envoy-chaos-%d*) kill -9 \"$PID\" 2>/dev/null ;; esac; "+
+			"done; "+
 			"rm -f /tmp/envoy-chaos-%d.yaml /tmp/envoy-chaos-%d.log",
 		params.TargetPort, params.TargetPort, params.TargetPort)}
 	_, envoyErr := hw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, killCmd)
@@ -217,9 +228,14 @@ func (hw *HTTPFaultWrapper) RemoveAllFaults(ctx context.Context, targetContainer
 		if _, ok := hw.sidecarMgr.GetSidecarID(targetContainerID); ok {
 			// Match only chaos-injected envoys by config-path prefix, so we
 			// don't kill unrelated envoys sharing the network namespace.
+			// Skip our own shell to avoid the self-kill exit-137 bug where the
+			// script's cmdline contains "envoy-chaos-" as a grep argument.
 			killCmd := []string{"sh", "-c",
-				"for p in /proc/[0-9]*/cmdline; do PID=$(echo $p | cut -d/ -f3); " +
-					"if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'envoy-chaos-'; then kill -9 $PID 2>/dev/null; fi; done; " +
+				"MY=$$; for p in /proc/[0-9]*/cmdline; do PID=$(basename \"$(dirname \"$p\")\"); " +
+					"[ \"$PID\" = \"$MY\" ] && continue; " +
+					"CMD=$({ tr '\\0' ' ' < \"$p\"; } 2>/dev/null); " +
+					"case \"$CMD\" in *envoy-chaos-*) kill -9 \"$PID\" 2>/dev/null ;; esac; " +
+					"done; " +
 					"while iptables -t nat -D PREROUTING -m comment --comment chaos-http-fault -j REDIRECT 2>/dev/null; do true; done; " +
 					"rm -f /tmp/envoy-chaos-*.yaml /tmp/envoy-chaos-*.log 2>/dev/null; " +
 					"echo done"}

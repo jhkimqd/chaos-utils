@@ -67,9 +67,20 @@ func (cw *ClockSkewWrapper) InjectClockSkew(ctx context.Context, targetContainer
 
 	fmt.Printf("Injecting clock skew on target %s\n", targetContainerID[:12])
 
-	saveCmd := []string{"sh", "-c", "date +%s > /tmp/.chaos_original_time"}
+	// Save the offset (not the absolute epoch) so restore can compensate for
+	// elapsed wall-clock time. The previous approach stored `date +%s` at
+	// inject and `date -s "@$saved"` at restore, snapping the clock back to
+	// inject-time regardless of how long the fault had run. On a 10-minute
+	// scenario with +5m skew, restore would leave the clock ~10 minutes in
+	// the past instead of the host's current time. Storing the offset and
+	// subtracting it at restore makes the restoration correct.
+	offsetSec, err := parseOffsetToSeconds(params.Offset)
+	if err != nil {
+		return fmt.Errorf("invalid offset %q: %w", params.Offset, err)
+	}
+	saveCmd := []string{"sh", "-c", fmt.Sprintf("echo %d > /tmp/.chaos_clock_offset", offsetSec)}
 	if _, err := cw.dockerClient.ExecCommand(ctx, targetContainerID, saveCmd); err != nil {
-		log.Warn().Err(err).Str("container", targetContainerID[:12]).Msg("could not save original time")
+		log.Warn().Err(err).Str("container", targetContainerID[:12]).Msg("could not save clock offset")
 	}
 
 	if params.DisableNTP {
@@ -78,11 +89,6 @@ func (cw *ClockSkewWrapper) InjectClockSkew(ctx context.Context, targetContainer
 			log.Warn().Err(err).Str("container", targetContainerID[:12]).Msg("failed to block NTP traffic")
 		}
 		fmt.Printf("  NTP traffic blocked\n")
-	}
-
-	offsetSec, err := parseOffsetToSeconds(params.Offset)
-	if err != nil {
-		return fmt.Errorf("invalid offset %q: %w", params.Offset, err)
 	}
 
 	cmd := []string{"sh", "-c", fmt.Sprintf(
@@ -117,8 +123,20 @@ func (cw *ClockSkewWrapper) RemoveClockSkew(ctx context.Context, targetContainer
 		log.Warn().Err(err).Str("container", targetContainerID[:12]).Msg("failed to remove chaos-ntp-block rule")
 	}
 
+	// Restore by subtracting the recorded offset from the CURRENT clock, not
+	// by snapping back to the inject-time epoch. This preserves the elapsed
+	// wall-clock duration of the fault window.
+	//
+	// Backward-compat: old `.chaos_original_time` (absolute epoch) artifacts
+	// from pre-fix runs are still honored, since restoring to a slightly
+	// stale epoch is still safer than leaving the skew in place.
 	restoreCmd := []string{"sh", "-c", `
-		if [ -f /tmp/.chaos_original_time ]; then
+		if [ -f /tmp/.chaos_clock_offset ]; then
+			OFFSET=$(cat /tmp/.chaos_clock_offset)
+			NEW_EPOCH=$(( $(date +%s) - OFFSET ))
+			date -s "@$NEW_EPOCH" 2>/dev/null || true
+			rm -f /tmp/.chaos_clock_offset
+		elif [ -f /tmp/.chaos_original_time ]; then
 			date -s "@$(cat /tmp/.chaos_original_time)" 2>/dev/null || true
 			rm -f /tmp/.chaos_original_time
 		fi
