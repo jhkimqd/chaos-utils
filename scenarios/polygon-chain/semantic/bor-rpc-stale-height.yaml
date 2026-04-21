@@ -89,7 +89,7 @@ spec:
       description: Stale height may cause vote extension divergence — monitor late votes
       type: prometheus
       query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-[25]-heimdall-v2-bor-validator"}[2m])) * 60
-      threshold: "< 5000"
+      threshold: "< 20000"
       critical: false
       during_fault: true
 

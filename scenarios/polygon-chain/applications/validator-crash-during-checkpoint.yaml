@@ -109,10 +109,10 @@ spec:
       critical: false
 
     - name: late_votes_during_sync
-      description: Late votes under 2500/min (crash recovery causes sync delays)
+      description: Late votes under 15000/min (baseline ~4000/min/validator; F-07)
       type: prometheus
       query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
-      threshold: "< 2500"
+      threshold: "< 15000"
       critical: false
 
     - name: consensus_height_recovery

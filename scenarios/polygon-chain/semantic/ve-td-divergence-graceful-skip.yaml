@@ -123,7 +123,7 @@ spec:
       description: Late votes should not explode (bounded consensus degradation)
       type: prometheus
       query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) * 60
-      threshold: "< 5000"
+      threshold: "< 20000"
       critical: false
 
     # Recovery
