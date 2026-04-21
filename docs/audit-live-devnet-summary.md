@@ -74,8 +74,10 @@ a48adb2 fix(injection): accept int|float64 for remaining numeric params (F-01)
   Both trip the race detector without the mutex guards, green with them.
 - Live applications/ sweep: **16 PASS** (zero critical-criterion failures) +
   **1 GATED** (`chaindata-wipe-resync`) + **1 hard-fail re-verified clean**
-  (`coordinated-full-cluster-crash` post-F-14: no fatal, emergency controller
-  exits cleanly, JSON report artifact produced).
+  (`coordinated-full-cluster-crash` post-F-14: no `fatal error: concurrent map writes`,
+  reached TEARDOWN cleanly; wrapper's 600s cap fired mid-teardown — race fix
+  confirmed, with a secondary observation that teardown of N=15 sidecars
+  exceeds 600s worth investigating as a future perf pass, not re-filed).
 
 ## Gated scenarios (require devnet restart on trigger — do not run casually)
 
