@@ -108,13 +108,13 @@ spec:
       absence: true
       critical: true
 
-    - name: heimdall_websocket_reconnects
-      description: "Bor logs WS reconnect to Heimdall — non-critical: log scanner can only reach fault-target Heimdall containers, not Bor containers"
-      type: log
-      pattern: "(connection lost.*heimdall|will attempt to reconnect|heimdall.*reconnect|service unavailable.*503)"
-      container_pattern: "heimdall-v2-bor-validator"
-      absence: false
-      critical: false
+    # Removed: heimdall_websocket_reconnects (F-15)
+    # The WS-reconnect log emits from Bor containers (bor→heimdall subscription),
+    # but the log scanner only watches fault-target containers. In this scenario
+    # only Heimdall is a fault target, so Bor logs are never scanned and the
+    # criterion was structurally unsatisfiable (always FAILED, non-critical).
+    # Re-add if/when the scanner is extended to non-fault-target containers
+    # (that would be a monitor-auditor lane change, not a scenario-YAML one).
 
   metrics:
     - chain_head_block
