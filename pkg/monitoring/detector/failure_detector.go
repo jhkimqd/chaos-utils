@@ -69,6 +69,35 @@ func (fd *FailureDetector) SetLogContext(dockerClient *docker.Client, targets []
 	fd.logSince = since
 }
 
+// EvaluateOnce performs a single evaluation of a criterion WITHOUT mutating
+// the detector's persistent results map. Callers (e.g. the during-fault
+// sampler in the orchestrator) use this to poll repeatedly and aggregate
+// worst-observed results themselves, rather than having each evaluation
+// clobber the prior one in fd.results.
+//
+// The returned CriterionResult is a fresh object — Evaluations/Failures
+// counters are always 0 or 1 and must not be merged with persistent ones.
+func (fd *FailureDetector) EvaluateOnce(ctx context.Context, criterion scenario.SuccessCriterion) (*CriterionResult, error) {
+	result := &CriterionResult{
+		Criterion:   criterion,
+		LastChecked: time.Now(),
+		Evaluations: 1,
+	}
+
+	switch criterion.Type {
+	case "prometheus":
+		return fd.evaluatePrometheus(ctx, criterion, result)
+	case "log":
+		return fd.evaluateLog(ctx, criterion, result)
+	case "state_root_consensus":
+		return fd.evaluateStateRootConsensus(ctx, criterion, result)
+	default:
+		result.Passed = false
+		result.Message = fmt.Sprintf("unsupported criterion type: %s", criterion.Type)
+		return result, fmt.Errorf("unsupported criterion type: %s", criterion.Type)
+	}
+}
+
 // Evaluate evaluates a single success criterion
 func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.SuccessCriterion) (*CriterionResult, error) {
 	result := &CriterionResult{
@@ -135,13 +164,57 @@ func (fd *FailureDetector) evaluatePrometheus(ctx context.Context, criterion sce
 
 	result.SeriesCount = len(queryResults)
 
-	// When the query returns multiple series the detector must aggregate
-	// deterministically — otherwise it would evaluate an arbitrary
-	// first-series sample. Pick the worst-case value for the threshold
-	// direction: MAX for `<`/`<=` (a single high value must trip the check),
-	// MIN for `>`/`>=` (a single low value must trip it), and the smallest
-	// value for `==`/`!=` (stable across runs). Scenario authors should wrap
-	// queries in min()/max()/avg() — this is a safety net, not a workaround.
+	// For directional thresholds (<, <=, >, >=), aggregate to the worst-case
+	// value so a single offending series trips the check. For equality
+	// thresholds (==, !=) aggregation is DANGEROUS: e.g. `== 0` with series
+	// [0, 100] would reduce to min=0 and silently pass even though one node
+	// violates. Instead, evaluate every series and require ALL to pass —
+	// any series that fails the threshold fails the whole criterion.
+	t := strings.TrimSpace(criterion.Threshold)
+	isEquality := strings.HasPrefix(t, "==") || strings.HasPrefix(t, "!=")
+
+	if isEquality && len(queryResults) > 1 {
+		// Find the first series that fails the threshold (if any).
+		var failingValue float64
+		var failingLabels map[string]string
+		allPassed := true
+		for _, qr := range queryResults {
+			ok, err := fd.evaluateThreshold(qr.Value, criterion.Threshold)
+			if err != nil {
+				result.Passed = false
+				result.Message = fmt.Sprintf("threshold evaluation failed: %v", err)
+				result.Failures++
+				return result, err
+			}
+			if !ok {
+				allPassed = false
+				failingValue = qr.Value
+				failingLabels = qr.Labels
+				break
+			}
+		}
+
+		// LastValue reports the offending series so callers see the worst
+		// observed — otherwise a passing aggregate hides the failing node.
+		if !allPassed {
+			result.LastValue = failingValue
+			result.Passed = false
+			result.Message = fmt.Sprintf(
+				"at least one of %d series fails threshold %s — offending value %.4f (labels=%v); per-series eval required for equality thresholds to prevent silent pass",
+				len(queryResults), criterion.Threshold, failingValue, failingLabels)
+			result.Failures++
+			return result, nil
+		}
+		// All series passed. Record the first value for reporting.
+		result.LastValue = queryResults[0].Value
+		result.Passed = true
+		result.Message = fmt.Sprintf("all %d series meet threshold %s (first value %.4f)", len(queryResults), criterion.Threshold, queryResults[0].Value)
+		return result, nil
+	}
+
+	// Directional threshold: aggregate worst-case so a single offending
+	// series trips the check. Scenario authors should still wrap queries in
+	// min()/max()/avg() — this is a safety net, not a workaround.
 	value := aggregateSeries(queryResults, criterion.Threshold)
 	result.LastValue = value
 
