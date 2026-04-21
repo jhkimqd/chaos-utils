@@ -224,17 +224,20 @@ jobs:
               - observability
           PARAMS
 
-          echo "--- Generated params ---"
+          echo "::group::Generated chaos-params.yml"
           cat /tmp/chaos-params.yml
+          echo "::endgroup::"
 
       - name: Deploy devnet
         run: |
           set -o pipefail
           pushd kurtosis-pos
+          echo "::group::kurtosis run output (click to expand)"
           timeout 900 kurtosis run \
             --enclave=${ENCLAVE_NAME} \
             --args-file /tmp/chaos-params.yml \
             . 2>&1 | tee ../deploy.log
+          echo "::endgroup::"
           popd
 
       - name: Wait for network readiness
@@ -246,14 +249,21 @@ jobs:
           RPC_URL="http://${VALIDATOR_RPC}"
           echo "Waiting for 40 blocks on ${RPC_URL}..."
 
+          # Collapse the 120 poll lines by default; expand on failure.
+          echo "::group::Block-height poll (up to 120 attempts)"
           for i in $(seq 1 120); do
             BLOCK=$(timeout 5 cast bn --rpc-url "${RPC_URL}" 2>/dev/null || echo "0")
-            echo "Block: ${BLOCK}/40 (attempt ${i}/120)"
+            # Log every 5th attempt plus boundary attempts to keep the poll list short.
+            if [[ $((i % 5)) -eq 0 || "${i}" -eq 1 || "${BLOCK}" -ge 40 ]]; then
+              echo "Block: ${BLOCK}/40 (attempt ${i}/120)"
+            fi
             if [[ "${BLOCK}" -ge 40 ]]; then
-              echo "Network ready!"
+              echo "::endgroup::"
+              echo "Network ready (block ${BLOCK} reached after ${i} polls)."
               break
             fi
             if [[ "${i}" -eq 120 ]]; then
+              echo "::endgroup::"
               echo "::error::Network did not reach 40 blocks in 10 minutes"
               exit 1
             fi
