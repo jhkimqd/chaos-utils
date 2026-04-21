@@ -180,6 +180,7 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 		Message:         result.Message,
 		Targets:         convertTargets(result.Targets),
 		Faults:          convertFaults(scenario, result),
+		FaultInstalls:   result.FaultCount,
 		SuccessCriteria: convertCriteria(result.CriteriaResults),
 		CleanupSummary:  orch.GetCleanupSummary(),
 		Errors:          convertErrors(result.Errors),
