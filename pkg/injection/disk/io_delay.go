@@ -213,21 +213,32 @@ func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID str
 	// carrying the chaos_io_stress marker. The sweep catches dd children
 	// that were mid-exec when their parent shell was killed and any process
 	// left from a prior crashed run where the pidfile went missing.
+	//
+	// Two subtleties that bit earlier revisions:
+	//  1. The remove script's own cmdline contains the chaos_io_stress
+	//     marker (the pidfile path is an argument). Without a self-PID
+	//     guard the sweep's `kill -9` would SIGKILL the very shell running
+	//     it (exit 137, RemoveFault reports bogus "still running").
+	//  2. `tr ... < "$p"` has sh evaluate the redirection before tr runs,
+	//     so if the /proc entry vanishes between glob-expand and read,
+	//     sh (not tr) prints "can't open …". `2>/dev/null` on tr doesn't
+	//     suppress it; wrap the whole compound in a { …; } 2>/dev/null.
 	removeScript := fmt.Sprintf(
-		"PIDFILE=%q; "+
+		"MY_PID=$$; "+
+			"PIDFILE=%q; "+
 			"if [ -f \"$PIDFILE\" ]; then "+
 			"while IFS= read -r pid; do "+
 			"[ -z \"$pid\" ] && continue; "+
+			"[ \"$pid\" = \"$MY_PID\" ] && continue; "+
 			"kill -9 \"$pid\" 2>/dev/null; "+
 			"done < \"$PIDFILE\"; "+
 			"fi; "+
 			"for p in /proc/[0-9]*/cmdline; do "+
-			"CMD=$(tr '\\0' ' ' < \"$p\" 2>/dev/null); "+
-			"case \"$CMD\" in "+
-			"*chaos_io_stress*) "+
 			"PID=$(basename \"$(dirname \"$p\")\"); "+
-			"kill -9 \"$PID\" 2>/dev/null "+
-			";; "+
+			"[ \"$PID\" = \"$MY_PID\" ] && continue; "+
+			"CMD=$({ tr '\\0' ' ' < \"$p\"; } 2>/dev/null); "+
+			"case \"$CMD\" in "+
+			"*chaos_io_stress*) kill -9 \"$PID\" 2>/dev/null ;; "+
 			"esac; "+
 			"done; "+
 			"rm -f \"$PIDFILE\" \"%s\"_* 2>/dev/null; "+
@@ -243,9 +254,15 @@ func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID str
 
 	// Always verify no chaos_io_stress-tagged processes remain — the remove
 	// script swallows individual kill/rm errors via 2>/dev/null, so killErr
-	// being nil doesn't prove success.
+	// being nil doesn't prove success. Same self-skip + redirection-error
+	// caveats as the remove script.
 	verifyCmd := []string{"sh", "-c",
-		"COUNT=0; for p in /proc/[0-9]*/cmdline; do if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'chaos_io_stress'; then COUNT=$((COUNT+1)); fi; done; echo $COUNT",
+		"MY_PID=$$; COUNT=0; for p in /proc/[0-9]*/cmdline; do " +
+			"PID=$(basename \"$(dirname \"$p\")\"); " +
+			"[ \"$PID\" = \"$MY_PID\" ] && continue; " +
+			"CMD=$({ tr '\\0' ' ' < \"$p\"; } 2>/dev/null); " +
+			"case \"$CMD\" in *chaos_io_stress*) COUNT=$((COUNT+1)) ;; esac; " +
+			"done; echo $COUNT",
 	}
 	countOutput, verifyErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
 	if verifyErr == nil {

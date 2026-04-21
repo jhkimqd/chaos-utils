@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 )
@@ -22,6 +23,14 @@ type DNSParams struct {
 // DNSWrapper wraps DNS manipulation via sidecars
 type DNSWrapper struct {
 	sidecarMgr SidecarManager
+
+	// installedPrio tracks targets where *we* installed the root prio qdisc
+	// (as opposed to reusing a prio root installed by tc_wrapper's port-
+	// filtered netem). Only the installer should delete it on cleanup —
+	// otherwise we'd leave orphaned fault state behind or clobber a
+	// co-existing network fault.
+	mu            sync.Mutex
+	installedPrio map[string]bool
 }
 
 // SidecarManager interface for sidecar operations
@@ -34,7 +43,8 @@ type SidecarManager interface {
 // New creates a new DNS wrapper
 func New(sidecarMgr SidecarManager) *DNSWrapper {
 	return &DNSWrapper{
-		sidecarMgr: sidecarMgr,
+		sidecarMgr:    sidecarMgr,
+		installedPrio: make(map[string]bool),
 	}
 }
 
@@ -55,7 +65,10 @@ func (dw *DNSWrapper) InjectDNSDelay(ctx context.Context, targetContainerID stri
 	// a prio root (for port-filtered faults) or a netem root (for whole-device
 	// faults). Refuse to clobber a netem root — that would silently wipe the
 	// other fault.
-	qdiscOut, _ := dw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+	qdiscOut, qdiscErr := dw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+	if qdiscErr != nil {
+		return fmt.Errorf("failed to inspect tc state before DNS delay injection: %w", qdiscErr)
+	}
 	hasPrioRoot := strings.Contains(qdiscOut, "qdisc prio 1:")
 	hasNetemRoot := strings.Contains(qdiscOut, "qdisc netem") && strings.Contains(qdiscOut, "root")
 
@@ -64,8 +77,10 @@ func (dw *DNSWrapper) InjectDNSDelay(ctx context.Context, targetContainerID stri
 	}
 
 	var cmds [][]string
+	weInstalledPrio := false
 	if !hasPrioRoot {
 		cmds = append(cmds, []string{"tc", "qdisc", "add", "dev", "eth0", "root", "handle", "1:", "prio"})
+		weInstalledPrio = true
 	}
 
 	netemArgs := []string{"tc", "qdisc", "add", "dev", "eth0", "parent", "1:3", "handle", "30:", "netem",
@@ -86,6 +101,12 @@ func (dw *DNSWrapper) InjectDNSDelay(ctx context.Context, targetContainerID stri
 		}
 	}
 
+	if weInstalledPrio {
+		dw.mu.Lock()
+		dw.installedPrio[targetContainerID] = true
+		dw.mu.Unlock()
+	}
+
 	fmt.Printf("DNS delay injected successfully on target %s\n", targetContainerID[:12])
 
 	return nil
@@ -101,17 +122,40 @@ func (dw *DNSWrapper) RemoveFault(ctx context.Context, targetContainerID string)
 
 	fmt.Printf("Removing DNS delay from target %s\n", targetContainerID[:12])
 
-	// Remove only the DNS netem on band 3 and the u32 filter. Leave the prio
-	// root alone in case another fault is still using bands 1/2.
+	// Remove the DNS netem on band 3 and the u32 filter in all cases. If we
+	// installed the prio root ourselves (no pre-existing fault was using it),
+	// delete the root too so teardown leaves a clean netns. If a co-existing
+	// network fault installed the prio root, leave it for that injector's
+	// RemoveFault to clean up.
 	cleanupCmds := [][]string{
 		{"tc", "qdisc", "del", "dev", "eth0", "parent", "1:3", "handle", "30:"},
 		{"tc", "filter", "del", "dev", "eth0", "protocol", "ip", "parent", "1:0", "prio", "3"},
+	}
+
+	dw.mu.Lock()
+	weInstalledPrio := dw.installedPrio[targetContainerID]
+	delete(dw.installedPrio, targetContainerID)
+	dw.mu.Unlock()
+	if weInstalledPrio {
+		cleanupCmds = append(cleanupCmds, []string{"tc", "qdisc", "del", "dev", "eth0", "root"})
 	}
 
 	for _, cmd := range cleanupCmds {
 		_, tcErr := dw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
 		if tcErr != nil {
 			log.Warn().Err(tcErr).Str("container", targetContainerID[:12]).Strs("cmd", cmd).Msg("failed to remove tc rule during DNS delay removal")
+		}
+	}
+
+	// Verify the netem we added is actually gone — log-only warnings on tc
+	// errors above let silent partial cleanup through. `tc qdisc show`
+	// prints the DNS netem as "qdisc netem 30: parent 1:3", so detect either
+	// handle form to be robust across iproute2 versions.
+	verifyOut, verifyErr := dw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, []string{"tc", "qdisc", "show", "dev", "eth0"})
+	if verifyErr == nil {
+		hasNetem30 := strings.Contains(verifyOut, "netem 30:") || strings.Contains(verifyOut, "handle 30:")
+		if hasNetem30 {
+			return fmt.Errorf("DNS delay removal failed: handle 30: still present after cleanup (qdisc output: %s)", strings.TrimSpace(verifyOut))
 		}
 	}
 

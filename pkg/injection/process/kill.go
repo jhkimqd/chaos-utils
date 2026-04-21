@@ -87,6 +87,11 @@ func (pw *Wrapper) InjectProcessKill(ctx context.Context, targetContainerID stri
 			if out == "no match" {
 				return fmt.Errorf("no process found matching pattern '%s'", params.ProcessPattern)
 			}
+			// KillChildren=true returns "killed N". If N==0 we matched
+			// nothing — surface that instead of silently "succeeding".
+			if params.KillChildren && out == "killed 0" {
+				return fmt.Errorf("no process found matching pattern '%s' (KillChildren mode)", params.ProcessPattern)
+			}
 			fmt.Printf("  Sent %s to '%s' (attempt %d/%d): %s\n",
 				signal, params.ProcessPattern, i+1, count, out)
 		}
