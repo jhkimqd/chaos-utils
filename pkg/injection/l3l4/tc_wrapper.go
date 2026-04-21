@@ -57,7 +57,14 @@ func (tw *TCWrapper) RemoveFault(ctx context.Context, targetContainerID string) 
 	cmd := []string{"tc", "qdisc", "del", "dev", "eth0", "root"}
 	_, tcErr := tw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
 	if tcErr != nil {
-		log.Warn().Err(tcErr).Str("container", targetContainerID[:12]).Msg("failed to remove tc qdisc during fault removal")
+		// Same benign-absence path as clearRules: teardown after an inject
+		// that never got past the sidecar-create stage leaves no root qdisc
+		// to delete. Demote so success teardowns stay quiet.
+		if isBenignTCAbsentErr(tcErr) {
+			log.Debug().Err(tcErr).Str("container", targetContainerID[:12]).Msg("no tc qdisc present at teardown (nothing to remove)")
+		} else {
+			log.Warn().Err(tcErr).Str("container", targetContainerID[:12]).Msg("failed to remove tc qdisc during fault removal")
+		}
 	}
 
 	fmt.Printf("TC rules removed successfully from target %s\n", targetContainerID[:12])
@@ -81,8 +88,31 @@ func (tw *TCWrapper) clearRules(ctx context.Context, targetContainerID string, d
 	cmd := []string{"tc", "qdisc", "del", "dev", device, "root"}
 	_, clearErr := tw.sidecarMgr.ExecInSidecar(ctx, targetContainerID, cmd)
 	if clearErr != nil {
-		log.Warn().Err(clearErr).Str("container", targetContainerID[:12]).Str("device", device).Msg("failed to clear tc rules before injection")
+		// On a fresh device there is no custom root qdisc to delete, so `tc`
+		// exits 2 with "Cannot delete qdisc with handle of zero" (some kernels
+		// report "RTNETLINK answers: No such file or directory" instead). That
+		// is the expected first-inject path — demote to debug so routine runs
+		// don't emit a warn that implies something is broken. Real failures
+		// (sidecar unreachable, permissions, etc.) still surface as warn.
+		if isBenignTCAbsentErr(clearErr) {
+			log.Debug().Err(clearErr).Str("container", targetContainerID[:12]).Str("device", device).Msg("no pre-existing tc qdisc to clear (fresh device)")
+		} else {
+			log.Warn().Err(clearErr).Str("container", targetContainerID[:12]).Str("device", device).Msg("failed to clear tc rules before injection")
+		}
 	}
+}
+
+// isBenignTCAbsentErr returns true when a `tc qdisc del` error indicates the
+// device had no custom root qdisc in the first place — i.e. nothing to clear.
+// Expected during the first inject on a fresh target and during teardown when
+// inject partially failed before the root qdisc was installed.
+func isBenignTCAbsentErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Cannot delete qdisc with handle of zero") ||
+		strings.Contains(msg, "RTNETLINK answers: No such file or directory")
 }
 
 // injectWholeDevice applies netem directly as the root qdisc — affects all traffic on the device.
