@@ -2,6 +2,7 @@ package cleanup
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -98,4 +99,44 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+// TestAuditLog_ConcurrentReadersWriters is the F-14 regression guard.
+// Before the coordinator mutex, concurrent CleanupAll (writing auditLog
+// via logAudit) and GetAuditLog / PrintAuditLog / GetSummary (reading it)
+// would race. Run under `go test -race` to verify.
+func TestAuditLog_ConcurrentReadersWriters(t *testing.T) {
+	c := &Coordinator{auditLog: make([]AuditEntry, 0)}
+
+	const writes = 500
+	const readers = 8
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Emulate CleanupAll's write path: take the lock, append audit
+		// entries, release. Do this many times.
+		for i := 0; i < writes; i++ {
+			c.mu.Lock()
+			c.logAudit("write", "target", "entry", nil)
+			c.mu.Unlock()
+		}
+	}()
+
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < writes; i++ {
+				_ = c.GetAuditLog()
+				_ = c.GetSummary()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := len(c.GetAuditLog()); got != writes {
+		t.Fatalf("expected %d audit entries after writers finished, got %d", writes, got)
+	}
 }
