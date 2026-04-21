@@ -176,7 +176,7 @@ spec:
         Span rotation fires after producer killed — proves Heimdall detects
         producer absence and rotates correctly
       type: log
-      pattern: "(span.*rotat|new.*producer|producer.*change)"
+      pattern: "Span rotated due to the current producer's ineffectiveness"
       container_pattern: "heimdall-v2-bor-validator"
       absence: false
       critical: false

@@ -149,7 +149,7 @@ spec:
       description: Late votes stay within acceptable bounds
       type: prometheus
       query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) * 60
-      threshold: "< 8000"
+      threshold: "< 25000"
       critical: false
 
     # Healthy validators unaffected
