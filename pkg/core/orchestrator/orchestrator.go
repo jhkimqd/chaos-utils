@@ -132,7 +132,14 @@ type Orchestrator struct {
 	scenarioPath  string
 	testID        string
 	injectTime    time.Time         // set at INJECT start; used to scope log capture to fault window
-	injectedFaults  map[string]string       // track which targets have faults injected (containerID -> faultType)
+	// injectedFaults tracks every fault currently installed on a container
+	// as an ordered slice so that:
+	//   - multiple faults on the same container are not conflated (a single
+	//     map[containerID]faultType loses all but the last one, leaving
+	//     earlier faults installed on teardown — F-02),
+	//   - teardown can iterate in reverse injection order so stacked tc
+	//     qdiscs / iptables rules come off in LIFO order.
+	injectedFaults  []injectedFault
 	criteriaResults []CriterionOutcome      // populated during DETECT phase
 
 	// duringFaultSampler runs concurrently with INJECT/MONITOR and samples
@@ -148,6 +155,15 @@ type Orchestrator struct {
 	// Non-zero means the test ran with at least one fault whose observable
 	// side effect could not be confirmed.
 	faultVerificationWarnings int
+}
+
+// injectedFault records one fault installed on one container during INJECT.
+// A container can appear more than once when multiple faults target it
+// (e.g. disk_io + network). Teardown iterates the slice in reverse so
+// stacked tc/iptables rules are removed in LIFO order.
+type injectedFault struct {
+	ContainerID string
+	FaultType   string
 }
 
 // CriterionOutcome captures the result of a single success criterion evaluation.
@@ -253,7 +269,7 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 		collector:        col,
 		logCollector:     logCol,
 		injector:         injector,
-		injectedFaults:   make(map[string]string),
+		injectedFaults:   nil, // lazily appended during INJECT
 	}, nil
 }
 
@@ -926,19 +942,27 @@ func (o *Orchestrator) executeInject(ctx context.Context) error {
 	}
 	wg.Wait()
 
-	// Collect outcomes (all goroutines finished — no races on injectedFaults map).
+	// Collect outcomes (all goroutines finished — no races on injectedFaults).
+	// Each (container, faultType) pair is recorded independently. Multiple
+	// faults can share a container (e.g. compound disk_io + network), and
+	// teardown will remove them in reverse order of injection.
+	distinctContainers := map[string]struct{}{}
 	for _, r := range results {
 		if r.err != nil {
 			return fmt.Errorf("inject %q: %w", r.job.fault.Phase, r.err)
 		}
 		for _, t := range r.job.targets {
-			o.injectedFaults[t.ContainerID] = r.job.fault.Type
+			o.injectedFaults = append(o.injectedFaults, injectedFault{
+				ContainerID: t.ContainerID,
+				FaultType:   r.job.fault.Type,
+			})
+			distinctContainers[t.ContainerID] = struct{}{}
 			fmt.Printf("  ✓ %s on %s (%s)\n", r.job.fault.Phase, t.Name, t.ContainerID[:12])
 		}
 	}
 
-	fmt.Printf("✓ %d fault(s) injected simultaneously on %d target(s)\n",
-		len(jobs), len(o.injectedFaults))
+	fmt.Printf("✓ %d fault(s) injected on %d distinct container(s)\n",
+		len(o.injectedFaults), len(distinctContainers))
 
 	// Post-injection verification: confirm tc rules are actually in place.
 	if err := o.verifyFaultsActive(ctx); err != nil {
@@ -967,7 +991,19 @@ func (o *Orchestrator) verifyFaultsActive(ctx context.Context) error {
 
 	o.faultVerificationWarnings = 0
 	verified := 0
-	for containerID, faultType := range o.injectedFaults {
+	// Deduplicate: if two faults share a container and the same verify
+	// family (e.g. network + dns), we only need to inspect once. But
+	// semantically different faults (network + disk_io) must both be
+	// verified, so we deduplicate on (containerID, faultType) pair.
+	seen := map[string]struct{}{}
+	for _, f := range o.injectedFaults {
+		key := f.ContainerID + "\x00" + f.FaultType
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		containerID := f.ContainerID
+		faultType := f.FaultType
 		targetName := containerID[:12]
 		for _, t := range o.targets {
 			if t.ContainerID == containerID {
@@ -1623,9 +1659,16 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 	if len(o.injectedFaults) == 0 {
 		fmt.Println("  No faults to remove")
 	} else {
-		// Remove faults from each target
+		// Iterate in reverse insertion order (LIFO) so stacked tc qdiscs
+		// and iptables rules come off in the opposite order they went on.
+		// Each (container, faultType) pair is independent — prior to F-02
+		// a map keyed on containerID would silently collapse two faults
+		// on the same container into one and leak the first.
 		removed := 0
-		for containerID, faultType := range o.injectedFaults {
+		for i := len(o.injectedFaults) - 1; i >= 0; i-- {
+			f := o.injectedFaults[i]
+			containerID := f.ContainerID
+			faultType := f.FaultType
 			// Find target name
 			targetName := containerID[:12]
 			for _, target := range o.targets {
@@ -1639,14 +1682,15 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 
 			if err := o.injector.RemoveFault(ctx, faultType, containerID); err != nil {
 				fmt.Printf("    ⚠ Error removing fault: %v\n", err)
-				// Continue with other targets
+				// Continue with other faults — one removal failure must
+				// not leak the rest.
 			} else {
 				fmt.Printf("    ✓ Fault removed\n")
 				removed++
 			}
 		}
 
-		fmt.Printf("✓ Removed faults from %d target(s)\n", removed)
+		fmt.Printf("✓ Removed %d fault(s)\n", removed)
 	}
 
 	// Use cleanup coordinator to destroy sidecars and log actions
