@@ -117,7 +117,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 150
-        target_path: "/var/lib/heimdall/data"
+        target_path: "/etc/heimdall/data"
         operation: all
 
     - phase: disk_io_heimdall_8
@@ -125,7 +125,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 150
-        target_path: "/var/lib/heimdall/data"
+        target_path: "/etc/heimdall/data"
         operation: all
 
     - phase: disk_io_heimdall_6
@@ -133,7 +133,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 150
-        target_path: "/var/lib/heimdall/data"
+        target_path: "/etc/heimdall/data"
         operation: all
 
   success_criteria:
