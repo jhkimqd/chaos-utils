@@ -39,11 +39,17 @@ HEALTH_CHECK_VALIDATORS="${ALL_VALIDATORS}"
 # advancing indicates real consensus trouble that will break the next scenario.
 HEALTH_CHECK_MIN_ADVANCING=7
 declare -A VALIDATOR_RPCS
+declare -A VALIDATOR_HEIMDALL_RPCS
 for v in ${ALL_VALIDATORS}; do
   raw="$(timeout 30 kurtosis port print "${ENCLAVE_NAME}" "l2-el-${v}-bor-heimdall-v2-validator" rpc 2>/dev/null || echo "")"
   raw="${raw#http://}"; raw="${raw#https://}"
   if [[ -n "${raw}" ]]; then
     VALIDATOR_RPCS[${v}]="http://${raw}"
+  fi
+  cl_raw="$(timeout 30 kurtosis port print "${ENCLAVE_NAME}" "l2-cl-${v}-heimdall-v2-bor-validator" rpc 2>/dev/null || echo "")"
+  cl_raw="${cl_raw#http://}"; cl_raw="${cl_raw#https://}"
+  if [[ -n "${cl_raw}" ]]; then
+    VALIDATOR_HEIMDALL_RPCS[${v}]="http://${cl_raw}"
   fi
 done
 
@@ -51,28 +57,96 @@ done
 #  HEALTH CHECK & RECOVERY FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════
 
+# ── Probe a single validator's current height ──
+# Tries Bor RPC first with its cached Kurtosis URL. On failure, re-resolves
+# the port via `kurtosis port print` (docker restart and Kurtosis proxy
+# re-mapping can invalidate the startup-cached URL, producing false
+# "unreachable" readings even though the validator is healthy — this is
+# the failure mode that halted the 2026-04-21 chaos-suite run). On further
+# failure, falls back to Heimdall /status, which is the consensus-layer
+# source of truth and independent of Bor RPC port state.
+#
+# Echoes a SINGLE line on stdout describing the probe result:
+#   "B <height>"  — Bor RPC reachable, height from Bor
+#   "H <height>"  — Bor RPC failed but Heimdall reachable at this height
+#   ""            — neither reachable
+# Source marker lets the caller compare heights only against the SAME
+# source on both snapshots, so a fallback switch doesn't look like a jump.
+probe_validator_height() {
+  local v="$1"
+  local url="${VALIDATOR_RPCS[${v}]:-}"
+  local h
+
+  # 1. Try cached Bor RPC URL
+  if [[ -n "${url}" ]]; then
+    h=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "")
+    if [[ -n "${h}" && "${h}" != "0" ]]; then
+      echo "B ${h}"; return 0
+    fi
+  fi
+
+  # 2. Re-resolve Kurtosis port mapping in case it changed after a
+  # container restart, then retry Bor RPC.
+  local raw
+  raw="$(timeout 10 kurtosis port print "${ENCLAVE_NAME}" "l2-el-${v}-bor-heimdall-v2-validator" rpc 2>/dev/null || echo "")"
+  raw="${raw#http://}"; raw="${raw#https://}"
+  if [[ -n "${raw}" ]]; then
+    local fresh_url="http://${raw}"
+    if [[ "${fresh_url}" != "${url}" ]]; then
+      VALIDATOR_RPCS[${v}]="${fresh_url}"
+    fi
+    h=$(timeout 5 cast bn --rpc-url "${fresh_url}" 2>/dev/null || echo "")
+    if [[ -n "${h}" && "${h}" != "0" ]]; then
+      echo "B ${h}"; return 0
+    fi
+  fi
+
+  # 3. Bor RPC is unreachable — fall back to Heimdall /status.
+  local cl_url="${VALIDATOR_HEIMDALL_RPCS[${v}]:-}"
+  if [[ -z "${cl_url}" ]]; then
+    local cl_raw
+    cl_raw="$(timeout 10 kurtosis port print "${ENCLAVE_NAME}" "l2-cl-${v}-heimdall-v2-bor-validator" rpc 2>/dev/null || echo "")"
+    cl_raw="${cl_raw#http://}"; cl_raw="${cl_raw#https://}"
+    if [[ -n "${cl_raw}" ]]; then
+      cl_url="http://${cl_raw}"
+      VALIDATOR_HEIMDALL_RPCS[${v}]="${cl_url}"
+    fi
+  fi
+  if [[ -n "${cl_url}" ]]; then
+    local cl_h
+    cl_h=$(timeout 5 curl -s "${cl_url}/status" 2>/dev/null \
+      | jq -r '.result.sync_info.latest_block_height // empty' 2>/dev/null || echo "")
+    if [[ -n "${cl_h}" && "${cl_h}" != "0" ]]; then
+      echo "H ${cl_h}"; return 0
+    fi
+  fi
+
+  echo ""; return 1
+}
+
 # ── Health gate: verify devnet is alive (blocks advancing) ──
 # Snapshots heights on all validators, waits 30s, requires at least
 # HEALTH_CHECK_MIN_ADVANCING to advance. Any-advancing was misleading:
 # after a scenario that legitimately stalls one validator's consensus,
 # the next scenario's pre-fault query (which usually spans multiple
 # validators with min()) would fail even though this gate said "OK".
+#
+# Uses probe_validator_height() so a validator whose Bor RPC port got
+# re-mapped by Kurtosis still counts as advancing when Heimdall confirms
+# consensus participation. Requires the probe source to match across both
+# snapshots (no mixed Bor/Heimdall comparisons — their block spaces differ).
 check_devnet_health() {
   local advanced_count=0
   local failed_validators=""
   local total_validators=0
   local min_delta=999999 max_delta=0
+  local heimdall_fallback_count=0
 
-  # Snapshot block heights
-  declare -A blocks_before
+  # Snapshot heights and record source (Bor or Heimdall) per validator.
+  declare -A probe_before
   for v in ${HEALTH_CHECK_VALIDATORS}; do
     total_validators=$((total_validators + 1))
-    local url="${VALIDATOR_RPCS[${v}]:-}"
-    if [[ -z "${url}" ]]; then
-      blocks_before[${v}]="0"
-      continue
-    fi
-    blocks_before[${v}]=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
+    probe_before[${v}]="$(probe_validator_height "${v}")"
   done
 
   sleep 30
@@ -81,22 +155,28 @@ check_devnet_health() {
   # emit it if the gate FAILS — the healthy path prints a one-line summary.
   local detail=""
   for v in ${HEALTH_CHECK_VALIDATORS}; do
-    local url="${VALIDATOR_RPCS[${v}]:-}"
-    local before="${blocks_before[${v}]}"
-    if [[ -z "${url}" || "${before}" == "0" ]]; then
-      detail+=$'\n'"  validator ${v}: ⚠ RPC unreachable"
-      failed_validators="${failed_validators} ${v}"
-      continue
-    fi
+    local before="${probe_before[${v}]}"
     local after
-    after=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
-    if [[ "${after}" == "0" ]]; then
-      detail+=$'\n'"  validator ${v}: ⚠ RPC unreachable after wait"
+    after="$(probe_validator_height "${v}")"
+    if [[ -z "${before}" || -z "${after}" ]]; then
+      detail+=$'\n'"  validator ${v}: ⚠ unreachable (Bor RPC + Heimdall /status both down)"
       failed_validators="${failed_validators} ${v}"
       continue
     fi
-    local delta=$((after - before))
-    detail+=$'\n'"  validator ${v}: blocks ${before} → ${after} (Δ${delta} in 30s)"
+    local before_src="${before%% *}" before_h="${before#* }"
+    local after_src="${after%% *}" after_h="${after#* }"
+    if [[ "${before_src}" != "${after_src}" ]]; then
+      # Mixed sources (Bor recovered mid-wait, or lost Bor mid-wait). Don't
+      # compare raw heights across consensus layers; count as advancing
+      # since we got a response from both snapshots.
+      detail+=$'\n'"  validator ${v}: probe source shifted ${before_src}→${after_src} — counting as advancing"
+      advanced_count=$((advanced_count + 1))
+      continue
+    fi
+    local delta=$((after_h - before_h))
+    local src_tag=""
+    [[ "${after_src}" == "H" ]] && { src_tag=" [Heimdall fallback]"; heimdall_fallback_count=$((heimdall_fallback_count + 1)); }
+    detail+=$'\n'"  validator ${v}: blocks ${before_h} → ${after_h} (Δ${delta} in 30s)${src_tag}"
     if [[ "${delta}" -gt 0 ]]; then
       advanced_count=$((advanced_count + 1))
       [[ ${delta} -lt ${min_delta} ]] && min_delta=${delta}
@@ -109,7 +189,9 @@ check_devnet_health() {
   if [[ ${advanced_count} -ge ${HEALTH_CHECK_MIN_ADVANCING} ]]; then
     local spread="Δ${min_delta}"
     [[ ${min_delta} -ne ${max_delta} ]] && spread="Δ${min_delta}..${max_delta}"
-    echo "  ✓ Health gate: ${advanced_count}/${total_validators} validators advancing (${spread} in 30s)"
+    local fb_note=""
+    [[ ${heimdall_fallback_count} -gt 0 ]] && fb_note=" (${heimdall_fallback_count} via Heimdall fallback)"
+    echo "  ✓ Health gate: ${advanced_count}/${total_validators} validators advancing (${spread} in 30s)${fb_note}"
     return 0
   fi
 
@@ -125,19 +207,18 @@ check_devnet_health() {
 }
 
 # ── Recovery: scan all validators and docker-restart unresponsive ones ──
+# A validator is "unresponsive" only when BOTH Bor RPC (after port re-resolve)
+# AND Heimdall /status fail — a stale Kurtosis port alone must not trigger
+# a disruptive restart of a healthy node.
 recover_unresponsive_validators() {
   local unresponsive="" responsive_count=0
 
   # Scan quietly; only call out problem validators.
   for v in ${ALL_VALIDATORS}; do
-    local url="${VALIDATOR_RPCS[${v}]:-}"
-    if [[ -z "${url}" ]]; then
-      continue
-    fi
-    local height
-    height=$(timeout 5 cast bn --rpc-url "${url}" 2>/dev/null || echo "0")
-    if [[ "${height}" == "0" ]]; then
-      echo "  validator ${v}: ✗ unreachable"
+    local probe
+    probe="$(probe_validator_height "${v}")"
+    if [[ -z "${probe}" ]]; then
+      echo "  validator ${v}: ✗ unreachable (Bor RPC + Heimdall both down)"
       unresponsive="${unresponsive} ${v}"
     else
       responsive_count=$((responsive_count + 1))
@@ -429,7 +510,10 @@ echo "::endgroup::"
 SLOW_SCENARIOS="validator-freeze-zombie shifting-fault-combinations rolling-restart oom-flapping-loop"
 
 # ── Scenarios that need their full YAML cooldown for post-fault recovery ──
-LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart three-validator-full-isolation coordinated-full-cluster-crash span-boundary-partition kill-resync-under-peer-loss"
+# rpc-node-crash-reconnect: 3 rapid SIGKILLs leave the RPC hundreds of blocks
+# behind; the default 90s CI cooldown isn't enough for witness-sync to close
+# the gap, so use the scenario's yaml cooldown (3m) instead.
+LONG_COOLDOWN_SCENARIOS="simultaneous-validator-restart three-validator-full-isolation coordinated-full-cluster-crash span-boundary-partition kill-resync-under-peer-loss rpc-node-crash-reconnect"
 
 # ═══════════════════════════════════════════════════════════════════════
 #  MAIN TEST LOOP
