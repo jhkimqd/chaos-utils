@@ -57,9 +57,23 @@ func New(dockerClient DockerClient) *IODelayWrapper {
 	}
 }
 
+// workerCount maps IOLatencyMs intensity to worker count: <100=1, 100-199=2, 200+=3.
+func workerCount(ioLatencyMs int) int {
+	switch {
+	case ioLatencyMs >= 200:
+		return 3
+	case ioLatencyMs >= 100:
+		return 2
+	default:
+		return 1
+	}
+}
+
 // InjectIODelay creates I/O contention by running background dd processes that
-// saturate the I/O queue. The "dm-delay" method is intentionally rejected —
-// see dm_delay.go for details.
+// saturate the I/O queue. Each worker shell's PID is written to a pidfile; the
+// verification step reads that pidfile and checks `kill -0` on every PID, so
+// the result is deterministic rather than pattern-matched against /proc.
+// The "dm-delay" method is intentionally rejected — see dm_delay.go for details.
 func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID string, params IODelayParams) error {
 	if params.Method == "dm-delay" {
 		return iw.dmDelay.InjectDmDelay(ctx, targetContainerID, params)
@@ -72,113 +86,114 @@ func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID s
 		targetPath = "/tmp"
 	}
 
-	// dd method: scale worker count based on IOLatencyMs intensity.
-	// <100 = 1 worker, 100-199 = 2 workers, 200+ = 3 workers
-	workers := 1
-	if params.IOLatencyMs >= 200 {
-		workers = 3
-	} else if params.IOLatencyMs >= 100 {
-		workers = 2
-	}
+	workers := workerCount(params.IOLatencyMs)
 
-	// Build the I/O stress command based on operation type
-	var stressCmd string
-	chaosFile := fmt.Sprintf("%s/.chaos_io_stress", strings.TrimRight(targetPath, "/"))
+	base := strings.TrimRight(targetPath, "/")
+	chaosFile := base + "/.chaos_io_stress"
+	pidFile := base + "/.chaos_io_stress.pids"
 
+	// Build the spawn block(s) once per operation. Each backgrounded worker
+	// is a subshell that fully detaches its stdio BEFORE it runs anything —
+	// without the `</dev/null >/dev/null 2>&1` redirection the inherited
+	// fds keep docker exec's attach stream open and StdCopy blocks for the
+	// full fault window. After `( ... ) & `, $! is the PID of the worker
+	// subshell; we append it to $PIDFILE so RemoveFault can kill by PID.
+	var spawnBlock string
 	switch params.Operation {
 	case "write":
-		// Continuous write loop — fills I/O write queue
-		stressCmd = fmt.Sprintf(
-			"for i in $(seq 1 %d); do while true; do dd if=/dev/zero of=\"%s_$i\" bs=64K count=256 conv=fdatasync 2>/dev/null; done & done",
+		spawnBlock = fmt.Sprintf(
+			"for i in $(seq 1 %d); do "+
+				"( while true; do dd if=/dev/zero of=\"%s_$i\" bs=64K count=256 conv=fdatasync 2>/dev/null; done ) </dev/null >/dev/null 2>&1 & "+
+				"echo $! >> \"$PIDFILE\"; "+
+				"done",
 			workers, chaosFile,
 		)
 	case "read":
-		// Create a file then continuously read it — fills I/O read queue
-		stressCmd = fmt.Sprintf(
-			"dd if=/dev/zero of=\"%s_src\" bs=1M count=16 2>/dev/null; for i in $(seq 1 %d); do while true; do dd if=\"%s_src\" of=/dev/null bs=64K 2>/dev/null; done & done",
+		spawnBlock = fmt.Sprintf(
+			"dd if=/dev/zero of=\"%s_src\" bs=1M count=16 2>/dev/null; "+
+				"for i in $(seq 1 %d); do "+
+				"( while true; do dd if=\"%s_src\" of=/dev/null bs=64K 2>/dev/null; done ) </dev/null >/dev/null 2>&1 & "+
+				"echo $! >> \"$PIDFILE\"; "+
+				"done",
 			chaosFile, workers, chaosFile,
 		)
 	default: // "all"
-		// Both read and write contention
-		stressCmd = fmt.Sprintf(
+		spawnBlock = fmt.Sprintf(
 			"dd if=/dev/zero of=\"%s_src\" bs=1M count=16 2>/dev/null; "+
-				"for i in $(seq 1 %d); do while true; do dd if=/dev/zero of=\"%s_w$i\" bs=64K count=256 conv=fdatasync 2>/dev/null; done & done; "+
-				"for i in $(seq 1 %d); do while true; do dd if=\"%s_src\" of=/dev/null bs=64K 2>/dev/null; done & done",
+				"for i in $(seq 1 %d); do "+
+				"( while true; do dd if=/dev/zero of=\"%s_w$i\" bs=64K count=256 conv=fdatasync 2>/dev/null; done ) </dev/null >/dev/null 2>&1 & "+
+				"echo $! >> \"$PIDFILE\"; "+
+				"done; "+
+				"for i in $(seq 1 %d); do "+
+				"( while true; do dd if=\"%s_src\" of=/dev/null bs=64K 2>/dev/null; done ) </dev/null >/dev/null 2>&1 & "+
+				"echo $! >> \"$PIDFILE\"; "+
+				"done",
 			chaosFile, workers, chaosFile, workers, chaosFile,
 		)
 	}
 
-	cmd := []string{"sh", "-c", stressCmd}
-	_, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, cmd)
+	// One shell invocation owns the full contract: spawn workers, wait for
+	// dd to actually exec, then report the tuple `alive total` read from
+	// the pidfile. `sleep 0.3` gives dd time to fork+exec; BusyBox ashes
+	// that reject fractional sleeps fall back to `sleep 1`. The outer
+	// shell's fds stay attached to docker exec so we receive the output,
+	// but all workers have already detached — exec returns the instant
+	// the outer shell reaches its final `echo`.
+	startScript := fmt.Sprintf(
+		"PIDFILE=%q; "+
+			": > \"$PIDFILE\"; "+
+			"%s; "+
+			"sleep 0.3 2>/dev/null || sleep 1; "+
+			"ALIVE=0; TOTAL=0; "+
+			"while IFS= read -r pid; do "+
+			"[ -z \"$pid\" ] && continue; "+
+			"TOTAL=$((TOTAL+1)); "+
+			"if kill -0 \"$pid\" 2>/dev/null; then ALIVE=$((ALIVE+1)); fi; "+
+			"done < \"$PIDFILE\"; "+
+			"echo \"$ALIVE $TOTAL\"",
+		pidFile, spawnBlock,
+	)
+
+	out, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, []string{"sh", "-c", startScript})
 	if err != nil {
 		return fmt.Errorf("failed to start I/O contention: %w", err)
 	}
 
-	// Verify dd processes are running
-	verifyCmd := []string{"sh", "-c",
-		"COUNT=0; for p in /proc/[0-9]*/cmdline; do if tr '\\0' ' ' < $p 2>/dev/null | grep -q '^dd '; then COUNT=$((COUNT+1)); fi; done; echo $COUNT",
+	alive, total, parseErr := parseAliveTotal(out)
+	if parseErr != nil {
+		return fmt.Errorf("unexpected I/O contention start output %q: %w", strings.TrimSpace(out), parseErr)
 	}
-	countOutput, err := iw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
-	if err != nil {
-		return fmt.Errorf("failed to verify I/O contention: %w", err)
+	if total == 0 {
+		return fmt.Errorf("I/O contention failed: no workers spawned (pidfile empty)")
 	}
-
-	count := strings.TrimSpace(countOutput)
-	if count == "" || count == "0" {
-		return fmt.Errorf("I/O contention failed: no dd processes running")
+	if alive == 0 {
+		return fmt.Errorf("I/O contention failed: all %d worker(s) exited before verification (check disk permissions/space on %s)", total, targetPath)
+	}
+	if alive < total {
+		// Partial success — inject worked but some workers died. Log and
+		// continue; the surviving workers still generate contention.
+		log.Warn().
+			Int("alive", alive).
+			Int("total", total).
+			Str("container", targetContainerID[:12]).
+			Str("path", targetPath).
+			Msg("some I/O contention workers exited before verification; continuing with survivors")
 	}
 
 	iw.mu.Lock()
-	if iw.injectedPaths == nil {
-		iw.injectedPaths = make(map[string]string)
-	}
 	iw.injectedPaths[targetContainerID] = targetPath
 	iw.mu.Unlock()
 
-	fmt.Printf("  I/O contention active: %s dd workers on %s (%s)\n", count, targetPath, params.Operation)
+	fmt.Printf("  I/O contention active: %d/%d workers on %s (%s)\n", alive, total, targetPath, params.Operation)
 	return nil
 }
 
-// RemoveFault kills dd stress processes and cleans up temp files.
+// RemoveFault kills the worker shells recorded at inject time, sweeps any
+// orphaned processes carrying the chaos marker, and deletes stress files.
 func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID string, params IODelayParams) error {
 	fmt.Printf("Removing I/O contention from target %s\n", targetContainerID[:12])
 
-	// Kill chaos dd processes AND their parent shell loops.
-	// Only match processes with "chaos_io_stress" in their args to avoid killing
-	// unrelated dd processes (e.g., backup scripts).
-	killCmd := []string{"sh", "-c",
-		"for p in /proc/[0-9]*/cmdline; do " +
-			"PID=$(echo $p | cut -d/ -f3); " +
-			"CMD=$(tr '\\0' ' ' < $p 2>/dev/null); " +
-			"case \"$CMD\" in " +
-			"*chaos_io_stress*) kill -9 $PID 2>/dev/null ;; " +
-			"esac; " +
-			"done; echo done",
-	}
-	_, killErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, killCmd)
-	if killErr != nil {
-		log.Warn().Err(killErr).Str("container", targetContainerID[:12]).Msg("failed to kill dd processes during I/O contention removal")
-	}
-
-	// Always verify processes are actually gone — the kill script swallows individual
-	// kill errors via 2>/dev/null, so killErr being nil doesn't guarantee success.
-	verifyCmd := []string{"sh", "-c",
-		"COUNT=0; for p in /proc/[0-9]*/cmdline; do if tr '\\0' ' ' < $p 2>/dev/null | grep -qE 'chaos_io_stress|^dd .*chaos_io_stress'; then COUNT=$((COUNT+1)); fi; done; echo $COUNT",
-	}
-	countOutput, verifyErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
-	if verifyErr == nil {
-		count := strings.TrimSpace(countOutput)
-		if count != "" && count != "0" {
-			return fmt.Errorf("failed to remove I/O contention: %s processes still running after kill", count)
-		}
-	} else {
-		// Verify command itself failed — can't confirm processes are gone
-		log.Warn().Err(verifyErr).Str("container", targetContainerID[:12]).Msg("failed to verify I/O contention removal")
-	}
-
-	// Clean up stress files. Prefer the TargetPath recorded at inject time,
-	// fall back to the caller's params, then to /tmp, then sweep common roots
-	// so files are removed even when tracking is lost (e.g. process crash).
+	// Resolve the target path: caller-provided > inject-time record > /tmp.
 	targetPath := params.TargetPath
 	if targetPath == "" {
 		iw.mu.Lock()
@@ -190,16 +205,56 @@ func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID str
 	if targetPath == "" {
 		targetPath = "/tmp"
 	}
-	chaosFile := fmt.Sprintf("%s/.chaos_io_stress", strings.TrimRight(targetPath, "/"))
-	cleanCmd := []string{"sh", "-c", fmt.Sprintf(
-		"rm -f \"%s\"_* 2>/dev/null; "+
+	base := strings.TrimRight(targetPath, "/")
+	chaosFile := base + "/.chaos_io_stress"
+	pidFile := base + "/.chaos_io_stress.pids"
+
+	// Kill by recorded PID first (authoritative), then sweep any survivors
+	// carrying the chaos_io_stress marker. The sweep catches dd children
+	// that were mid-exec when their parent shell was killed and any process
+	// left from a prior crashed run where the pidfile went missing.
+	removeScript := fmt.Sprintf(
+		"PIDFILE=%q; "+
+			"if [ -f \"$PIDFILE\" ]; then "+
+			"while IFS= read -r pid; do "+
+			"[ -z \"$pid\" ] && continue; "+
+			"kill -9 \"$pid\" 2>/dev/null; "+
+			"done < \"$PIDFILE\"; "+
+			"fi; "+
+			"for p in /proc/[0-9]*/cmdline; do "+
+			"CMD=$(tr '\\0' ' ' < \"$p\" 2>/dev/null); "+
+			"case \"$CMD\" in "+
+			"*chaos_io_stress*) "+
+			"PID=$(basename \"$(dirname \"$p\")\"); "+
+			"kill -9 \"$PID\" 2>/dev/null "+
+			";; "+
+			"esac; "+
+			"done; "+
+			"rm -f \"$PIDFILE\" \"%s\"_* 2>/dev/null; "+
 			"find /tmp /root /var/lib -maxdepth 6 -name '.chaos_io_stress_*' -delete 2>/dev/null; "+
 			"echo done",
-		chaosFile,
-	)}
-	_, cleanErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, cleanCmd)
-	if cleanErr != nil {
-		log.Warn().Err(cleanErr).Str("container", targetContainerID[:12]).Msg("failed to clean up I/O stress files")
+		pidFile, chaosFile,
+	)
+
+	_, killErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, []string{"sh", "-c", removeScript})
+	if killErr != nil {
+		log.Warn().Err(killErr).Str("container", targetContainerID[:12]).Msg("failed to run I/O contention removal script")
+	}
+
+	// Always verify no chaos_io_stress-tagged processes remain — the remove
+	// script swallows individual kill/rm errors via 2>/dev/null, so killErr
+	// being nil doesn't prove success.
+	verifyCmd := []string{"sh", "-c",
+		"COUNT=0; for p in /proc/[0-9]*/cmdline; do if tr '\\0' ' ' < $p 2>/dev/null | grep -q 'chaos_io_stress'; then COUNT=$((COUNT+1)); fi; done; echo $COUNT",
+	}
+	countOutput, verifyErr := iw.dockerClient.ExecCommand(ctx, targetContainerID, verifyCmd)
+	if verifyErr == nil {
+		count := strings.TrimSpace(countOutput)
+		if count != "" && count != "0" {
+			return fmt.Errorf("failed to remove I/O contention: %s processes still running after kill", count)
+		}
+	} else {
+		log.Warn().Err(verifyErr).Str("container", targetContainerID[:12]).Msg("could not verify I/O contention removal")
 	}
 
 	iw.mu.Lock()
@@ -208,6 +263,28 @@ func (iw *IODelayWrapper) RemoveFault(ctx context.Context, targetContainerID str
 
 	fmt.Printf("  I/O contention removed from target %s\n", targetContainerID[:12])
 	return nil
+}
+
+// parseAliveTotal parses the "ALIVE TOTAL" tuple the start script emits.
+func parseAliveTotal(out string) (alive, total int, err error) {
+	trimmed := strings.TrimSpace(out)
+	// The script emits exactly one line; tolerate prior warnings by taking
+	// the last non-empty line.
+	lines := strings.Split(trimmed, "\n")
+	last := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			last = s
+			break
+		}
+	}
+	if last == "" {
+		return 0, 0, fmt.Errorf("empty output")
+	}
+	if _, err := fmt.Sscanf(last, "%d %d", &alive, &total); err != nil {
+		return 0, 0, err
+	}
+	return alive, total, nil
 }
 
 // ValidateIODelayParams validates I/O delay parameters
