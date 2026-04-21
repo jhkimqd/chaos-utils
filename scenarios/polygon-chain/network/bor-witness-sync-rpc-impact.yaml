@@ -4,7 +4,7 @@ metadata:
   name: bor-witness-sync-rpc-impact
   description: >
     Test downstream impact on witness-sync RPC nodes when validators have P2P
-    latency. The devnet has a witness-sync RPC node (l2-el-7) configured with
+    latency. The devnet has a witness-sync RPC node (l2-el-9) configured with
     el_bor_sync_with_witness=true that fetches witnesses from validators.
     All existing chaos tests only assert validator health — this tests the
     RPC layer that end users and services depend on.
@@ -109,9 +109,9 @@ spec:
 
     # RPC node health — the key new assertions
     - name: rpc_node_syncing
-      description: Witness-sync RPC node (el-7) continues advancing chain head
+      description: Witness-sync RPC node (el-9) continues advancing chain head
       type: prometheus
-      query: max(rate(chain_head_block{job=~"l2-el-7-bor-.*"}[2m]))
+      query: max(rate(chain_head_block{job=~"l2-el-9-bor-.*"}[2m]))
       threshold: "> 0"
       critical: true
 
@@ -123,7 +123,7 @@ spec:
       type: prometheus
       query: >
         max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
-        - scalar(max(chain_head_block{job=~"l2-el-7-bor-.*"}))
+        - scalar(max(chain_head_block{job=~"l2-el-9-bor-.*"}))
       threshold: "< 30"
       critical: false
       during_fault: true
@@ -131,7 +131,7 @@ spec:
     - name: rpc_peers_stable
       description: RPC node maintains peer connections despite validator latency
       type: prometheus
-      query: min(cometbft_p2p_peers{job=~"l2-cl-7-.*"})
+      query: min(cometbft_p2p_peers{job=~"l2-cl-9-.*"})
       threshold: "> 2"
       critical: false
 

@@ -68,7 +68,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 200
-        target_path: "/var/lib/heimdall/data"
+        target_path: "/etc/heimdall/data"
         operation: all
 
     - phase: disk_io_heimdall_7
@@ -76,7 +76,7 @@ spec:
       type: disk_io
       params:
         io_latency_ms: 200
-        target_path: "/var/lib/heimdall/data"
+        target_path: "/etc/heimdall/data"
         operation: all
 
     # Phase 2: SIGKILL during slow I/O (delay: 30s so disk I/O is established)
