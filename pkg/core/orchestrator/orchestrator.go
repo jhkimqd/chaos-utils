@@ -460,6 +460,12 @@ func (o *Orchestrator) Execute(ctx context.Context, scen *scenario.Scenario, sce
 	// TEARDOWN state — remove faults and sidecars before evaluating criteria.
 	// This ensures Prometheus can scrape cleanly and criteria are not affected
 	// by network faults blocking the scrape path.
+	//
+	// Capture the install count BEFORE teardown runs: removeTrackedFaults
+	// nils injectedFaults on exit (for idempotency w.r.t. the deferred
+	// abort-path cleanup), so reading len(o.injectedFaults) at success
+	// time would always see 0 (F-11).
+	faultInstallCount := len(o.injectedFaults)
 	o.transitionState(StateTeardown)
 	if err = o.executeTeardown(ctx); err != nil {
 		return o.failTest(result, err)
@@ -489,7 +495,7 @@ func (o *Orchestrator) Execute(ctx context.Context, scen *scenario.Scenario, sce
 	result.Success = true
 	result.Message = "Test completed successfully"
 	result.Targets = o.targets
-	result.FaultCount = len(o.injectedFaults)
+	result.FaultCount = faultInstallCount
 	result.CriteriaResults = o.criteriaResults
 	result.FaultVerificationWarnings = o.faultVerificationWarnings
 
@@ -1696,8 +1702,11 @@ func (o *Orchestrator) interruptibleSleep(ctx context.Context, duration time.Dur
 //
 // After this call injectedFaults is cleared so the deferred cleanup and
 // executeTeardown cannot double-remove. Idempotent by construction: if
-// called twice the second call is a no-op.
+// called twice the second call is a no-op. The clear is deferred (F-12)
+// so a mid-loop panic also nils the slice on the way out and cannot
+// trigger a redundant outer-defer retry over the same entries.
 func (o *Orchestrator) removeTrackedFaults(ctx context.Context) int {
+	defer func() { o.injectedFaults = nil }()
 	removed := 0
 	for i := len(o.injectedFaults) - 1; i >= 0; i-- {
 		f := o.injectedFaults[i]
@@ -1722,7 +1731,6 @@ func (o *Orchestrator) removeTrackedFaults(ctx context.Context) int {
 			removed++
 		}
 	}
-	o.injectedFaults = nil
 	return removed
 }
 
@@ -1737,12 +1745,13 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 		fmt.Printf("✓ Removed %d fault(s)\n", removed)
 	}
 
-	// Use cleanup coordinator to destroy sidecars and log actions
-	fmt.Println("Cleaning up chaos artifacts...")
-	if err := o.cleanupCoord.CleanupAll(ctx); err != nil {
-		fmt.Printf("  ⚠ Cleanup completed with errors: %v\n", err)
-		// Don't fail the test, but log the error
-	}
+	// Sidecar cleanup (cleanupCoord.CleanupAll) is intentionally NOT
+	// called here — Execute's outer deferred cleanup runs CleanupAll on
+	// every exit path (success, failure, panic, emergency stop), so
+	// firing it from here too produced duplicate audit-log entries on
+	// the success path (F-13). The coordinator is idempotent, so this
+	// was cosmetic only, but having a single authoritative cleanup call
+	// site makes the audit log easier to read.
 
 	return nil
 }
