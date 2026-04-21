@@ -120,6 +120,11 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		}
 		if latency, ok := fault.Params["latency"].(int); ok {
 			params.Latency = latency
+		} else if latency, ok := fault.Params["latency"].(float64); ok {
+			// `latency: 5000.0` or JSON-decoded overrides land here — without
+			// this branch the value silently zeroed (observed with
+			// boundary/heimdall-lag-during-fork.yaml under JSON pipelines).
+			params.Latency = int(latency)
 		}
 		if packetLoss, ok := fault.Params["packet_loss"].(float64); ok {
 			params.PacketLoss = packetLoss
@@ -128,6 +133,8 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		}
 		if bandwidth, ok := fault.Params["bandwidth"].(int); ok {
 			params.Bandwidth = bandwidth
+		} else if bandwidth, ok := fault.Params["bandwidth"].(float64); ok {
+			params.Bandwidth = int(bandwidth)
 		}
 		if targetPorts, ok := fault.Params["target_ports"].(string); ok {
 			params.TargetPorts = targetPorts
@@ -137,9 +144,13 @@ func (i *Injector) injectNetworkFault(ctx context.Context, fault *scenario.Fault
 		}
 		if reorder, ok := fault.Params["reorder"].(int); ok {
 			params.Reorder = reorder
+		} else if reorder, ok := fault.Params["reorder"].(float64); ok {
+			params.Reorder = int(reorder)
 		}
 		if reorderCorr, ok := fault.Params["reorder_correlation"].(int); ok {
 			params.ReorderCorrelation = reorderCorr
+		} else if reorderCorr, ok := fault.Params["reorder_correlation"].(float64); ok {
+			params.ReorderCorrelation = int(reorderCorr)
 		}
 		if corrupt, ok := fault.Params["corrupt"].(float64); ok {
 			params.Corrupt = corrupt
@@ -177,14 +188,25 @@ func (i *Injector) injectContainerRestart(ctx context.Context, fault *scenario.F
 	}
 
 	if fault.Params != nil {
+		// Accept bare int or float64 (YAML `grace_period: 10` vs `10.0`, JSON
+		// overrides decode every number as float64). Previously the int-only
+		// cast silently fell through, leaving RestartParams at its zero-value
+		// defaults — a restart that appeared to honor scenario-specified
+		// grace_period=0 but actually used the default 10s.
 		if gracePeriod, ok := fault.Params["grace_period"].(int); ok {
 			params.GracePeriod = gracePeriod
+		} else if gracePeriod, ok := fault.Params["grace_period"].(float64); ok {
+			params.GracePeriod = int(gracePeriod)
 		}
 		if restartDelay, ok := fault.Params["restart_delay"].(int); ok {
 			params.RestartDelay = restartDelay
+		} else if restartDelay, ok := fault.Params["restart_delay"].(float64); ok {
+			params.RestartDelay = int(restartDelay)
 		}
 		if stagger, ok := fault.Params["stagger"].(int); ok {
 			params.Stagger = stagger
+		} else if stagger, ok := fault.Params["stagger"].(float64); ok {
+			params.Stagger = int(stagger)
 		}
 	}
 
@@ -228,6 +250,8 @@ func (i *Injector) injectContainerKill(ctx context.Context, fault *scenario.Faul
 		}
 		if restartDelay, ok := fault.Params["restart_delay"].(int); ok {
 			params.RestartDelay = restartDelay
+		} else if restartDelay, ok := fault.Params["restart_delay"].(float64); ok {
+			params.RestartDelay = int(restartDelay)
 		}
 	}
 
@@ -596,9 +620,13 @@ func (i *Injector) injectFileCorrupt(ctx context.Context, fault *scenario.Fault,
 		}
 		if corruptBytes, ok := fault.Params["corrupt_bytes"].(int); ok {
 			params.CorruptBytes = corruptBytes
+		} else if corruptBytes, ok := fault.Params["corrupt_bytes"].(float64); ok {
+			params.CorruptBytes = int(corruptBytes)
 		}
 		if corruptOffset, ok := fault.Params["corrupt_offset"].(int); ok {
 			params.CorruptOffset = corruptOffset
+		} else if corruptOffset, ok := fault.Params["corrupt_offset"].(float64); ok {
+			params.CorruptOffset = int(corruptOffset)
 		}
 		if method, ok := fault.Params["method"].(string); ok {
 			params.Method = method
@@ -669,9 +697,13 @@ func (i *Injector) injectProcessKill(ctx context.Context, fault *scenario.Fault,
 		}
 		if interval, ok := fault.Params["interval"].(int); ok {
 			params.Interval = interval
+		} else if interval, ok := fault.Params["interval"].(float64); ok {
+			params.Interval = int(interval)
 		}
 		if count, ok := fault.Params["count"].(int); ok {
 			params.Count = count
+		} else if count, ok := fault.Params["count"].(float64); ok {
+			params.Count = int(count)
 		}
 	}
 
