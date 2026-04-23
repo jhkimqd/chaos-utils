@@ -1,0 +1,430 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# CORRUPTION RULES — single-source reference for AI agents and humans
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# WHAT THIS FILE IS
+#   The canonical, annotated catalogue of every field, operation type, and
+#   idiom supported by the `corruption_proxy` fault (pkg/injection/http/corruption).
+#   Copy-paste from the examples below when authoring new rule fragments or
+#   embedding rules inline via `rules_yaml:` in a scenario YAML.
+#
+# WHAT THIS FILE IS NOT
+#   This is NOT a standalone chaos scenario. It does not contain `apiVersion`,
+#   `kind: ChaosScenario`, or `spec.faults[]`. For the outer scenario schema,
+#   see any sibling file in `../*.yaml` (e.g. `../checkpoint-hash-corruption.yaml`).
+#
+# HOW THESE RULES ARE CONSUMED
+#   The corruption proxy (`cmd/corruption-proxy/main.go`) sits in front of a
+#   Heimdall REST (port 1317) or Bor JSON-RPC (port 8545) endpoint. It parses
+#   JSON responses, runs the first matching rule, applies the rule's ordered
+#   `operations`, and re-serialises. Non-matching requests pass through.
+#
+# AUTHORITATIVE SOURCE
+#   pkg/injection/http/corruption/rules.go      — rule + operation schema
+#   pkg/injection/http/corruption/mutations.go  — operation semantics
+#   pkg/injection/http/corruption/proxy.go      — matching + stateful gating
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# FILE FORMAT
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# A rules file is a top-level YAML **sequence** of rule objects:
+#
+#   - name: rule_one
+#     ...
+#   - name: rule_two
+#     ...
+#
+# Rules are evaluated in declaration order. The **first** rule whose
+# path_pattern AND method_match both hit is the one that fires — there is no
+# "apply all matching rules". Order specific rules before generic ones.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# RULE SCHEMA (defined in rules.go:CorruptionRule)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#   name:          string   REQUIRED  Human-readable id; appears in [CORRUPT]
+#                                     log lines and /stats output.
+#
+#   path_pattern:  string   optional  Go regexp matched against req.URL.Path.
+#                                     Empty / omitted = match every path.
+#                                     For JSON-RPC (port 8545) the path is
+#                                     always "/", so use method_match instead.
+#
+#   method_match:  string   optional  Go regexp matched against the JSON-RPC
+#                                     "method" field in the request body.
+#                                     Only meaningful for POST requests whose
+#                                     Content-Type is application/json OR whose
+#                                     path is "/" (see proxy.go:isJSONRPC).
+#                                     Empty = don't filter by method.
+#
+#   probability:   float    optional  Fraction of matching requests to corrupt.
+#                                     Range: 0.0 .. 1.0. Omitted = 1.0 (always).
+#                                     Applied AFTER the stateful gate.
+#
+#   operations:    sequence REQUIRED  Ordered list of mutations (see below).
+#                                     Applied in order; `inject_error` short-
+#                                     circuits the rest.
+#
+#   stateful:      mapping  optional  Counter-based gating (see STATEFUL below).
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# OPERATION TYPES (defined in mutations.go:ApplyOp)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Every operation has `type:`. Field paths use dot-notation (e.g. `result.hash`).
+# Missing intermediate keys in `set_field` are auto-created as empty objects.
+#
+#   ─── set_field ──────────────────────────────────────────────────────────
+#   Sets a nested field to `value`. Value may be any YAML-representable type:
+#   string, number, bool, null, sequence, mapping.
+#     - type: set_field
+#       field: result.miner
+#       value: "0x0000000000000000000000000000000000000000"
+#
+#   ─── delete_field ──────────────────────────────────────────────────────
+#   Removes a nested field. No-op if the path doesn't exist. No `value`.
+#     - type: delete_field
+#       field: result.extra_data
+#
+#   ─── corrupt_base64 ────────────────────────────────────────────────────
+#   Decodes the string at `field` (StdEncoding, falling back to RawStdEncoding),
+#   XORs every byte with 0x01, re-encodes. Field MUST be a base64 string.
+#   Useful for Cosmos SDK amino-encoded payloads (signatures, hashes).
+#     - type: corrupt_base64
+#       field: result.signatures.0.signature
+#
+#   ─── truncate_array ────────────────────────────────────────────────────
+#   Keeps the first `value` elements of a JSON array. `value` must be an
+#   integer (or omitted → 0 = empty array). If the array is shorter than
+#   `value`, it is unchanged.
+#     - type: truncate_array
+#       field: result.event_records
+#       value: 0           # → []
+#     - type: truncate_array
+#       field: result.selected_producers
+#       value: 1           # → keep first producer only
+#
+#   ─── inject_error ──────────────────────────────────────────────────────
+#   Replaces the ENTIRE response body with a canonical JSON-RPC 2.0 error:
+#     { "jsonrpc":"2.0", "id":<original>, "error":{"code":-32000,
+#       "message":"chaos injected error" } }
+#   No `field`, no `value`. Short-circuits subsequent operations in the rule.
+#     - type: inject_error
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# STATEFUL GATING (defined in rules.go:StatefulConfig, applied in proxy.go)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#   stateful:
+#     skip_first:       int   Pass through the first N matching requests.
+#     corrupt_every_n:  int   After skip_first, corrupt every Nth match
+#                             (1 or 0 = every match).
+#     max_corrupted:    int   Stop corrupting once this many corruptions have
+#                             been emitted (0 = unlimited).
+#
+# Evaluation order per request: stateful gate → probability gate. Counters are
+# per-rule, in-memory, and reset only on POST /reset to the control API or on
+# proxy restart.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# EMBEDDING IN A SCENARIO YAML
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# In a ChaosScenario, a corruption_proxy fault looks like:
+#
+#   faults:
+#     - phase: corrupt_checkpoint
+#       target: heimdall_2           # an alias defined under spec.targets
+#       type: corruption_proxy
+#       params:
+#         target_port: 1317          # 1317 for Heimdall REST, 8545 for Bor RPC
+#         rules_yaml: |              # <-- the YAML below goes here, literally
+#           - name: checkpoint-wrong-hash
+#             path_pattern: "/checkpoints/"
+#             operations:
+#               - type: set_field
+#                 field: result.root_hash
+#                 value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# COMMON PITFALLS — READ BEFORE AUTHORING
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#   1. FIRST-MATCH WINS. Multiple rules for the same endpoint will only ever
+#      fire one per request. To compose mutations, put multiple `operations`
+#      inside a single rule rather than defining multiple rules.
+#
+#   2. method_match NEEDS A JSON-RPC REQUEST. If the upstream is not POSTing
+#      application/json to "/", the method field is empty and your regex will
+#      match "" — usually not what you want. Scope to JSON-RPC endpoints.
+#
+#   3. path_pattern IS A REGEX, NOT A GLOB. "/checkpoints/" matches any path
+#      CONTAINING that substring. Anchor with ^…$ if you need exactness.
+#
+#   4. RESPONSES OVER 10 MiB PASS THROUGH UNMODIFIED (maxBodyBytes in proxy.go).
+#      Large oversized-payload tests need to stay under that cap, or the
+#      corruption silently no-ops.
+#
+#   5. NON-JSON RESPONSES PASS THROUGH UNMODIFIED. If the upstream returns
+#      HTML error pages or plain text, your rule won't fire.
+#
+#   6. set_field CREATES MISSING PARENTS. `field: a.b.c.d` on an empty object
+#      will produce `{a:{b:{c:{d:<value>}}}}`. Use this deliberately — it can
+#      mask typos in field paths.
+#
+#   7. truncate_array value IS COERCED FROM YAML. YAML `value: 0` parses as
+#      int; `value: "0"` parses as string and will error at runtime. Always
+#      use bare integers.
+#
+#   8. probability: 0.0 IS LEGAL and means "never corrupt". Useful for leaving
+#      a rule in place but temporarily disabling it without deleting it.
+#
+# =============================================================================
+# EXAMPLES
+# =============================================================================
+# Group A: Heimdall REST API (port 1317) — semantic corruption
+# Group B: Bor JSON-RPC (port 8545) — method-matched corruption
+# Group C: Stateful / intermittent corruption
+# Group D: Oversized payloads (buffer-overflow class)
+# Group E: Probabilistic corruption
+# Group F: Composite (multi-op) rules
+# =============================================================================
+
+
+# ─── Group A: Heimdall REST (port 1317) ──────────────────────────────────────
+
+# A1. Replace checkpoint root_hash with a fixed invalid base64 value.
+# Bor verifies checkpoint root hashes against its merkle root; mismatch causes
+# the validator to reject or delay the checkpoint.
+- name: checkpoint_wrong_hash
+  path_pattern: "/checkpoints/"
+  operations:
+    - type: set_field
+      field: result.root_hash
+      value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# A2. Clear selected_producers in span responses — no producers means Bor
+# cannot assign block authors for the sprint window.
+- name: span_empty_producers
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: result.selected_producers
+      value: []
+
+# A3. Replace bor_chain_id — Bor rejects spans whose chain id doesn't match
+# and stops making progress until a valid span arrives.
+- name: span_wrong_chain_id
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: result.bor_chain_id
+      value: "99999"
+
+# A4. Return an empty event_records array from the state-sync clerk endpoint.
+# Silently dropped events cause validators to diverge on state DB roots.
+- name: state_sync_truncate
+  path_pattern: "/clerk/time"
+  operations:
+    - type: truncate_array
+      field: result.event_records
+      value: 0
+
+# A5. Replace start_block / end_block with zero to simulate a stale milestone
+# arriving late. Bor enforces monotonic milestone ordering.
+- name: milestone_stale
+  path_pattern: "/milestones/"
+  operations:
+    - type: set_field
+      field: result.start_block
+      value: "0"
+    - type: set_field
+      field: result.end_block
+      value: "0"
+
+# A6. base64 bit-flip on a signature field. Demonstrates corrupt_base64.
+# Use when the corrupted value must still be valid base64 but decode to
+# different bytes (signature verification failure, not parse failure).
+- name: checkpoint_signature_bitflip
+  path_pattern: "/checkpoints/"
+  operations:
+    - type: corrupt_base64
+      field: result.signatures.0.signature
+
+
+# ─── Group B: Bor JSON-RPC (port 8545) ──────────────────────────────────────
+
+# B1. Return a stale block number to eth_blockNumber. Heimdall uses this to
+# decide which blocks to include in milestone proposals.
+- name: bor_stale_height
+  path_pattern: "/"
+  method_match: "^eth_blockNumber$"
+  operations:
+    - type: set_field
+      field: result
+      value: "0x1"
+
+# B2. Zero-address miner — Heimdall's GenMilestoneProposition validates block
+# authors against the validator set; zero address → rejection.
+- name: bor_wrong_author
+  path_pattern: "/"
+  method_match: "^eth_getBlockByNumber$"
+  operations:
+    - type: set_field
+      field: result.miner
+      value: "0x0000000000000000000000000000000000000000"
+
+# B3. Corrupt block hashes for BOTH header and block fetches — differing
+# hashes prevent consensus on milestone propositions.
+- name: bor_wrong_block_hash
+  path_pattern: "/"
+  method_match: "^(eth_getHeaderByNumber|eth_getBlockByNumber)$"
+  operations:
+    - type: set_field
+      field: result.hash
+      value: "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+# B4. inject_error on bor_getAuthor — Heimdall's vote-extension generator
+# returns an incomplete proposal (nil MilestoneProposition).
+- name: bor_author_error
+  path_pattern: "/"
+  method_match: "^bor_getAuthor$"
+  operations:
+    - type: inject_error
+
+# B5. Diverge totalDifficulty — GetMajorityMilestoneProposition fails to
+# aggregate 2/3+ voting power → "insufficient voting power" path.
+- name: bor_divergent_td
+  path_pattern: "/"
+  method_match: "^eth_getTdByNumber$"
+  operations:
+    - type: set_field
+      field: result.totalDifficulty
+      value: "0xffffffffffffffff"
+
+
+# ─── Group C: Stateful / intermittent corruption ─────────────────────────────
+
+# C1. Let the first 2 requests through, then corrupt every 3rd.
+# Intermittent corruption is often harder to detect than constant corruption.
+- name: checkpoint_hash_every_3
+  path_pattern: "/checkpoints/"
+  operations:
+    - type: set_field
+      field: result.root_hash
+      value: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+  stateful:
+    skip_first: 2
+    corrupt_every_n: 3
+
+# C2. One-shot fault injection — corrupt exactly once, then pass everything
+# through. Useful for testing recovery behaviour after a single bad frame.
+- name: span_producers_once
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: result.selected_producers
+      value: []
+  stateful:
+    max_corrupted: 1
+
+
+# ─── Group D: Oversized payloads (buffer-overflow class) ─────────────────────
+
+# D1. 5-entry producer set, trivially expandable to 5000 by generating the
+# YAML programmatically. Tests O(n) vs O(n²) behaviour and bounded allocation.
+- name: oversized_producers
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: result.selected_producers
+      value:
+        - id: 1
+          address: "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+          voting_power: 10000
+        - id: 2
+          address: "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+          voting_power: 10000
+        - id: 3
+          address: "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+          voting_power: 10000
+        - id: 4
+          address: "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+          voting_power: 10000
+        - id: 5
+          address: "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+          voting_power: 10000
+
+# D2. Max uint64 block number — tests arithmetic overflow in block-range math.
+- name: integer_overflow_blocks
+  path_pattern: "/"
+  method_match: "^eth_blockNumber$"
+  operations:
+    - type: set_field
+      field: result
+      value: "0xffffffffffffffff"
+
+# D3. Malformed payload via empty-array substitution on a clerk response.
+# Tests robustness of downstream decoders that expect non-empty records.
+- name: malformed_hex
+  path_pattern: "/clerk/time"
+  operations:
+    - type: set_field
+      field: result.event_records
+      value: []
+
+
+# ─── Group E: Probabilistic corruption ───────────────────────────────────────
+
+# E1. Corrupt ~10% of checkpoint responses. Useful for soak tests where you
+# want steady-state low-rate corruption rather than a deterministic pattern.
+- name: checkpoint_flaky_10pct
+  path_pattern: "/checkpoints/"
+  probability: 0.1
+  operations:
+    - type: set_field
+      field: result.root_hash
+      value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# E2. Stateful + probabilistic: skip warm-up, then 25% of every-other request.
+# Both gates compose — stateful runs first, probability runs after.
+- name: span_slow_burn
+  path_pattern: "/bor/spans/"
+  probability: 0.25
+  operations:
+    - type: set_field
+      field: result.selected_producers
+      value: []
+  stateful:
+    skip_first: 10
+    corrupt_every_n: 2
+
+
+# ─── Group F: Composite (multi-op) rules ─────────────────────────────────────
+
+# F1. Atomic multi-field corruption — a single rule applying several set_field
+# ops to produce a coherent "wrong" span (empty producers + wrong chain id).
+# Prefer this over two separate rules, since first-match-wins means only one
+# would ever fire per request otherwise.
+- name: span_fully_broken
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: set_field
+      field: result.selected_producers
+      value: []
+    - type: set_field
+      field: result.bor_chain_id
+      value: "99999"
+
+# F2. Delete-then-set idiom — explicit reset of a field before reassignment.
+# Useful when the original value is a complex object and you want to guarantee
+# no leftover keys survive the mutation.
+- name: span_reset_producers
+  path_pattern: "/bor/spans/"
+  operations:
+    - type: delete_field
+      field: result.selected_producers
+    - type: set_field
+      field: result.selected_producers
+      value: []
