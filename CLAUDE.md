@@ -74,8 +74,8 @@ chaos-utils/
 │   └── config/                 config.yaml schema + auto-gen
 ├── scenarios/                  Built-in chaos tests (YAML).
 │   ├── polygon-chain/          Polygon PoS: network, disk, compound,
-│   │                           semantic, applications, boundary,
-│   │                           bor-bug-bounty. See scenarios/CLAUDE.md.
+│   │                           semantic, applications, boundary.
+│   │                           See scenarios/CLAUDE.md.
 │   └── polygon-cdk/            CDK chains: erigon-rollup, validium,
 │                               sovereign-*, op-geth, op-succinct.
 ├── docs/                       Deep-dive docs (see §7).

@@ -415,7 +415,6 @@ find scenarios/polygon-cdk   -name '*.yaml' | sort
 | `semantic/`       | `corruption_proxy` app-level HTTP corruption.                          | `checkpoint-hash-corruption`, `span-empty-producers`, `span-wrong-chain-id`, `state-sync-truncation`, `bor-rpc-stale-height`, `ve-*` |
 | `compound/`       | Multi-fault composites.                                                | `disk-io-plus-network-latency`, `kill-during-disk-io-delay`, `heimdall-grpc-blackhole-bor-split`, `three-phase-nemesis`, `shifting-fault-combinations` |
 | `boundary/`       | Sprint / span / epoch boundary edge cases.                             | `span-boundary-partition`, `rapid-span-transitions`, `fork-at-sprint-span-collision`, `validator-exit-during-checkpoint` |
-| `bor-bug-bounty/` | Reproductions of specific Bor issues (filename-prefixed by issue ID).  | `005-waitwitext-goroutine-leak`, `018-commitstates-heimdall-error-swallow`, `026-wit-dispatcher-double-close` |
 
 ### Polygon CDK categories
 

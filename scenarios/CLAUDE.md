@@ -14,8 +14,7 @@ scenarios/
 │   ├── semantic/          corruption_proxy scenarios (HTTP-level corruption)
 │   │   └── rules/         rule fragments; _REFERENCE.yaml is the catalogue
 │   ├── applications/      service-level faults (rabbitmq, restart-all, etc.)
-│   ├── boundary/          validator-count edge cases
-│   └── bor-bug-bounty/    repro-specific scenarios
+│   └── boundary/          validator-count edge cases
 └── polygon-cdk/
     └── <chain>/<category>/  mirrors polygon-chain structure per CDK variant
 ```
