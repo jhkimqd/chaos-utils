@@ -83,7 +83,6 @@ spec:
 
   success_criteria:
     # Critical: remaining 6/8 validators keep producing
-    # F2 fix: widen to 3m, keep min() — every unfrozen validator must produce.
     - name: block_production_continues
       description: 6/8 unfrozen validators maintain block production
       type: prometheus

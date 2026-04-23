@@ -49,9 +49,6 @@ spec:
 
   faults:
     # Phase 1: Kill after 30s (simulates health check failure → orchestrator kill)
-    # (As of b2819fd / F-02, per-container multi-fault teardown removes every
-    # tracked fault type on its own. The prior ordering workaround is no
-    # longer required; order retained for fault-sequence stability.)
     - phase: crash_bor_6
       description: "SIGKILL Bor 6 — orchestrator kills after health check timeout"
       target: bor_6
@@ -96,7 +93,6 @@ spec:
         probability: 1.0
 
   success_criteria:
-    # F2 fix: widen to 3m, keep min() — every unaffected validator must produce.
     - name: healthy_validators_unaffected
       description: Other 7 validators maintain block production
       type: prometheus

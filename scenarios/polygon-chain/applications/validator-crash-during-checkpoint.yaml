@@ -70,7 +70,6 @@ spec:
   success_criteria:
     # ========== CRITICAL BASELINE (Must Pass) ==========
 
-    # F2 fix: widen to 3m, keep min() — every non-crashed validator must produce.
     - name: network_survives_crash
       description: CRITICAL - Other validators continue producing blocks (v4 excluded — known flaky)
       type: prometheus
@@ -109,7 +108,7 @@ spec:
       critical: false
 
     - name: late_votes_during_sync
-      description: Late votes under 15000/min (baseline ~4000/min/validator; F-07)
+      description: Late votes under 15000/min (baseline ~4000/min/validator)
       type: prometheus
       query: sum(rate(cometbft_consensus_late_votes{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])) * 60
       threshold: "< 15000"
@@ -129,10 +128,10 @@ spec:
       threshold: "> 0"
       critical: false
 
-    # Removed: crash_causes_missing_validator (F-17)
-    # cometbft_consensus_missing_validators only increments on rounds blocked
-    # on absent votes. With restart_delay=3s the validator returns inside a
-    # single round, so the metric stays at 0 even though the crash landed.
+    # Note: cometbft_consensus_missing_validators is not usable here.
+    # It only increments on rounds blocked on absent votes. With restart_delay=3s
+    # the validator returns inside a single round, so the metric stays at 0
+    # even though the crash landed.
     # Non-critical fault-effectiveness probe; other subtle-degradation
     # criteria above (missed_proposals_during_recovery, peer_reconnection_after_crash,
     # late_votes_during_sync) cover the downstream effect. Dropped per

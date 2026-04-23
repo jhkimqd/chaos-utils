@@ -86,7 +86,7 @@ The actual Bor chaindata path in the Kurtosis devnet is `/var/lib/bor/bor/chaind
 Container_pause with duration blocks in the goroutine and unpauses before MONITOR evaluates `during_fault` criteria. Use `post_fault_only: true` instead.
 
 ### Multi-fault teardown tracking (FIXED, b2819fd)
-As of commit `b2819fd` (F-02), compound-fault teardown handles multiple faults per container via reverse-order cleanup. The prior "one fault type per container" workaround — reordering scenarios so cleanup-critical types were listed last — is no longer required.
+Compound-fault teardown handles multiple faults per container via reverse-order cleanup. The prior "one fault type per container" workaround — reordering scenarios so cleanup-critical types were listed last — is no longer required.
 
 ### Clock skew not implementable
 Docker containers share the host kernel clock. Per-container clock manipulation is impossible.

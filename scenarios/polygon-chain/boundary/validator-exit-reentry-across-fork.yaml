@@ -68,7 +68,6 @@ spec:
     - name: remaining_validators_produce_blocks
       description: "Remaining non-stopped, non-flaky validators continue producing blocks through fork (v4 excluded — known flaky)"
       type: prometheus
-      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
       query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true

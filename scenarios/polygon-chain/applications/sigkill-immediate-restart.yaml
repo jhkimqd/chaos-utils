@@ -141,8 +141,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F1 fix: widen to 3m and use max() — cluster-wide recovery signal
-    # tolerates cold-start tail from the just-killed nodes.
     - name: block_sync_resumes
       description: Recovered Bor nodes resume block sync — DB lock acquired cleanly
       type: prometheus
@@ -151,7 +149,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F1 fix: widen to 3m and use max() — recovery signal tolerates cold-start.
     - name: heimdall_consensus_rejoined
       description: Heimdall validators rejoin consensus after immediate restart
       type: prometheus
@@ -164,11 +161,10 @@ spec:
       description: >
         Bor→Heimdall RPC recovers — tests retry logic when Bor starts before
         Heimdall is ready
-      # F-16: `or vector(1)` only fires on empty-set; a zero-valued rate is a
-      # non-empty series so the fallback never kicked in and the criterion
-      # legitimately failed while Bor was still cold-starting. Switch to a
-      # counter-delta over [3m] — catches any forward progress in the post-
-      # fault window without depending on rate() non-emptiness.
+      # `or vector(1)` only fires on empty-set; a zero-valued rate is a
+      # non-empty series so the fallback never kicks in. Use a counter-delta
+      # over [3m] instead — catches any forward progress in the post-fault
+      # window without depending on rate() non-emptiness.
       type: prometheus
       query: increase(client_requests_latestspan_valid{job=~"l2-el-[37]-bor-heimdall-v2-validator"}[3m])
       threshold: "> 0"
@@ -185,7 +181,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F2 fix: widen to 3m, keep min() — every non-faulted validator must produce.
     - name: healthy_validators_unaffected
       description: Non-faulted validators maintain block production
       type: prometheus

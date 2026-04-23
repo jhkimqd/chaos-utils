@@ -65,9 +65,6 @@ spec:
 
   faults:
     # ============ PHASE 1: STRESS + KILL ============
-    # (As of b2819fd / F-02, per-container multi-fault teardown no longer
-    # relies on injectedFaults map overwrites. Ordering retained for
-    # fault-sequence stability, not for cleanup correctness.)
 
     # CPU stress on isolated validators (degrade processing, deepen state divergence)
     - phase: stress_bor_3
@@ -130,8 +127,6 @@ spec:
       delay: 60s
 
     # ============ PHASE 1 (continued): ISOLATE via connection_drop ============
-    # (As of b2819fd / F-02, orchestrator teardown removes every tracked
-    # fault type per container. Ordering here is for semantic clarity only.)
     - phase: isolate_bor_3
       description: "Phase 1 — isolate Bor 3 from P2P"
       target: bor_3

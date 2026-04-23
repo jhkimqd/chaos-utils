@@ -132,7 +132,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F2 fix: widen to 3m, keep min() — every unaffected validator must produce.
     - name: healthy_validators_unaffected
       description: Other 7 validators maintain production
       type: prometheus

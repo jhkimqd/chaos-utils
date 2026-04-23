@@ -129,7 +129,6 @@ spec:
       exclude_producer: false
 
   success_criteria:
-    # F2 fix: widen to 3m, keep min() — every non-killed validator must produce.
     - name: block_production_continues
       description: Network continues producing blocks after producer killed — span rotation works
       type: prometheus
@@ -152,7 +151,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F1 fix: widen to 3m and use max() — cluster-wide recovery signal.
     - name: block_sync_resumes
       description: Killed producers resume sync — re-establish chain state
       type: prometheus

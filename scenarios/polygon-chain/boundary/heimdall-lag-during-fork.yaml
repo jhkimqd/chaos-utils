@@ -77,7 +77,6 @@ spec:
     - name: bor_keeps_producing_during_lag
       description: "Bor validators continue producing blocks despite slow Heimdall"
       type: prometheus
-      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
       query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
