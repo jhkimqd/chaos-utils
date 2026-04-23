@@ -22,7 +22,6 @@ Last run: 2026-03-19 (8-validator Kurtosis PoS devnet)
 | `chaindata-wipe-resync` | Delete Bor chaindata while running, then SIGKILL+restart. Expect resync from peers | FAIL | **Finding**: Bor does not automatically resync after chaindata wipe. After `rm -rf chaindata` + restart, `chain_head_block` rate stays 0. Bor may require manual state sync configuration or snapshot download to recover from total data loss — it cannot reconstruct from P2P alone. Other validators unaffected, consensus continues. |
 | `partition-induced-crash` | Network partition followed by SIGKILL (health check failure pattern), expect recovery after double fault | PASS | 5/6 criteria. Crashed validator recovers, block sync resumes, chain head converges within 50 blocks. |
 | `rpc-node-crash-reconnect` | Crash RPC node 3 times, expect witness sync re-establishment and chain head catch-up | FAIL | 4/6 criteria. RPC node recovers (up=1), resumes sync, validators completely unaffected. `rpc_catches_up` criterion returned 0 — PromQL subtraction produces no data when RPC metrics haven't been scraped long enough post-crash. Need wider evaluation window. |
-| `pure-stress-baseline` | CPU (70%, 2 cores) + memory (1GB) stress on 3 validators, NO fault injection, expect stable block production | PASS | 6/7 criteria. All validators maintain block production under stress. `goroutines_stable` metric not scraped (non-critical). |
 
 ## Compound Scenarios
 
