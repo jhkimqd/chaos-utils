@@ -1,0 +1,80 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bor-sigkill-during-witness-sync
+  description: >
+    SIGKILLs bor validator 2 twice with a short restart delay while
+    witness-sync traffic is ongoing, stressing the wit-protocol
+    dispatcher's request-close path under abrupt peer drop + restart.
+    Checks that the unfaulted majority (validators 1 and 3) keeps
+    producing blocks, that the killed validator comes back up, and
+    that no `close of closed channel` panic appears on bor during
+    the SIGKILL storm.
+
+    Cluster: 3 validators (1,2,3) + 1 RPC (4). Only validator 2 is
+    SIGKILLed, preserving 1+3 as quorum. Two SIGKILL cycles.
+
+  tags: [wit, panic, concurrency, container-kill]
+  author: chaos-utils
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 90s
+
+  faults:
+    - phase: sigkill_bor_2_cycle_1
+      description: "SIGKILL bor 2 to race with in-flight witness request"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 2
+
+    - phase: sigkill_bor_2_cycle_2
+      description: "Second SIGKILL cycle — further stresses the request-close path"
+      target: bor_2
+      type: container_kill
+      params:
+        signal: SIGKILL
+        restart: true
+        restart_delay: 2
+      delay: 45s
+
+  success_criteria:
+    - name: no_wit_double_close_panic
+      description: "Assert no `close of closed channel` panic appears on the faulted bor container during the SIGKILL storm."
+      type: log
+      pattern: "close of closed channel"
+      container_pattern: "l2-el-2-bor-heimdall-v2-validator"
+      absence: true
+      critical: false
+
+    - name: cluster_continues
+      description: "Unfaulted majority (1,3) keeps producing blocks during the SIGKILL storm"
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[13]-bor-heimdall-v2-validator"}[3m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: faulted_validator_recovers
+      description: "SIGKILLed validator comes back and resumes sync"
+      type: prometheus
+      query: up{job="l2-el-2-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up

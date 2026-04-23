@@ -1,0 +1,87 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: wit-reconnect-churn-under-p2p-latency
+  description: >
+    Injects aggressive P2P latency on two Bor validators (2 and 3) to
+    force RLPx reconnect churn, stressing the wit-protocol extension
+    handshake path on peerset. Checks that faulted validators resume
+    block sync after the fault lifts and that goroutine count stays
+    bounded on the faulted nodes under sustained reconnect pressure.
+
+    Cluster: 3 validators (1,2,3) + 1 RPC (4). Validator 1 remains
+    healthy to maintain chain progress.
+
+  tags: [wit, goroutine-leak, concurrency, network]
+  author: chaos-utils
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: bor_2
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: bor_3
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 90s
+
+  faults:
+    - phase: flap_bor_2
+      description: "20s latency hits frameWriteTimeout and forces a reconnect storm on validator 2's devp2p port."
+      target: bor_2
+      type: network
+      params:
+        latency: 20000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+    - phase: flap_bor_3
+      target: bor_3
+      type: network
+      params:
+        latency: 20000
+        target_ports: "30303"
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: faulted_validators_recover
+      description: "Post-fault, faulted validators resume block sync"
+      type: prometheus
+      query: max(rate(chain_head_block{job=~"l2-el-[23]-bor-heimdall-v2-validator"}[3m]))
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: goroutine_count_bounded
+      description: >
+        system_cpu_goroutines on faulted Bor validators must stay < 5000 —
+        guards against runaway goroutine growth under reconnect churn.
+        Bor exposes `system_cpu_goroutines` (go-ethereum metrics), not the
+        client_golang `go_goroutines` collector.
+      type: prometheus
+      query: max(system_cpu_goroutines{job=~"l2-el-[23]-bor-heimdall-v2-validator"})
+      threshold: "< 5000"
+      critical: false
+      post_fault_only: true
+
+    - name: no_panic_during_churn
+      description: "Reconnect churn must not panic bor"
+      type: log
+      pattern: "(panic:|fatal error:|runtime error:)"
+      container_pattern: "l2-el-[23]-bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - system_cpu_goroutines
+    - cometbft_p2p_peers
+    - up
