@@ -114,12 +114,20 @@ chaos-utils/
 ## 6. Fault types — registered list
 
 Maintained in `pkg/scenario/validator/validator.go::validateFaultType`.
-Adding a new fault type requires:
-1. Add the string to `validTypes` in that file.
-2. Add a handler under `pkg/injection/<category>/`.
+Dispatch lives in `pkg/injection/injector.go::InjectFault`.
+Adding a new fault type requires ALL of:
+1. Add the string to `validTypes` in `pkg/scenario/validator/validator.go`.
+2. Add a case in `pkg/injection/injector.go::InjectFault` that parses
+   params and calls a handler under `pkg/injection/<category>/`.
 3. Add verification under `pkg/injection/verification/`.
-4. Document it in this file + README `## Fault Parameters`.
+4. Update this file's §6 table AND README.md's **"Fault types"** and
+   **"Fault parameters"** sections. Every param key you accept must be
+   listed in the README table with type/default/notes. Unknown keys
+   are silently ignored today — that is a foot-gun, so the README is
+   the de-facto source of truth for users.
 5. Provide at least one example scenario under `scenarios/`.
+6. If the type changes the Built-in-scenarios inventory (new category
+   dir, renamed dir), update the README `## Built-in scenarios` table.
 
 Current registered types (as of the last update to this file — always
 verify against the source when in doubt):
@@ -177,10 +185,23 @@ make fmt-check                 # CI gate
 
 ### Do
 - Read the authoritative Go source before asserting a schema.
-- Update this file and/or `scenarios/CLAUDE.md` whenever you add a fault
-  type, change the orchestrator phases, rename a config key, or introduce
-  a new subdirectory under `pkg/injection/` or `scenarios/`.
-- Mirror changes into `README.md` and the relevant `docs/*.md`.
+- Update this file, `scenarios/CLAUDE.md`, and `README.md` whenever you
+  add a fault type, change the orchestrator phases, rename a config key,
+  introduce a new subdirectory under `pkg/injection/` or `scenarios/`,
+  or rename/remove a built-in scenario that is cited anywhere.
+- Treat the README as a first-class artefact, not an afterthought.
+  Specifically, these README sections are machine-critical and drift
+  fast unless you update them in the same PR that changes the code:
+    - **"Fault types"** — keeps the `type:` → handler mapping honest.
+    - **"Fault parameters"** — the effective user-facing schema; the
+      parser silently ignores unknown keys, so the README is the
+      source of truth for what users can write.
+    - **"Built-in scenarios"** — drift here produces broken runbook
+      commands. If you rename or delete a scenario, update the table
+      in the same commit.
+    - **"Configuration"** — must match `pkg/config/config.go::Config`.
+- Mirror changes into the relevant `docs/*.md` when the topic already
+  has a dedicated doc (metrics, pipeline, resource-stress).
 - Preserve existing scenario filenames — they are referenced by CI and
   external runbooks.
 - Keep the `_REFERENCE.yaml` at `scenarios/polygon-chain/semantic/rules/`
