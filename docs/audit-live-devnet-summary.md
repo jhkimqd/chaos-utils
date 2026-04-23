@@ -15,7 +15,7 @@ version that survives the session).
   `pkg/monitoring/**`, `pkg/reporting/**`, `pkg/discovery/**`,
   `cmd/chaos-runner/**`, `cmd/chaos-peer/**`, `cmd/corruption-proxy/**`
 - Directories **not** sampled (queued for next session): compound, network,
-  semantic, disk (safe subset only), boundary, bor-bug-bounty, cpu-memory
+  semantic, disk (safe subset only), boundary, cpu-memory
 
 ## Findings (18 total: 2 CRITICAL, 4 HIGH, 3 MEDIUM, 9 LOW)
 
@@ -91,8 +91,8 @@ a48adb2 fix(injection): accept int|float64 for remaining numeric params (F-01)
 
 ## Open items carried forward
 
-1. **Seven scenario directories unsampled**: compound, network, semantic,
-   disk (safe subset), boundary, bor-bug-bounty, cpu-memory. The `or vector(1)`
+1. **Six scenario directories unsampled**: compound, network, semantic,
+   disk (safe subset), boundary, cpu-memory. The `or vector(1)`
    PromQL pattern (F-16 class) is likely present on other criteria across
    these directories and should be swept for in the next live pass — a grep
    for `or vector(` in `scenarios/polygon-chain/` is a good starting point.
