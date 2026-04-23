@@ -1,0 +1,66 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: cdk-node-pause-resume
+  description: Pause cdk-node for 30 seconds to test batch aggregation delay handling
+  tags:
+  - failure
+  - pause
+  - medium
+  - cdk-node
+  - aggregator
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: cdk-node.*
+    alias: cdk_node
+  duration: 4m
+  warmup: 1m
+  cooldown: 1m
+  faults:
+  - phase: pause_cdk_node
+    description: Pause cdk-node for 30 seconds
+    target: cdk_node
+    type: container_pause
+    params:
+      duration: 30s
+  success_criteria:
+  - name: sequencer_unaffected
+    description: Sequencer continues producing blocks during pause
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+    threshold: '> 0'
+    window: 4m
+    critical: true
+  - name: batches_catch_up
+    description: Pending batches are processed after resume
+    type: prometheus
+    query: increase(panoptichain_rpc_height[2m])
+    threshold: '> 0'
+    window: 2m
+    critical: false
+  - name: batches_being_sequenced
+    description: New batches are being sequenced
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: batches_being_verified
+    description: Batches are being verified (proofs generated)
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_verified_batches[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up
+  - panoptichain_rpc_zkevm_total_sequenced_batches
+  - panoptichain_rpc_zkevm_total_verified_batches
+  - panoptichain_rpc_zkevm_time_since_last_aggregation

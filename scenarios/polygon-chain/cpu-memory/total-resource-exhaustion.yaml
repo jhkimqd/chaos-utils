@@ -1,0 +1,120 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: total-resource-exhaustion
+  description: Simultaneous CPU, memory, and disk I/O exhaustion on 2 validators
+  tags: [extreme, resource, cpu, memory, disk, combined]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-[34]-heimdall-v2-bor-validator"
+      alias: stressed_validators_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-[34]-bor-heimdall-v2-validator"
+      alias: stressed_validators_bor
+
+  duration: 12m
+  warmup: 2m
+  cooldown: 3m
+
+  faults:
+    # CPU starvation on both validators
+    - phase: cpu_starvation_heimdall
+      description: 95% CPU load on validators 3 & 4 Heimdall
+      target: stressed_validators_heimdall
+      type: cpu
+      params:
+        cpu_percent: 95
+        duration: 12m
+
+    - phase: cpu_starvation_bor
+      description: 95% CPU load on validators 3 & 4 Bor
+      target: stressed_validators_bor
+      type: cpu
+      params:
+        cpu_percent: 95
+        duration: 12m
+
+    # Memory pressure
+    - phase: memory_pressure_heimdall
+      description: 80% memory consumption
+      target: stressed_validators_heimdall
+      type: memory
+      params:
+        memory_percent: 80
+        duration: 12m
+
+    - phase: memory_pressure_bor
+      description: 80% memory consumption
+      target: stressed_validators_bor
+      type: memory
+      params:
+        memory_percent: 80
+        duration: 12m
+
+    # Disk I/O delays
+    - phase: disk_io_heimdall
+      description: Severe I/O delays
+      target: stressed_validators_heimdall
+      type: disk_io
+      params:
+        delay_ms: 500
+        duration: 12m
+
+    - phase: disk_io_bor
+      description: Severe I/O delays
+      target: stressed_validators_bor
+      type: disk_io
+      params:
+        delay_ms: 500
+        duration: 12m
+
+  success_criteria:
+    # Network continues with healthy validators
+    - name: healthy_validators_continue
+      description: Validators 1 & 2 maintain network
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[12]-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+    # Stressed validators stay up (don't OOM or crash)
+    - name: stressed_validators_survive_heimdall
+      description: Heimdall validators 3 & 4 stay online despite resource exhaustion
+      type: prometheus
+      query: count(up{job=~"l2-cl-[34]-heimdall-v2-bor-validator"} == 1)
+      threshold: "== 2"
+      window: 12m
+      critical: false
+
+    - name: stressed_validators_survive_bor
+      description: Bor validators 3 & 4 stay online despite resource exhaustion
+      type: prometheus
+      query: count(up{job=~"l2-el-[34]-bor-heimdall-v2-validator"} == 1)
+      threshold: "== 2"
+      window: 12m
+      critical: false
+
+    # Consensus continues
+    - name: consensus_continues
+      description: Consensus maintained by healthy majority
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 12m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_missing_validators
+    - up

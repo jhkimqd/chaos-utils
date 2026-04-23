@@ -1,0 +1,68 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: postgres-restart-under-load
+  description: Restart PostgreSQL database under load to test connection recovery
+  tags:
+  - failure
+  - restart
+  - critical
+  - database
+  - postgres
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: postgres.*
+    alias: postgres_db
+  duration: 5m
+  warmup: 1m
+  cooldown: 2m
+  faults:
+  - phase: restart_postgres
+    description: Restart PostgreSQL with 5s grace period
+    target: postgres_db
+    type: container_restart
+    params:
+      grace_period: 5s
+      restart_delay: 10s
+  success_criteria:
+  - name: services_reconnect
+    description: Services reconnect to database and resume operations
+    type: prometheus
+    query: increase(panoptichain_rpc_height[1m])
+    threshold: '> 0'
+    window: 2m
+    critical: true
+  - name: connection_pool_recovered
+    description: Database connection pool recovers and services resume
+    type: prometheus
+    query: increase(panoptichain_rpc_gas_used_sum[1m])
+    threshold: '> 0'
+    window: 2m
+    critical: false
+  - name: proofs_being_generated
+    description: ZK proofs are being generated
+    type: prometheus
+    query: increase(succinct_highest_proven_contiguous_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: l2_finalization_continues
+    description: L2 blocks continue to be finalized with ZK proofs
+    type: prometheus
+    query: increase(succinct_l2_finalized_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - up
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - succinct_l2_finalized_block
+  - succinct_highest_proven_contiguous_block
+  - succinct_current_proving_proofs
+  - succinct_agg_proof_request_error_count

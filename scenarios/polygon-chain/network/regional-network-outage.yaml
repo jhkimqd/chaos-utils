@@ -1,0 +1,80 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: regional-network-outage
+  description: Simulate regional outage isolating single validator while maintaining network consensus
+  tags: [network, outage, validator-isolation, high-severity]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Single validator isolation (maintains 3/4 = 75% > 67% threshold)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: isolated_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: isolated_validator_bor
+
+  duration: 8m
+  warmup: 3m  # Increased: allow network to stabilize after previous tests
+  cooldown: 2m  # Increased: allow network to fully recover
+
+  # Isolate single validator (maintains consensus with 3/4 validators)
+  faults:
+    - phase: isolate_validator_heimdall
+      description: Complete network isolation of validator 1 Heimdall
+      target: isolated_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+    - phase: isolate_validator_bor
+      description: Complete network isolation of validator 1 Bor
+      target: isolated_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+  success_criteria:
+    # Critical: Network survives with 3/4 validators (maintains 75% > 67% threshold)
+    - name: network_survives_single_validator_loss
+      description: Network continues with 3 remaining validators
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: Consensus maintained by majority (validators 2, 3, 4)
+    - name: consensus_maintained_by_majority
+      description: Consensus continues with 3/4 validators
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Expected: Only 3 validators actively participating (validator 1 isolated)
+    - name: only_three_validators_active
+      description: Only 3 validators participating in consensus (validator 1 isolated)
+      type: prometheus
+      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0)
+      threshold: "== 3"
+      window: 8m
+      critical: false
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators

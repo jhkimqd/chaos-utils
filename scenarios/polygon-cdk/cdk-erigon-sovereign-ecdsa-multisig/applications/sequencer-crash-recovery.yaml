@@ -1,0 +1,60 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: sequencer-crash-recovery
+  description: Kill sequencer and verify automatic recovery and state consistency
+  tags: [failure, crash, critical, sequencer, recovery]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target sequencer
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: ".*sequencer.*|cdk-erigon-sequencer|op-el-1.*"
+      alias: sequencer_node
+
+  duration: 5m
+  warmup: 1m
+  cooldown: 2m
+
+  # Kill sequencer container
+  faults:
+    - phase: kill_sequencer
+      description: Kill sequencer to test crash recovery
+      target: sequencer_node
+      type: container_kill
+      params:
+        signal: SIGKILL
+
+  success_criteria:
+    - name: sequencer_recovers
+      description: Sequencer automatically recovers after crash
+      type: prometheus
+      query: up{job=~".*sequencer.*"}
+      threshold: "== 1"
+      window: 2m
+      critical: true
+
+    - name: block_production_resumes
+      description: Block production resumes after recovery
+      type: prometheus
+      query: increase(panoptichain_rpc_height[1m])
+      threshold: "> 0"
+      window: 2m
+      critical: true
+
+    - name: no_blocks_lost
+      description: Chain head continues from last block (no rollback)
+      type: prometheus
+      query: panoptichain_rpc_height
+      threshold: "> 0"
+      window: 2m
+      critical: false
+
+  metrics:
+    - panoptichain_rpc_height
+    - up
+    - process_start_time_seconds

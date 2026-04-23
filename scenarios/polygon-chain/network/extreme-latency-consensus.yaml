@@ -1,0 +1,124 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: extreme-latency-consensus
+  description: Extreme network latency (3 seconds) on consensus - tests timeout handling with subtle degradation metrics
+  tags: [network, latency, consensus, extreme, subtle-metrics]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: slow_validator
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: extreme_latency
+      description: 3 second latency on consensus ports - extreme timeout stress
+      target: slow_validator
+      type: network
+      params:
+        device: eth0
+        latency: 3000        # 3 seconds! (increased from 2s)
+        target_ports: "26656,26657"
+        target_proto: tcp
+
+  success_criteria:
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
+    - name: other_validators_continue
+      description: CRITICAL - Other validators (2,3,4) continue producing blocks
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[234]-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: quorum_maintained
+      description: CRITICAL - Network maintains quorum despite slow validator
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-validator"} == 1)
+      threshold: ">= 3"
+      window: 10m
+      critical: true
+
+    - name: affected_validator_survives
+      description: BASELINE - Slow validator eventually recovers (makes progress)
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-1-heimdall-v2-bor-validator"}[5m])
+      threshold: "> 0"
+      window: 10m
+      critical: false
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: late_votes_under_stress
+      description: Late votes should stay under 3000/min (expect high under 3s latency)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 3000"
+      window: 10m
+      critical: false
+
+    - name: duplicate_votes_manageable
+      description: Duplicate votes under 100/min (indicates sync stress)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 100"
+      window: 10m
+      critical: false
+
+    - name: block_intervals_acceptable
+      description: Block intervals under 10s (normal ~0.8s, degraded OK up to 10s)
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 10.0"
+      window: 10m
+      critical: false
+
+    - name: consensus_rounds_efficient
+      description: Minimal multi-round consensus (indicates difficulty reaching agreement)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_rounds{job=~"l2-cl-.*-validator"}[5m])) * 60
+      threshold: "< 10"
+      window: 10m
+      critical: false
+
+    - name: proposals_still_propagate
+      description: Proposals propagate to most validators (>60% receive rate)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_proposal_receive_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(cometbft_consensus_proposal_create_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "> 0.6"
+      window: 10m
+      critical: false
+
+    - name: peer_connections_stable
+      description: P2P connections remain stable (min 3 peers per validator)
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-validator"})
+      threshold: ">= 3"
+      window: 10m
+      critical: false
+
+  metrics:
+    # Basic metrics
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+
+    # Subtle degradation metrics
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_duplicate_vote
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count
+    - cometbft_consensus_rounds
+    - cometbft_consensus_proposal_create_count
+    - cometbft_consensus_proposal_receive_count
+    - cometbft_p2p_peers

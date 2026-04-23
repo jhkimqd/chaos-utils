@@ -1,0 +1,81 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: catastrophic-multi-validator-failure
+  description: 3 out of 4 validators crash simultaneously - tests minimum quorum survival
+  tags: [extreme, multi-failure, crash, quorum]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    # Crash 3 validators simultaneously (75% failure rate)
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-[123]-heimdall-v2-bor-validator"
+      alias: crashed_validators_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-[123]-bor-heimdall-v2-validator"
+      alias: crashed_validators_bor
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 3m
+
+  faults:
+    - phase: catastrophic_crash_heimdall
+      description: Crash 3 out of 4 validators (Heimdall) - extreme failure
+      target: crashed_validators_heimdall
+      type: container_restart
+      params:
+        grace_period: 0  # Hard crash
+        restart_delay: 10  # Longer delay
+        stagger: 2  # Slight stagger to simulate cascading failure
+
+    - phase: catastrophic_crash_bor
+      description: Crash 3 out of 4 validators (Bor) - extreme failure
+      target: crashed_validators_bor
+      type: container_restart
+      params:
+        grace_period: 0
+        restart_delay: 10
+        stagger: 2
+
+  success_criteria:
+    # Critical: Network must survive with 1 validator
+    - name: single_validator_maintains_network
+      description: Validator 4 alone must keep network alive
+      type: prometheus
+      query: increase(chain_head_block{job="l2-el-4-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    # Critical: All validators must eventually recover
+    - name: all_validators_recover
+      description: All 4 validators return online after crash
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-heimdall-v2-bor-validator"} == 1)
+      threshold: "== 4"
+      window: 8m
+      critical: true
+
+    # Expected: Network resumes normal operation
+    - name: consensus_fully_restored
+      description: Full consensus restored after recovery
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_consensus_validators
+    - cometbft_consensus_missing_validators
+    - up

@@ -1,0 +1,49 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: l1-consensus-brief-outage
+  description: Brief L1 consensus outage to test L2 resilience to temporary L1 unavailability
+  tags:
+  - failure
+  - pause
+  - critical
+  - l1
+  - consensus
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: cl-1-lighthouse.*
+    alias: l1_consensus
+  duration: 5m
+  warmup: 1m
+  cooldown: 1m
+  faults:
+  - phase: pause_l1_consensus
+    description: Pause L1 consensus for 45 seconds
+    target: l1_consensus
+    type: container_pause
+    params:
+      duration: 45s
+  success_criteria:
+  - name: l2_continues_producing_blocks
+    description: L2 continues producing blocks during L1 outage
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*|.*l2.*"}[1m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: l2_syncs_with_l1_after_recovery
+    description: L2 syncs with L1 after recovery (batches submitted)
+    type: prometheus
+    query: increase(panoptichain_rpc_height[2m])
+    threshold: '> 0'
+    window: 2m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up

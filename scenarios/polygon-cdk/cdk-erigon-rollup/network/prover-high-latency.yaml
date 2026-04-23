@@ -1,0 +1,96 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: prover-high-latency
+  description: Inject 800ms latency on prover communication to test proof generation delays
+  tags:
+  - network
+  - latency
+  - high
+  - prover
+  - zk
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*prover.*|zkevm-prover.*|op-succinct-proposer.*
+    alias: prover_node
+  duration: 8m
+  warmup: 1m
+  cooldown: 1m
+  faults:
+  - phase: prover_latency
+    description: Add 800ms latency to prover network communication
+    target: prover_node
+    type: network
+    params:
+      device: eth0
+      latency: 800
+      target_proto: tcp,udp
+  success_criteria:
+  - name: sequencer_unaffected
+    description: Sequencer continues producing blocks despite slow prover
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+    threshold: '> 0'
+    window: 8m
+    critical: true
+  - name: proofs_eventually_generated
+    description: Proofs are eventually generated despite latency
+    type: prometheus
+    query: increase(panoptichain_rpc_height[8m])
+    threshold: '> 0'
+    window: 8m
+    critical: false
+  - name: block_time_stable
+    description: Block time remains stable (not increasing significantly)
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: proof_generation_delayed
+    description: Proof generation times increase but complete
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]), 0.001)
+    threshold: < 600
+    window: 8m
+    critical: false
+  - name: batches_being_sequenced
+    description: New batches are being sequenced
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: batches_being_verified
+    description: Batches are being verified (proofs generated)
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_verified_batches[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_gas_used_sum
+  - up
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_finalized_height
+  - panoptichain_rpc_time_to_finalized
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count
+  - panoptichain_rpc_zkevm_total_sequenced_batches
+  - panoptichain_rpc_zkevm_total_verified_batches
+  - panoptichain_rpc_zkevm_time_since_last_aggregation

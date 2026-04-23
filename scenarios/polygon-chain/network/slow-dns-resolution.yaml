@@ -1,0 +1,126 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: slow-dns-resolution
+  description: Severe DNS resolution delays (3.5s) - tests dependency on DNS and IP caching with subtle degradation metrics
+  tags: [dns, latency, dependency, subtle-metrics]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-\\d+-heimdall-v2-bor-validator"
+      alias: all_consensus_validators
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-\\d+-bor-heimdall-v2-validator"
+      alias: all_execution_validators
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: consensus_dns_delay
+      description: 3.5-second delay on all DNS lookups for consensus layer (increased from 2s)
+      target: all_consensus_validators
+      type: dns
+      params:
+        delay_ms: 3500  # Increased from 2000ms
+        failure_rate: 0
+
+    - phase: execution_dns_delay
+      description: 3.5-second delay on all DNS lookups for execution layer (increased from 2s)
+      target: all_execution_validators
+      type: dns
+      params:
+        delay_ms: 3500  # Increased from 2000ms
+        failure_rate: 0
+
+  success_criteria:
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
+    - name: block_production_continues
+      description: CRITICAL - Block production continues via cached peer IPs
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: consensus_continues
+      description: CRITICAL - Consensus operates normally with cached peer connections
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: no_crashes_from_dns
+      description: CRITICAL - No consensus validators crash due to DNS timeouts
+      type: prometheus
+      query: up{job=~"l2-cl-.*-heimdall-v2-bor-validator"}
+      threshold: "== 1"
+      window: 8m
+      critical: true
+
+    - name: no_crashes_from_dns_execution
+      description: CRITICAL - No execution validators crash due to DNS timeouts
+      type: prometheus
+      query: up{job=~"l2-el-.*-bor-heimdall-v2-validator"}
+      threshold: "== 1"
+      window: 8m
+      critical: true
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: peer_connections_stable
+      description: P2P connections remain stable (min 3 peers despite DNS delays)
+      type: prometheus
+      query: min(cometbft_p2p_peers{job=~"l2-cl-.*-validator"})
+      threshold: ">= 3"
+      window: 8m
+      critical: false
+
+    - name: late_votes_minimal
+      description: Late votes under 1000/min (DNS delays shouldn't affect voting much)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 1000"
+      window: 8m
+      critical: false
+
+    - name: proposal_propagation_unaffected
+      description: Proposals propagate normally (>80% - cached connections work)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_proposal_receive_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(cometbft_consensus_proposal_create_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "> 0.8"
+      window: 8m
+      critical: false
+
+    - name: block_interval_normal
+      description: Block intervals under 5s (DNS caching prevents impact)
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 5.0"
+      window: 8m
+      critical: false
+
+  metrics:
+    # Basic metrics
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+
+    # Subtle degradation metrics
+    - cometbft_p2p_peers
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_proposal_receive_count
+    - cometbft_consensus_proposal_create_count
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count

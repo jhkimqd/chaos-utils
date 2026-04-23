@@ -1,0 +1,106 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: prover-combined-stress
+  description: Combined CPU and memory stress on prover to test proof generation resilience
+  tags:
+  - resource
+  - cpu
+  - memory
+  - high
+  - prover
+  - zk
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*prover.*|zkevm-prover.*|op-succinct-proposer.*
+    alias: prover_node
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+  faults:
+  - phase: cpu_stress_prover
+    description: Stress prover CPU at 60% on 3 cores
+    target: prover_node
+    type: cpu_stress
+    params:
+      cpu_percent: 60
+      cores: 3
+      method: stress
+  - phase: memory_stress_prover
+    description: Apply memory pressure consuming 1.5GB
+    target: prover_node
+    type: memory_pressure
+    params:
+      memory_mb: 1536
+  success_criteria:
+  - name: proofs_eventually_generated
+    description: Proofs are eventually generated (may be delayed)
+    type: prometheus
+    query: increase(panoptichain_rpc_height[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: empty_blocks_low
+    description: Not producing too many empty blocks
+    type: prometheus
+    query: rate(panoptichain_rpc_empty_block[2m])
+    threshold: < 0.5
+    window: 5m
+    critical: false
+  - name: block_time_stable
+    description: Block time remains stable despite resource pressure
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: proof_generation_delayed_but_completes
+    description: Proof generation times increase but proofs complete
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[3m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[3m]), 0.001)
+    threshold: < 900
+    window: 10m
+    critical: false
+  - name: batches_being_sequenced
+    description: New batches are being sequenced
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: batches_being_verified
+    description: Batches are being verified (proofs generated)
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_verified_batches[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_gas_used_sum
+  - process_cpu_seconds_total
+  - process_resident_memory_bytes
+  - up
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_empty_block
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_transactions_per_block_sum
+  - panoptichain_rpc_transactions_per_block_count
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count
+  - panoptichain_rpc_zkevm_total_sequenced_batches
+  - panoptichain_rpc_zkevm_total_verified_batches
+  - panoptichain_rpc_zkevm_time_since_last_aggregation

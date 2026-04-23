@@ -1,0 +1,54 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: agglayer-simple-restart-test
+  description: Simple test - restart agglayer and verify recovery using available metrics
+  tags: [test, restart, agglayer]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target agglayer
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "agglayer"
+      alias: agglayer_node
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 30s
+
+  # Graceful restart
+  faults:
+    - phase: restart_agglayer
+      description: Gracefully restart agglayer
+      target: agglayer_node
+      type: container_restart
+      params:
+        grace_period: 3s
+        restart_delay: 5s
+
+  success_criteria:
+    - name: agglayer_recovers
+      description: Agglayer comes back online after restart
+      type: prometheus
+      query: up{job="agglayer"}
+      threshold: "== 1"
+      window: 1m
+      critical: true
+
+    - name: l2_blocks_continue
+      description: L2 continues producing blocks
+      type: prometheus
+      query: increase(panoptichain_rpc_height[1m])
+      threshold: "> 0"
+      window: 3m
+      critical: true
+
+  metrics:
+    - up
+    - panoptichain_rpc_height
+    - process_cpu_seconds_total
+    - process_resident_memory_bytes

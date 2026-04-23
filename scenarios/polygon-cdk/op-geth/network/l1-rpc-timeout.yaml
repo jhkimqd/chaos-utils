@@ -1,0 +1,72 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: l1-rpc-timeout
+  description: Inject 2000ms latency on L1 RPC to test L2 resilience to slow L1 responses
+  tags:
+  - network
+  - latency
+  - critical
+  - l1
+  - rpc
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: el-1-geth.*|.*l1.*execution.*
+    alias: l1_execution
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: l1_rpc_timeout
+    description: Add 2 second latency to L1 RPC endpoints
+    target: l1_execution
+    type: network
+    params:
+      device: eth0
+      latency: 2000
+      target_ports: 8545,8546,8551
+      target_proto: tcp
+  success_criteria:
+  - name: l2_blocks_continue
+    description: L2 continues producing blocks despite slow L1
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*|.*l2.*"}[1m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: block_time_stable
+    description: L2 block time remains stable despite L1 slowness
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: L2 transaction processing continues normally
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: batch_submission_may_delay
+    description: Batch submissions may be delayed but should eventually succeed
+    type: prometheus
+    query: increase(panoptichain_rpc_height[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_block_interval_sum
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_time_to_finalized
+  - up
+  - panoptichain_rpc_finalized_height
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count

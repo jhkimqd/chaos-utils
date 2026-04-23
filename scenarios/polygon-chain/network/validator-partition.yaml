@@ -1,0 +1,82 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: validator-network-partition
+  description: Simulate network partition isolating a validator from the Heimdall consensus network
+  tags: [network, partition, high-severity, consensus]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  # Target a specific validator node (both consensus and execution layers)
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: victim_validator_heimdall
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-1-bor-heimdall-v2-validator"
+      alias: victim_validator_bor
+
+  # Test runs for 5 minutes
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+
+  # Network fault: 100% packet loss on Heimdall consensus ports
+  faults:
+    - phase: partition_consensus_heimdall
+      description: Block all Heimdall consensus communication (Tendermint P2P)
+      target: victim_validator_heimdall
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_ports: "26656,26657"
+        target_proto: tcp,udp
+
+    - phase: partition_execution_bor
+      description: Block all Bor execution layer communication
+      target: victim_validator_bor
+      type: network
+      params:
+        device: eth0
+        packet_loss: 100
+        target_proto: tcp,udp
+
+  # Success criteria: network should continue operating
+  success_criteria:
+    - name: other_validators_continue
+      description: Other validators (2,3,4) continue producing consensus blocks
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[2-4]-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: bor_chain_continues
+      description: Bor execution layer continues producing blocks
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    - name: only_three_validators_active
+      description: Only 3 validators actively participating (validator 1 isolated)
+      type: prometheus
+      query: count(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[1m]) > 0)
+      threshold: "== 3"
+      window: 5m
+      critical: false
+
+  # Metrics to collect
+  metrics:
+    - cometbft_consensus_height
+    - chain_head_block
+    - cometbft_consensus_validators
+    - chain_checkpoint_latest

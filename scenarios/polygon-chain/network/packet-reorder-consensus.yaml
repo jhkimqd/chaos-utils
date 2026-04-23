@@ -1,0 +1,118 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: packet-reorder-consensus
+  description: Extreme packet reordering (85%) on consensus - tests BFT resilience with subtle degradation metrics
+  tags: [network, packet-reorder, consensus, subtle-metrics]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-1-heimdall-v2-bor-validator"
+      alias: validator1_consensus
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: consensus_packet_reorder
+      description: Extreme packet reordering (85%) to stress BFT tolerance
+      target: validator1_consensus
+      type: network
+      params:
+        device: eth0
+        latency: 150        # 150ms base delay (increased from 100ms)
+        reorder: 85         # 85% packet reordering (increased from 75%)
+        reorder_correlation: 20  # 20% correlation (more chaos)
+        target_ports: "26656,26657"
+        target_proto: tcp
+
+  success_criteria:
+    # ========== CRITICAL BASELINE (Must Pass) ==========
+
+    - name: all_validators_produce_blocks
+      description: CRITICAL - All validators continue producing blocks
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: consensus_survives_reordering
+      description: CRITICAL - Consensus progresses despite packet chaos
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: quorum_maintained
+      description: CRITICAL - At least 3/4 validators remain active
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-validator"} == 1)
+      threshold: ">= 3"
+      window: 10m
+      critical: true
+
+    # ========== SUBTLE DEGRADATION METRICS (Detect Stress) ==========
+
+    - name: duplicate_votes_from_reordering
+      description: Duplicate votes under 150/min (packet reorder causes resends)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_duplicate_vote{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 150"
+      window: 10m
+      critical: false
+
+    - name: late_votes_from_disorder
+      description: Late votes under 2500/min (packets arriving out of order)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_late_votes{job=~"l2-cl-.*-validator"}[2m])) * 60
+      threshold: "< 2500"
+      window: 10m
+      critical: false
+
+    - name: consensus_round_duration
+      description: Consensus rounds under 5s (packet reorder adds delay)
+      type: prometheus
+      query: rate(cometbft_consensus_round_duration_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_round_duration_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 5.0"
+      window: 10m
+      critical: false
+
+    - name: proposal_propagation_degraded
+      description: Proposals still propagate (>50% despite packet chaos)
+      type: prometheus
+      query: sum(rate(cometbft_consensus_proposal_receive_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) / clamp_min(sum(rate(cometbft_consensus_proposal_create_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])), 0.001)
+      threshold: "> 0.5"
+      window: 10m
+      critical: false
+
+    - name: block_interval_impact
+      description: Block intervals under 12s (packet reorder slows production)
+      type: prometheus
+      query: rate(cometbft_consensus_block_interval_seconds_sum{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]) / clamp_min(rate(cometbft_consensus_block_interval_seconds_count{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m]), 0.001)
+      threshold: "< 12.0"
+      window: 10m
+      critical: false
+
+  metrics:
+    # Basic metrics
+    - chain_head_block
+    - cometbft_consensus_height
+    - up
+
+    # Subtle degradation metrics
+    - cometbft_consensus_duplicate_vote
+    - cometbft_consensus_late_votes
+    - cometbft_consensus_round_duration_seconds_sum
+    - cometbft_consensus_round_duration_seconds_count
+    - cometbft_consensus_proposal_create_count
+    - cometbft_consensus_proposal_receive_count
+    - cometbft_consensus_block_interval_seconds_sum
+    - cometbft_consensus_block_interval_seconds_count

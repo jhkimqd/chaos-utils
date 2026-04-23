@@ -1,0 +1,98 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: op-batcher-network-degradation
+  description: Network degradation on OP Stack batcher to test batch submission resilience
+  tags:
+  - network
+  - latency
+  - packet-loss
+  - critical
+  - op-stack
+  - batcher
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: op-batcher.*
+    alias: op_batcher
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: batcher_network_degradation
+    description: Inject 300ms latency and 10% packet loss on batcher
+    target: op_batcher
+    type: network
+    params:
+      device: eth0
+      latency: 300
+      packet_loss: 10
+      target_proto: tcp,udp
+  success_criteria:
+  - name: sequencer_continues_operating
+    description: OP sequencer continues producing blocks
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~"op-el-1.*"}[1m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: batches_eventually_submitted
+    description: Batches are eventually submitted despite network issues
+    type: prometheus
+    query: increase(panoptichain_rpc_height[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: true
+  - name: block_time_stable
+    description: Block time remains stable (not increasing significantly)
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / rate(panoptichain_rpc_block_interval_count[2m])
+    threshold: < 5.0
+    window: 5m
+    critical: false
+  - name: transaction_throughput_maintained
+    description: Transaction processing rate doesn't drop significantly
+    type: prometheus
+    query: rate(panoptichain_rpc_gas_used_count[1m])
+    threshold: '> 0.1'
+    window: 5m
+    critical: false
+  - name: batcher_submission_delays
+    description: Batch submission times increase but remain under threshold
+    type: prometheus
+    query: rate(panoptichain_rpc_block_interval_sum[2m]) / clamp_min(rate(panoptichain_rpc_block_interval_count[2m]), 0.001)
+    threshold: < 10.0
+    window: 5m
+    critical: false
+  - name: proofs_being_generated
+    description: ZK proofs are being generated
+    type: prometheus
+    query: increase(succinct_highest_proven_contiguous_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: l2_finalization_continues
+    description: L2 blocks continue to be finalized with ZK proofs
+    type: prometheus
+    query: increase(succinct_l2_finalized_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_block_interval_sum
+  - up
+  - panoptichain_rpc_block_interval_count
+  - panoptichain_rpc_gas_used_count
+  - panoptichain_rpc_finalized_height
+  - panoptichain_rpc_time_to_finalized
+  - panoptichain_rpc_time_to_mine_sum
+  - panoptichain_rpc_time_to_mine_count
+  - succinct_l2_finalized_block
+  - succinct_highest_proven_contiguous_block
+  - succinct_current_proving_proofs
+  - succinct_agg_proof_request_error_count

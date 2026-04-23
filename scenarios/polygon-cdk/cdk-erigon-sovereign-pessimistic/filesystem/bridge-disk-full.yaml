@@ -1,0 +1,76 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: bridge-disk-full
+  description: Simulate disk space exhaustion on bridge service to test storage resilience
+  tags:
+  - resource
+  - disk
+  - critical
+  - bridge
+  - storage
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*bridge.*|zkevm-bridge-service
+    alias: bridge_node
+  duration: 5m
+  warmup: 30s
+  cooldown: 30s
+  faults:
+  - phase: disk_full_bridge
+    description: Fill disk space to simulate storage exhaustion
+    target: bridge_node
+    type: disk_fill
+    params:
+      size_mb: 1024
+      path: /tmp
+  success_criteria:
+  - name: bridge_handles_disk_pressure
+    description: Bridge handles disk pressure gracefully
+    type: prometheus
+    query: up{job=~".*bridge.*"}
+    threshold: == 1
+    window: 5m
+    critical: true
+  - name: critical_operations_continue
+    description: Critical bridge operations continue (may degrade)
+    type: prometheus
+    query: increase(panoptichain_rpc_bridge_deposit_count[2m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: error_rate_acceptable
+    description: Bridge error rate remains under threshold
+    type: prometheus
+    query: rate(up[1m])
+    threshold: < 10
+    window: 5m
+    critical: false
+  - name: bridge_events_recent
+    description: Bridge events are recent (< 5 minutes old)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_bridge_event
+    threshold: < 300
+    window: 5m
+    critical: false
+  - name: global_exit_root_synchronized
+    description: L1-L2 coordination continues (global exit root updates)
+    type: prometheus
+    query: panoptichain_rpc_time_since_last_global_exit_root
+    threshold: < 180
+    window: 5m
+    critical: false
+  metrics:
+  - panoptichain_rpc_bridge_deposit_count
+  - panoptichain_rpc_bridge_event_deposit_count
+  - up
+  - panoptichain_rpc_time_since_last_bridge_event
+  - panoptichain_rpc_bridge_event_amount_sum
+  - panoptichain_rpc_bridge_event_amount_count
+  - panoptichain_rpc_time_since_last_global_exit_root
+  - panoptichain_rpc_global_exit_roots

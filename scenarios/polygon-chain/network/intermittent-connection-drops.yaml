@@ -1,0 +1,79 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: intermittent-connection-drops
+  description: Random connection drops using iptables - simulates firewall flakiness or network instability
+  tags: [network, connection-drop, iptables, high-priority]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-2-heimdall-v2-bor-validator"
+      alias: validator2_consensus
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-2-bor-heimdall-v2-validator"
+      alias: validator2_execution
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: consensus_connection_drops
+      description: 10% probability of dropping new TCP connections on consensus ports
+      target: validator2_consensus
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "26656,26657"
+        target_proto: tcp
+        probability: 0.10
+        stateful: true
+
+    - phase: execution_connection_drops
+      description: 10% probability of dropping new connections on execution P2P
+      target: validator2_execution
+      type: connection_drop
+      params:
+        rule_type: drop
+        target_ports: "30303,30304"
+        target_proto: tcp,udp
+        probability: 0.10
+
+  success_criteria:
+    - name: network_survives_connection_drops
+      description: Other validators continue producing blocks
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[134]-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: affected_validator_participates
+      description: Affected validator continues consensus participation despite drops
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-2-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: quorum_maintained
+      description: At least 3/4 validators always reachable
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-validator"} == 1)
+      threshold: ">= 3"
+      window: 10m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - p2p_peers
+    - up

@@ -1,0 +1,102 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: slow-response-validator
+  description: Validator with slow response times - models CPU/resource exhaustion as latency
+  tags: [latency, degradation, performance]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: slow_validator_consensus
+
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-3-bor-heimdall-v2-validator"
+      alias: slow_validator_execution
+
+  duration: 10m
+  warmup: 2m
+  cooldown: 2m
+
+  # Progressive latency injection to simulate CPU exhaustion
+  faults:
+    # Phase 1: Moderate latency (simulates moderate CPU contention)
+    - phase: moderate_response_delay_consensus
+      description: 200ms latency on all consensus traffic (simulates CPU contention)
+      target: slow_validator_consensus
+      type: network
+      params:
+        device: eth0
+        latency: 200
+        target_proto: tcp,udp
+      duration: 5m
+
+    - phase: moderate_response_delay_execution
+      description: 200ms latency on all execution traffic
+      target: slow_validator_execution
+      type: network
+      params:
+        device: eth0
+        latency: 200
+        target_proto: tcp,udp
+      duration: 5m
+
+    # Phase 2: Severe latency (simulates severe resource exhaustion)
+    - phase: severe_response_delay_consensus
+      description: 500ms latency (simulates severe CPU exhaustion)
+      target: slow_validator_consensus
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        target_proto: tcp,udp
+      duration: 5m
+      delay: 5m
+
+    - phase: severe_response_delay_execution
+      description: 500ms latency (simulates severe resource exhaustion)
+      target: slow_validator_execution
+      type: network
+      params:
+        device: eth0
+        latency: 500
+        target_proto: tcp,udp
+      duration: 5m
+      delay: 5m
+
+  success_criteria:
+    - name: network_survives_slow_validator
+      description: Other validators maintain normal block production
+      type: prometheus
+      query: increase(chain_head_block{job=~"l2-el-[124]-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: consensus_survives_degradation
+      description: Consensus continues with healthy validators
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[124]-heimdall-v2-bor-validator"}[1m])
+      threshold: "> 0"
+      window: 10m
+      critical: true
+
+    - name: quorum_maintained
+      description: At least 3/4 validators remain responsive
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-validator"} == 1)
+      threshold: ">= 3"
+      window: 10m
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up

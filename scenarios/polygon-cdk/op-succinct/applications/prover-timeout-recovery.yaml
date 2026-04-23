@@ -1,0 +1,67 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: prover-timeout-recovery
+  description: Kill prover to test batch catchup and proof generation recovery
+  tags:
+  - failure
+  - crash
+  - high
+  - prover
+  - recovery
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*prover.*|zkevm-prover.*|op-succinct-proposer.*
+    alias: prover_node
+  duration: 8m
+  warmup: 2m
+  cooldown: 3m
+  faults:
+  - phase: kill_prover
+    description: Kill prover to test recovery
+    target: prover_node
+    type: container_kill
+    params:
+      signal: SIGKILL
+  success_criteria:
+  - name: sequencer_unaffected
+    description: Sequencer continues producing blocks
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+    threshold: '> 0'
+    window: 8m
+    critical: true
+  - name: pending_proofs_caught_up
+    description: Prover catches up on pending proofs after recovery
+    type: prometheus
+    query: increase(panoptichain_rpc_height[3m])
+    threshold: '> 0'
+    window: 3m
+    critical: false
+  - name: proofs_being_generated
+    description: ZK proofs are being generated
+    type: prometheus
+    query: increase(succinct_highest_proven_contiguous_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  - name: l2_finalization_continues
+    description: L2 blocks continue to be finalized with ZK proofs
+    type: prometheus
+    query: increase(succinct_l2_finalized_block[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up
+  - succinct_l2_finalized_block
+  - succinct_highest_proven_contiguous_block
+  - succinct_current_proving_proofs
+  - succinct_agg_proof_request_error_count

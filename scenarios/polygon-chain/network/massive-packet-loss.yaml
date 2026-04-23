@@ -1,0 +1,56 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: massive-packet-loss
+  description: Extreme packet loss (75%) on consensus - tests retransmission limits
+  tags: [network, packet-loss, consensus, extreme]
+  author: DevTools
+  version: "0.0.1"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-3-heimdall-v2-bor-validator"
+      alias: lossy_validator
+
+  duration: 8m
+  warmup: 2m
+  cooldown: 2m
+
+  faults:
+    - phase: massive_loss
+      description: 75% packet loss - extreme network degradation
+      target: lossy_validator
+      type: network
+      params:
+        device: eth0
+        packet_loss: 75.0    # 75% packet loss!
+        target_ports: "26656,26657"
+        target_proto: tcp,udp
+
+  success_criteria:
+    - name: other_validators_unaffected
+      description: Other validators (1,2,4) continue normally
+      type: prometheus
+      query: increase(cometbft_consensus_height{job=~"l2-cl-[124]-.*-validator"}[1m])
+      threshold: "> 0"
+      window: 8m
+      critical: true
+
+    - name: quorum_survives
+      description: Network maintains 3/4 quorum
+      type: prometheus
+      query: count(up{job=~"l2-cl-.*-validator"} == 1)
+      threshold: ">= 3"
+      window: 8m
+      critical: true
+
+    - name: lossy_validator_may_fall_behind
+      description: Validator with 75% loss may struggle (non-critical)
+      type: prometheus
+      query: up{job="l2-cl-3-heimdall-v2-bor-validator"}
+      threshold: "== 1"
+      window: 8m
+      critical: false

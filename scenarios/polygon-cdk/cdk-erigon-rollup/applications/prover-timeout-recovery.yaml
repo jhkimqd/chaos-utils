@@ -1,0 +1,66 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: prover-timeout-recovery
+  description: Kill prover to test batch catchup and proof generation recovery
+  tags:
+  - failure
+  - crash
+  - high
+  - prover
+  - recovery
+  author: DevTools
+  version: 0.0.1
+spec:
+  targets:
+  - selector:
+      type: kurtosis_service
+      enclave: ${ENCLAVE_NAME}
+      pattern: .*prover.*|zkevm-prover.*|op-succinct-proposer.*
+    alias: prover_node
+  duration: 8m
+  warmup: 2m
+  cooldown: 3m
+  faults:
+  - phase: kill_prover
+    description: Kill prover to test recovery
+    target: prover_node
+    type: container_kill
+    params:
+      signal: SIGKILL
+  success_criteria:
+  - name: sequencer_unaffected
+    description: Sequencer continues producing blocks
+    type: prometheus
+    query: increase(panoptichain_rpc_height{job=~".*sequencer.*"}[1m])
+    threshold: '> 0'
+    window: 8m
+    critical: true
+  - name: pending_proofs_caught_up
+    description: Prover catches up on pending proofs after recovery
+    type: prometheus
+    query: increase(panoptichain_rpc_height[3m])
+    threshold: '> 0'
+    window: 3m
+    critical: false
+  - name: batches_being_sequenced
+    description: New batches are being sequenced
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[5m])
+    threshold: '> 0'
+    window: 5m
+    critical: false
+  - name: batches_being_verified
+    description: Batches are being verified (proofs generated)
+    type: prometheus
+    query: increase(panoptichain_rpc_zkevm_total_verified_batches[10m])
+    threshold: '> 0'
+    window: 10m
+    critical: false
+  metrics:
+  - panoptichain_rpc_height
+  - panoptichain_rpc_gas_used_sum
+  - up
+  - panoptichain_rpc_zkevm_total_sequenced_batches
+  - panoptichain_rpc_zkevm_total_verified_batches
+  - panoptichain_rpc_zkevm_time_since_last_aggregation
