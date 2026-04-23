@@ -442,8 +442,6 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 
     // Reverse-iterate the injectedFaults slice so stacked tc qdiscs /
     // iptables rules come off in the opposite order they went on.
-    // Earlier bug (F-02): injectedFaults was a map keyed on containerID,
-    // which silently dropped all but the last fault on shared containers.
     for i := len(o.injectedFaults) - 1; i >= 0; i-- {
         f := o.injectedFaults[i]
         err := o.injector.RemoveFault(ctx, f.FaultType, f.ContainerID)

@@ -194,7 +194,7 @@
 
 # ─── Group A: Heimdall REST (port 1317) ──────────────────────────────────────
 
-# A1. Replace checkpoint root_hash with a fixed invalid base64 value.
+# Replace checkpoint root_hash with a fixed invalid base64 value.
 # Bor verifies checkpoint root hashes against its merkle root; mismatch causes
 # the validator to reject or delay the checkpoint.
 - name: checkpoint_wrong_hash
@@ -204,7 +204,7 @@
       field: result.root_hash
       value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-# A2. Clear selected_producers in span responses — no producers means Bor
+# Clear selected_producers in span responses — no producers means Bor
 # cannot assign block authors for the sprint window.
 - name: span_empty_producers
   path_pattern: "/bor/spans/"
@@ -213,7 +213,7 @@
       field: result.selected_producers
       value: []
 
-# A3. Replace bor_chain_id — Bor rejects spans whose chain id doesn't match
+# Replace bor_chain_id — Bor rejects spans whose chain id doesn't match
 # and stops making progress until a valid span arrives.
 - name: span_wrong_chain_id
   path_pattern: "/bor/spans/"
@@ -222,7 +222,7 @@
       field: result.bor_chain_id
       value: "99999"
 
-# A4. Return an empty event_records array from the state-sync clerk endpoint.
+# Return an empty event_records array from the state-sync clerk endpoint.
 # Silently dropped events cause validators to diverge on state DB roots.
 - name: state_sync_truncate
   path_pattern: "/clerk/time"
@@ -231,7 +231,7 @@
       field: result.event_records
       value: 0
 
-# A5. Replace start_block / end_block with zero to simulate a stale milestone
+# Replace start_block / end_block with zero to simulate a stale milestone
 # arriving late. Bor enforces monotonic milestone ordering.
 - name: milestone_stale
   path_pattern: "/milestones/"
@@ -243,7 +243,7 @@
       field: result.end_block
       value: "0"
 
-# A6. base64 bit-flip on a signature field. Demonstrates corrupt_base64.
+# base64 bit-flip on a signature field. Demonstrates corrupt_base64.
 # Use when the corrupted value must still be valid base64 but decode to
 # different bytes (signature verification failure, not parse failure).
 - name: checkpoint_signature_bitflip
@@ -255,7 +255,7 @@
 
 # ─── Group B: Bor JSON-RPC (port 8545) ──────────────────────────────────────
 
-# B1. Return a stale block number to eth_blockNumber. Heimdall uses this to
+# Return a stale block number to eth_blockNumber. Heimdall uses this to
 # decide which blocks to include in milestone proposals.
 - name: bor_stale_height
   path_pattern: "/"
@@ -265,7 +265,7 @@
       field: result
       value: "0x1"
 
-# B2. Zero-address miner — Heimdall's GenMilestoneProposition validates block
+# Zero-address miner — Heimdall's GenMilestoneProposition validates block
 # authors against the validator set; zero address → rejection.
 - name: bor_wrong_author
   path_pattern: "/"
@@ -275,7 +275,7 @@
       field: result.miner
       value: "0x0000000000000000000000000000000000000000"
 
-# B3. Corrupt block hashes for BOTH header and block fetches — differing
+# Corrupt block hashes for BOTH header and block fetches — differing
 # hashes prevent consensus on milestone propositions.
 - name: bor_wrong_block_hash
   path_pattern: "/"
@@ -285,7 +285,7 @@
       field: result.hash
       value: "0x0000000000000000000000000000000000000000000000000000000000000000"
 
-# B4. inject_error on bor_getAuthor — Heimdall's vote-extension generator
+# inject_error on bor_getAuthor — Heimdall's vote-extension generator
 # returns an incomplete proposal (nil MilestoneProposition).
 - name: bor_author_error
   path_pattern: "/"
@@ -293,7 +293,7 @@
   operations:
     - type: inject_error
 
-# B5. Diverge totalDifficulty — GetMajorityMilestoneProposition fails to
+# Diverge totalDifficulty — GetMajorityMilestoneProposition fails to
 # aggregate 2/3+ voting power → "insufficient voting power" path.
 - name: bor_divergent_td
   path_pattern: "/"
@@ -306,7 +306,7 @@
 
 # ─── Group C: Stateful / intermittent corruption ─────────────────────────────
 
-# C1. Let the first 2 requests through, then corrupt every 3rd.
+# Let the first 2 requests through, then corrupt every 3rd.
 # Intermittent corruption is often harder to detect than constant corruption.
 - name: checkpoint_hash_every_3
   path_pattern: "/checkpoints/"
@@ -318,7 +318,7 @@
     skip_first: 2
     corrupt_every_n: 3
 
-# C2. One-shot fault injection — corrupt exactly once, then pass everything
+# One-shot fault injection — corrupt exactly once, then pass everything
 # through. Useful for testing recovery behaviour after a single bad frame.
 - name: span_producers_once
   path_pattern: "/bor/spans/"
@@ -332,7 +332,7 @@
 
 # ─── Group D: Oversized payloads (buffer-overflow class) ─────────────────────
 
-# D1. 5-entry producer set, trivially expandable to 5000 by generating the
+# 5-entry producer set, trivially expandable to 5000 by generating the
 # YAML programmatically. Tests O(n) vs O(n²) behaviour and bounded allocation.
 - name: oversized_producers
   path_pattern: "/bor/spans/"
@@ -356,7 +356,7 @@
           address: "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
           voting_power: 10000
 
-# D2. Max uint64 block number — tests arithmetic overflow in block-range math.
+# Max uint64 block number — tests arithmetic overflow in block-range math.
 - name: integer_overflow_blocks
   path_pattern: "/"
   method_match: "^eth_blockNumber$"
@@ -365,7 +365,7 @@
       field: result
       value: "0xffffffffffffffff"
 
-# D3. Malformed payload via empty-array substitution on a clerk response.
+# Malformed payload via empty-array substitution on a clerk response.
 # Tests robustness of downstream decoders that expect non-empty records.
 - name: malformed_hex
   path_pattern: "/clerk/time"
@@ -377,7 +377,7 @@
 
 # ─── Group E: Probabilistic corruption ───────────────────────────────────────
 
-# E1. Corrupt ~10% of checkpoint responses. Useful for soak tests where you
+# Corrupt ~10% of checkpoint responses. Useful for soak tests where you
 # want steady-state low-rate corruption rather than a deterministic pattern.
 - name: checkpoint_flaky_10pct
   path_pattern: "/checkpoints/"
@@ -387,7 +387,7 @@
       field: result.root_hash
       value: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-# E2. Stateful + probabilistic: skip warm-up, then 25% of every-other request.
+# Stateful + probabilistic: skip warm-up, then 25% of every-other request.
 # Both gates compose — stateful runs first, probability runs after.
 - name: span_slow_burn
   path_pattern: "/bor/spans/"
@@ -403,7 +403,7 @@
 
 # ─── Group F: Composite (multi-op) rules ─────────────────────────────────────
 
-# F1. Atomic multi-field corruption — a single rule applying several set_field
+# Atomic multi-field corruption — a single rule applying several set_field
 # ops to produce a coherent "wrong" span (empty producers + wrong chain id).
 # Prefer this over two separate rules, since first-match-wins means only one
 # would ever fire per request otherwise.
@@ -417,7 +417,7 @@
       field: result.bor_chain_id
       value: "99999"
 
-# F2. Delete-then-set idiom — explicit reset of a field before reassignment.
+# Delete-then-set idiom — explicit reset of a field before reassignment.
 # Useful when the original value is a complex object and you want to guarantee
 # no leftover keys survive the mutation.
 - name: span_reset_producers

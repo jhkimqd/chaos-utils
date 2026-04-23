@@ -143,7 +143,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F1 fix: widen to 3m and use max() — cluster-wide recovery signal.
     - name: block_sync_resumes
       description: Recovered Bor nodes resume block sync — graceful shutdown preserved DB state
       type: prometheus
@@ -152,7 +151,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F1 fix: widen to 3m and use max() — recovery signal.
     - name: heimdall_consensus_rejoined
       description: Heimdall validators rejoin consensus after graceful restart
       type: prometheus
@@ -171,7 +169,6 @@ spec:
       critical: true
       post_fault_only: true
 
-    # F2 fix: widen to 3m, keep min() — every non-faulted validator must produce.
     - name: healthy_validators_unaffected
       description: Non-faulted validators maintain block production
       type: prometheus

@@ -66,7 +66,6 @@ spec:
       delay: 30s
 
   success_criteria:
-    # F2 fix: widen to 3m, keep min() — every unaffected validator must produce.
     - name: bor_block_production_unaffected
       description: "Bor validators 2 and 5 (unaffected) continue producing blocks"
       type: prometheus
@@ -74,7 +73,6 @@ spec:
       threshold: "> 0"
       critical: true
 
-    # F1 fix: widen to 3m and use max() — cluster-wide recovery signal.
     - name: restarted_validators_recover
       description: "Bor validators 1 and 3 resume block production after Heimdall restarts"
       type: prometheus
@@ -108,13 +106,11 @@ spec:
       absence: true
       critical: true
 
-    # Removed: heimdall_websocket_reconnects (F-15)
+    # Note: a heimdall_websocket_reconnects log criterion is not usable here.
     # The WS-reconnect log emits from Bor containers (bor→heimdall subscription),
     # but the log scanner only watches fault-target containers. In this scenario
-    # only Heimdall is a fault target, so Bor logs are never scanned and the
-    # criterion was structurally unsatisfiable (always FAILED, non-critical).
-    # Re-add if/when the scanner is extended to non-fault-target containers
-    # (that would be a monitor-auditor lane change, not a scenario-YAML one).
+    # only Heimdall is a fault target, so Bor logs are never scanned.
+    # Add one if/when the scanner is extended to non-fault-target containers.
 
   metrics:
     - chain_head_block

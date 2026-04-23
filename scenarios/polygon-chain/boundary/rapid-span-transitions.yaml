@@ -50,7 +50,6 @@ spec:
     - name: all_validators_producing
       description: "All validators produce blocks through 4+ span transitions"
       type: prometheus
-      # F2: widen inner window [1m]→[3m] — avoids cold-start tail flake; every validator must produce.
       query: min(rate(chain_head_block{job=~"l2-el-[123]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true

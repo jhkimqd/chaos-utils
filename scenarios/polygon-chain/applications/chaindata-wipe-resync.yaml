@@ -121,7 +121,6 @@ spec:
         Other 7 validators maintain block production — resync load from
         wiped node doesn't degrade healthy peers
       type: prometheus
-      # F2 fix: widen to 3m, keep min() — every unaffected validator must produce.
       query: min(rate(chain_head_block{job=~"l2-el-[123578]-bor-heimdall-v2-validator"}[3m]))
       threshold: "> 0"
       critical: true
