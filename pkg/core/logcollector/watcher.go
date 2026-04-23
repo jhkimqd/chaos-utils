@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (w *Watcher) watch(ctx context.Context, target WatchTarget, since time.Time
 
 	// Docker multiplexes stdout/stderr with an 8-byte header per frame.
 	// Pipe through stdcopy into a single reader we can scan line-by-line.
-	pr, pw := syncPipe()
+	pr, pw := io.Pipe()
 	go func() {
 		_, _ = stdcopy.StdCopy(pw, pw, reader)
 		pw.Close()

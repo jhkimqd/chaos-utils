@@ -10,9 +10,10 @@ import (
 )
 
 // IODelayParams defines parameters for disk I/O delay injection.
-// Only Method="dd" (default) is implemented; Method="dm-delay" is parsed so
-// scenarios using it fail loudly via ValidateIODelayParams rather than silently
-// falling through to dd.
+// Only Method="dd" (default) is implemented. A previous "dm-delay" mode was
+// removed because the mount swap that would route real I/O through the mapper
+// device is not possible from inside the sidecar container; ValidateIODelayParams
+// rejects "dm-delay" so scenarios still referencing it fail loudly.
 type IODelayParams struct {
 	// IOLatencyMs controls contention intensity via dd worker-count scaling
 	// (<100ms=1 worker, 100-199=2, 200+=3), not precise per-I/O latency.
@@ -26,8 +27,7 @@ type IODelayParams struct {
 	Operation string
 
 	// Method selects the injection approach. Only "dd" (the default) and ""
-	// are accepted. Passing "dm-delay" results in a validation error; see
-	// dm_delay.go for why that mode is unsupported in this framework.
+	// are accepted.
 	Method string
 }
 
@@ -39,7 +39,6 @@ type DockerClient interface {
 // IODelayWrapper wraps disk I/O delay injection
 type IODelayWrapper struct {
 	dockerClient DockerClient
-	dmDelay      *DmDelayWrapper
 
 	// injectedPaths tracks the TargetPath supplied at InjectIODelay time so
 	// RemoveFault can scrub the correct directory even when the orchestrator
@@ -52,7 +51,6 @@ type IODelayWrapper struct {
 func New(dockerClient DockerClient) *IODelayWrapper {
 	return &IODelayWrapper{
 		dockerClient:  dockerClient,
-		dmDelay:       NewDmDelayWrapper(dockerClient),
 		injectedPaths: make(map[string]string),
 	}
 }
@@ -73,12 +71,8 @@ func workerCount(ioLatencyMs int) int {
 // saturate the I/O queue. Each worker shell's PID is written to a pidfile; the
 // verification step reads that pidfile and checks `kill -0` on every PID, so
 // the result is deterministic rather than pattern-matched against /proc.
-// The "dm-delay" method is intentionally rejected — see dm_delay.go for details.
+// Method="dm-delay" is rejected upstream by ValidateIODelayParams.
 func (iw *IODelayWrapper) InjectIODelay(ctx context.Context, targetContainerID string, params IODelayParams) error {
-	if params.Method == "dm-delay" {
-		return iw.dmDelay.InjectDmDelay(ctx, targetContainerID, params)
-	}
-
 	fmt.Printf("Injecting I/O contention on target %s\n", targetContainerID[:12])
 
 	targetPath := params.TargetPath
@@ -303,6 +297,14 @@ func parseAliveTotal(out string) (alive, total int, err error) {
 	}
 	return alive, total, nil
 }
+
+// ErrDmDelayUnsupported is returned when a scenario requests the legacy
+// method="dm-delay" mode. The mapper device could be created, but nothing
+// swaps the filesystem mount onto it, so no observable latency would be
+// applied; the supported mode is method="dd" (or unset).
+var ErrDmDelayUnsupported = fmt.Errorf(
+	"disk_io method=\"dm-delay\" is not supported; use method=\"dd\" instead",
+)
 
 // ValidateIODelayParams validates I/O delay parameters
 func ValidateIODelayParams(params IODelayParams) error {
