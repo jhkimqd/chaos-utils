@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -91,6 +92,8 @@ func (fd *FailureDetector) EvaluateOnce(ctx context.Context, criterion scenario.
 		return fd.evaluateLog(ctx, criterion, result)
 	case "state_root_consensus":
 		return fd.evaluateStateRootConsensus(ctx, criterion, result)
+	case "command":
+		return fd.evaluateCommand(ctx, criterion, result)
 	default:
 		result.Passed = false
 		result.Message = fmt.Sprintf("unsupported criterion type: %s", criterion.Type)
@@ -127,6 +130,9 @@ func (fd *FailureDetector) Evaluate(ctx context.Context, criterion scenario.Succ
 
 	case "state_root_consensus":
 		return fd.evaluateStateRootConsensus(ctx, criterion, result)
+
+	case "command":
+		return fd.evaluateCommand(ctx, criterion, result)
 
 	default:
 		result.Passed = false
@@ -695,6 +701,88 @@ func (fd *FailureDetector) evaluateStateRootConsensus(ctx context.Context, crite
 
 	result.Passed = true
 	result.Message = fmt.Sprintf("all %d nodes agree on stateRoot %s at block %d", len(nodes), reference, commonBlock)
+	return result, nil
+}
+
+// evaluateCommand runs an external executable and decides pass/fail from its
+// exit code (and optionally a regex match against combined stdout+stderr).
+// The criterion is the seam by which OMSX (and any other consumer with custom
+// validation logic) plugs domain-specific checks into chaos-utils without the
+// runner needing to know how they work.
+func (fd *FailureDetector) evaluateCommand(ctx context.Context, criterion scenario.SuccessCriterion, result *CriterionResult) (*CriterionResult, error) {
+	if len(criterion.Exec) == 0 {
+		result.Passed = false
+		result.Message = "command criterion missing 'exec' (argv list)"
+		result.Failures++
+		return result, fmt.Errorf("command criterion missing exec")
+	}
+
+	timeout := criterion.CommandTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, criterion.Exec[0], criterion.Exec[1:]...)
+	if criterion.WorkingDir != "" {
+		cmd.Dir = criterion.WorkingDir
+	}
+
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+
+	runErr := cmd.Run()
+	output := combined.String()
+	// Truncate the message to keep reports readable.
+	const maxMessageOutput = 2048
+	displayedOutput := output
+	if len(displayedOutput) > maxMessageOutput {
+		displayedOutput = displayedOutput[:maxMessageOutput] + "...[truncated]"
+	}
+
+	if execCtx.Err() == context.DeadlineExceeded {
+		result.Passed = false
+		result.Message = fmt.Sprintf("command timed out after %s: %s", timeout, displayedOutput)
+		result.Failures++
+		return result, nil
+	}
+
+	if runErr != nil {
+		exitCode := -1
+		if ee, ok := runErr.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		}
+		result.Passed = false
+		result.Message = fmt.Sprintf("command exited %d: %s", exitCode, displayedOutput)
+		result.Failures++
+		return result, nil
+	}
+
+	if criterion.ExpectStdout != "" {
+		re, err := regexp.Compile(criterion.ExpectStdout)
+		if err != nil {
+			result.Passed = false
+			result.Message = fmt.Sprintf("invalid expect_stdout regex %q: %v", criterion.ExpectStdout, err)
+			result.Failures++
+			return result, fmt.Errorf("invalid expect_stdout regex: %w", err)
+		}
+		if !re.MatchString(output) {
+			result.Passed = false
+			result.Message = fmt.Sprintf("command exited 0 but stdout/stderr did not match %q: %s", criterion.ExpectStdout, displayedOutput)
+			result.Failures++
+			return result, nil
+		}
+	}
+
+	result.Passed = true
+	if displayedOutput != "" {
+		result.Message = fmt.Sprintf("command exited 0: %s", strings.TrimSpace(displayedOutput))
+	} else {
+		result.Message = "command exited 0 with no output"
+	}
 	return result, nil
 }
 

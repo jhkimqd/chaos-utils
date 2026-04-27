@@ -351,11 +351,18 @@ func (v *Validator) validateSuccessCriteria(s *scenario.Scenario) {
 		case "state_root_consensus":
 			// no required fields; uses ContainerPattern with a default
 
+		case "command":
+			if len(criterion.Exec) == 0 {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].exec is required for command type (argv list)", i))
+			} else if criterion.Exec[0] == "" {
+				v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].exec[0] (binary) cannot be empty", i))
+			}
+
 		case "health_check":
 			v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d]: health_check criterion type has been removed; use type: prometheus or type: log", i))
 
 		default:
-			v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].type '%s' is invalid (must be prometheus, log, or state_root_consensus)", i, criterion.Type))
+			v.Errors = append(v.Errors, fmt.Sprintf("spec.success_criteria[%d].type '%s' is invalid (must be prometheus, log, state_root_consensus, or command)", i, criterion.Type))
 		}
 	}
 }

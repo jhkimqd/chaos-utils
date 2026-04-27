@@ -22,6 +22,36 @@ type Metadata struct {
 	Version     string   `yaml:"version,omitempty"`
 }
 
+// HasKurtosisTarget reports whether the scenario uses any kurtosis_service
+// selectors. Used by the runner to decide whether Polygon-specific glue
+// (Kurtosis enclave validation, Heimdall API auto-discovery) needs to fire.
+func (s *Scenario) HasKurtosisTarget() bool {
+	if s == nil {
+		return false
+	}
+	for _, t := range s.Spec.Targets {
+		if t.Selector.Type == "kurtosis_service" {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsPrometheus reports whether the scenario declares any prometheus-typed
+// success criteria. The runner uses this to skip Prometheus auto-discovery
+// for scenarios that evaluate purely via logs or `command` criteria.
+func (s *Scenario) NeedsPrometheus() bool {
+	if s == nil {
+		return false
+	}
+	for _, c := range s.Spec.SuccessCriteria {
+		if c.Type == "prometheus" {
+			return true
+		}
+	}
+	return false
+}
+
 // ScenarioSpec defines the scenario specification
 type ScenarioSpec struct {
 	// Targets define which services to target
@@ -139,7 +169,7 @@ type SuccessCriterion struct {
 	// Description of what this checks
 	Description string `yaml:"description,omitempty"`
 
-	// Type: prometheus, log, state_root_consensus
+	// Type: prometheus, log, state_root_consensus, command
 	Type string `yaml:"type"`
 
 	// Query for Prometheus-based criteria
@@ -184,6 +214,24 @@ type SuccessCriterion struct {
 	// Absence inverts the check: pass if the pattern is NOT found.
 	// Default false = pass if pattern IS found.
 	Absence bool `yaml:"absence,omitempty"`
+
+	// --- Command-based criteria fields (type: "command") ---
+
+	// Exec is the argv to execute. The first element is the binary; remaining
+	// elements are arguments passed verbatim (no shell expansion). For shell
+	// expansion, use ["sh", "-c", "..."] explicitly.
+	Exec []string `yaml:"exec,omitempty"`
+
+	// WorkingDir is the working directory for the command. Defaults to the
+	// chaos-runner's cwd if empty.
+	WorkingDir string `yaml:"working_dir,omitempty"`
+
+	// CommandTimeout caps the command's runtime. Defaults to 30s if 0.
+	CommandTimeout time.Duration `yaml:"command_timeout,omitempty"`
+
+	// ExpectStdout, if set, is a regex applied to combined stdout+stderr.
+	// The criterion passes only if the command exits 0 AND the regex matches.
+	ExpectStdout string `yaml:"expect_stdout,omitempty"`
 }
 
 // NetworkFaultParams defines parameters for network faults

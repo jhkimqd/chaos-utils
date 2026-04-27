@@ -65,17 +65,6 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 		cfg.Kurtosis.EnclaveName = enclaveName
 	}
 
-	// Auto-discover Prometheus if not explicitly configured via env var
-	if os.Getenv("PROMETHEUS_URL") == "" {
-		fmt.Println("Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
-		if endpoint, err := config.DiscoverPrometheusEndpoint(cfg.Kurtosis.EnclaveName); err == nil {
-			cfg.Prometheus.URL = endpoint
-			fmt.Printf("Discovered Prometheus endpoint: %s\n", endpoint)
-		} else {
-			return NewInfraError("Prometheus is required but not reachable: auto-discovery failed: %w", err)
-		}
-	}
-
 	// Initialize logger
 	logLevel := reporting.LogLevelInfo
 	if verbose {
@@ -124,6 +113,29 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 
 	logger.Info("Scenario validated successfully", "name", scenario.Metadata.Name)
 
+	// Polygon-specific glue (Kurtosis enclave validation, Prometheus
+	// auto-discovery, Heimdall API discovery) only fires for scenarios that
+	// actually need it. Generic docker-compose scenarios (e.g. OMSX) skip
+	// the entire branch and don't need PROMETHEUS_URL set.
+	hasKurtosisTarget := scenario.HasKurtosisTarget()
+	needsPrometheus := scenario.NeedsPrometheus()
+
+	if hasKurtosisTarget && cfg.Kurtosis.EnclaveName == "" {
+		return NewInfraError("scenario uses kurtosis_service selectors but kurtosis.enclave_name is empty (set in config.yaml or via --enclave)")
+	}
+
+	// Auto-discover Prometheus only when the scenario declares Prometheus
+	// success criteria. Log-only and command-only scenarios skip this path.
+	if needsPrometheus && os.Getenv("PROMETHEUS_URL") == "" {
+		fmt.Println("Prometheus URL not configured, attempting auto-discovery from Kurtosis...")
+		if endpoint, err := config.DiscoverPrometheusEndpoint(cfg.Kurtosis.EnclaveName); err == nil {
+			cfg.Prometheus.URL = endpoint
+			fmt.Printf("Discovered Prometheus endpoint: %s\n", endpoint)
+		} else {
+			return NewInfraError("Prometheus is required but not reachable: auto-discovery failed: %w", err)
+		}
+	}
+
 	// Dry run - exit after validation
 	if dryRun {
 		fmt.Println("✅ Scenario is valid (dry-run mode)")
@@ -137,13 +149,17 @@ func runChaosTest(cmd *cobra.Command, args []string) error {
 		return NewInfraError("failed to create orchestrator: %w", err)
 	}
 
-	// Auto-discover Heimdall API endpoint from Kurtosis
-	fmt.Println("Attempting Heimdall API auto-discovery from Kurtosis...")
-	if heimdallURL, discoverErr := config.DiscoverHeimdallEndpoint(cfg.Kurtosis.EnclaveName); discoverErr == nil {
-		fmt.Printf("Discovered Heimdall API endpoint: %s\n", heimdallURL)
-		orch.SetHeimdallAPI(heimdallURL)
-	} else {
-		fmt.Printf("Heimdall API auto-discovery failed (exclude_producer won't work): %v\n", discoverErr)
+	// Auto-discover Heimdall API only when a Kurtosis target is present —
+	// exclude_producer is meaningless without one and the warning-on-failure
+	// is just noise on non-Polygon runs.
+	if hasKurtosisTarget {
+		fmt.Println("Attempting Heimdall API auto-discovery from Kurtosis...")
+		if heimdallURL, discoverErr := config.DiscoverHeimdallEndpoint(cfg.Kurtosis.EnclaveName); discoverErr == nil {
+			fmt.Printf("Discovered Heimdall API endpoint: %s\n", heimdallURL)
+			orch.SetHeimdallAPI(heimdallURL)
+		} else {
+			fmt.Printf("Heimdall API auto-discovery failed (exclude_producer won't work): %v\n", discoverErr)
+		}
 	}
 
 	// Create progress reporter
