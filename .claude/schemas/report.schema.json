@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0xPolygon/chaos-utils/.claude/schemas/report.schema.json",
+  "title": "ChaosTestReport",
+  "description": "Advisory JSON Schema for chaos-utils JSON test reports written under reports/. Hand-translated from pkg/reporting/types.go::TestReport (and pkg/core/cleanup.CleanupSummary / AuditEntry). The Go encoder remains canonical.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "test_id",
+    "scenario_name",
+    "start_time",
+    "end_time",
+    "duration",
+    "status",
+    "success",
+    "targets",
+    "faults",
+    "fault_installs",
+    "cleanup_summary"
+  ],
+  "properties": {
+    "test_id": { "type": "string", "minLength": 1 },
+    "scenario_name": { "type": "string", "minLength": 1 },
+    "start_time": { "type": "string", "format": "date-time" },
+    "end_time": { "type": "string", "format": "date-time" },
+    "duration": {
+      "type": "string",
+      "description": "Go time.Duration string, e.g. '3m45.794s'."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "completed", "failed", "stopped"]
+    },
+    "success": { "type": "boolean" },
+    "message": { "type": "string" },
+    "targets": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/TargetInfo" }
+    },
+    "faults": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/FaultInfo" },
+      "description": "Go encodes a nil slice as null; the schema accepts both."
+    },
+    "fault_installs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total (container, faultType) installs executed during INJECT."
+    },
+    "success_criteria": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CriterionResult" }
+    },
+    "cleanup_summary": { "$ref": "#/$defs/CleanupSummary" },
+    "cleanup_log": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/AuditEntry" }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "TargetInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "service_name", "container_id"],
+      "properties": {
+        "alias": { "type": "string" },
+        "service_name": { "type": "string" },
+        "container_id": { "type": "string" },
+        "ip": { "type": "string" }
+      }
+    },
+    "FaultInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "type", "target", "start_time"],
+      "properties": {
+        "phase": { "type": "string" },
+        "type": { "type": "string" },
+        "target": { "type": "string" },
+        "description": { "type": "string" },
+        "start_time": { "type": "string", "format": "date-time" },
+        "end_time": { "type": "string", "format": "date-time" },
+        "duration": { "type": "string" },
+        "parameters": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "CriterionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "passed", "message", "critical", "eval_time"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["prometheus", "log", "state_root_consensus", "command"]
+        },
+        "query": { "type": "string" },
+        "pattern": { "type": "string" },
+        "threshold": { "type": "string" },
+        "passed": { "type": "boolean" },
+        "value": { "type": "number" },
+        "message": { "type": "string" },
+        "critical": { "type": "boolean" },
+        "eval_time": { "type": "string", "format": "date-time" }
+      }
+    },
+    "CleanupSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "pkg/core/cleanup.CleanupSummary has no JSON tags, so Go encodes the field names verbatim (capitalized).",
+      "required": ["TotalActions", "Succeeded", "Failed"],
+      "properties": {
+        "TotalActions": { "type": "integer", "minimum": 0 },
+        "Succeeded": { "type": "integer", "minimum": 0 },
+        "Failed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "AuditEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "pkg/core/cleanup.AuditEntry has no JSON tags; Go encodes field names verbatim.",
+      "properties": {
+        "Timestamp": { "type": "string", "format": "date-time" },
+        "Action": { "type": "string" },
+        "Target": { "type": "string" },
+        "Success": { "type": "boolean" },
+        "Error": {},
+        "Details": { "type": "string" }
+      }
+    }
+  }
+}

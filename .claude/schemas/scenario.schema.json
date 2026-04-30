@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0xPolygon/chaos-utils/.claude/schemas/scenario.schema.json",
+  "title": "ChaosScenario",
+  "description": "Advisory JSON Schema for chaos-utils scenario YAML. Hand-translated from pkg/scenario/types.go and pkg/scenario/validator/validator.go. The Go validator remains canonical; this schema is opt-in tightening to catch typos that the Go YAML decoder would silently ignore.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "enum": ["chaos.polygon.io/v1", "chaos/v1"],
+      "description": "Supported API versions, per validator.go::validateAPIVersion."
+    },
+    "kind": {
+      "type": "string",
+      "const": "ChaosScenario"
+    },
+    "metadata": { "$ref": "#/$defs/Metadata" },
+    "spec": { "$ref": "#/$defs/Spec" }
+  },
+  "$defs": {
+    "Metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "DNS-like: lowercase alphanumeric with hyphens (validator.go::validateMetadata)."
+        },
+        "description": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "author": { "type": "string" },
+        "version": { "type": "string" },
+        "references": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Free-form citations; not a Go-typed field (silently ignored), kept here because real scenarios use it."
+        }
+      }
+    },
+    "Duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$",
+      "description": "Go time.ParseDuration string, e.g. '5m', '30s', '1h30m'."
+    },
+    "Spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration", "targets", "faults"],
+      "properties": {
+        "duration": { "$ref": "#/$defs/Duration" },
+        "warmup": { "$ref": "#/$defs/Duration" },
+        "cooldown": { "$ref": "#/$defs/Duration" },
+        "execution_mode": {
+          "type": "string",
+          "enum": ["sequential", "parallel"],
+          "default": "sequential"
+        },
+        "preconditions": { "$ref": "#/$defs/Preconditions" },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Target" },
+          "description": "Target aliases must be unique (validator.go::validateTargets). JSON Schema cannot express uniqueness on a sub-property; the Go validator enforces it."
+        },
+        "faults": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/Fault" }
+        },
+        "success_criteria": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SuccessCriterion" }
+        },
+        "metrics": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_validators": { "type": "integer", "minimum": 0 },
+        "validator_pattern": { "type": "string" }
+      }
+    },
+    "Target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "selector"],
+      "properties": {
+        "alias": { "type": "string", "minLength": 1 },
+        "count": { "type": "integer", "minimum": 0 },
+        "selector": { "$ref": "#/$defs/TargetSelector" }
+      }
+    },
+    "TargetSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["kurtosis_service", "docker_container"]
+        },
+        "enclave": { "type": "string" },
+        "pattern": { "type": "string" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "container_id": { "type": "string" },
+        "service_name": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "kurtosis_service" } }, "required": ["type"] },
+          "then": {
+            "anyOf": [
+              { "required": ["pattern"], "properties": { "pattern": { "type": "string", "minLength": 1 } } },
+              { "required": ["service_name"], "properties": { "service_name": { "type": "string", "minLength": 1 } } }
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "docker_container" } }, "required": ["type"] },
+          "then": {
+            "anyOf": [
+              { "required": ["pattern"], "properties": { "pattern": { "type": "string", "minLength": 1 } } },
+              { "required": ["container_id"], "properties": { "container_id": { "type": "string", "minLength": 1 } } },
+              { "required": ["labels"], "properties": { "labels": { "type": "object", "minProperties": 1 } } }
+            ]
+          }
+        }
+      ]
+    },
+    "FaultType": {
+      "type": "string",
+      "description": "Registered fault types — pkg/scenario/validator/validator.go::validateFaultType. Unknown values are downgraded to a warning by the Go validator; this schema treats them as errors.",
+      "enum": [
+        "network",
+        "cpu", "cpu_stress",
+        "memory", "memory_stress", "memory_pressure",
+        "container_restart", "container_kill", "container_pause",
+        "connection_drop",
+        "dns",
+        "process_kill",
+        "disk_io", "disk_fill", "file_delete", "file_corrupt",
+        "clock_skew",
+        "http_fault", "corruption_proxy", "p2p_attack",
+        "disk", "process", "custom"
+      ]
+    },
+    "Fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target", "params"],
+      "properties": {
+        "phase": { "type": "string" },
+        "description": { "type": "string" },
+        "target": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/FaultType" },
+        "params": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Free-form fault-specific params. Unknown keys are silently ignored by the Go parser; the README's 'Fault parameters' table is the user-facing source of truth."
+        },
+        "duration": { "$ref": "#/$defs/Duration" },
+        "delay": { "$ref": "#/$defs/Duration" },
+        "exclude_producer": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "network" } }, "required": ["type"] },
+          "then": {
+            "properties": {
+              "params": { "$ref": "#/$defs/NetworkFaultParams" }
+            }
+          }
+        }
+      ]
+    },
+    "NetworkFaultParams": {
+      "type": "object",
+      "description": "Type-specific shape for fault.params when fault.type == 'network'. Mirrors pkg/scenario/types.go::NetworkFaultParams plus validator bounds. Unknown keys are accepted because the Go parser ignores them; known keys are bounds-checked.",
+      "additionalProperties": true,
+      "properties": {
+        "device": { "type": "string" },
+        "latency": { "type": "integer", "minimum": 0, "description": "Milliseconds. Validator rejects negative." },
+        "packet_loss": {
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 100 },
+            { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?%$", "description": "Accepted form: '50%'." }
+          ]
+        },
+        "bandwidth": { "type": "integer", "minimum": 0, "description": "kbit/s. Validator rejects negative." },
+        "target_ports": { "type": "string", "description": "Comma-separated port list, e.g. '30303,26656'." },
+        "target_proto": {
+          "type": "string",
+          "pattern": "^(tcp|udp|both)(\\s*,\\s*(tcp|udp|both))*$",
+          "description": "Comma-separated protocol list, e.g. 'tcp', 'udp', 'tcp,udp', 'both'. Parsed by pkg/injection/l3l4/tc_wrapper.go::parseProtos."
+        }
+      }
+    },
+    "SuccessCriterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["prometheus", "log", "state_root_consensus", "command"]
+        },
+        "query": { "type": "string" },
+        "threshold": {
+          "type": "string",
+          "pattern": "^\\s*(==|!=|<=|>=|<|>)\\s*-?[0-9]+(\\.[0-9]+)?\\s*$",
+          "description": "String comparator, e.g. '> 0', '<= 100', '== 0'."
+        },
+        "window": { "$ref": "#/$defs/Duration" },
+        "critical": { "type": "boolean" },
+        "post_fault_only": { "type": "boolean" },
+        "during_fault": { "type": "boolean" },
+        "pattern": { "type": "string" },
+        "target_log": { "type": "string" },
+        "container_pattern": { "type": "string" },
+        "absence": { "type": "boolean" },
+        "exec": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "argv list. First element (binary) must be non-empty per validator.go::validateSuccessCriteria; we apply minLength to all items, which is stricter than Go but cheap."
+        },
+        "working_dir": { "type": "string" },
+        "command_timeout": { "$ref": "#/$defs/Duration" },
+        "expect_stdout": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "prometheus" } }, "required": ["type"] },
+          "then": { "required": ["query", "threshold"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "log" } }, "required": ["type"] },
+          "then": { "required": ["pattern"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "command" } }, "required": ["type"] },
+          "then": { "required": ["exec"] }
+        }
+      ]
+    }
+  }
+}
