@@ -1,0 +1,76 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: example-latency-injection
+  description: >
+    Example scaffold produced by the author-scenario skill.
+
+    Hypothesis: under 200ms of injected latency on validator 4's Heimdall
+    P2P port, the remaining seven validators continue producing blocks
+    and Heimdall consensus continues advancing. After the latency clears,
+    validator 4 rejoins consensus without forking.
+
+    This is a steady-state -> fault -> recovery template. Replace the
+    target index, fault params, and PromQL with your own and run
+    `chaos-runner run --dry-run` before committing.
+  tags: [example, network, latency]
+  author: author-scenario-skill
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-4-heimdall-v2-bor-validator"
+      alias: heimdall_4
+
+  duration: 4m
+  warmup: 30s
+  cooldown: 3m
+
+  preconditions:
+    min_validators: 4
+
+  faults:
+    - phase: latency_on_heimdall_4
+      description: "Inject 200ms latency on Heimdall 4 CometBFT P2P"
+      target: heimdall_4
+      type: network
+      params:
+        latency: 200
+        target_ports: "26656"
+        target_proto: tcp
+
+  success_criteria:
+    # Steady state: healthy validators (excluding v4) keep producing.
+    - name: healthy_validators_continue
+      description: 7/8 validators maintain block production during latency
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[3m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: heimdall_consensus_continues
+      description: Heimdall consensus advances on the healthy set
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[1235678]-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    # Recovery: after teardown v4 catches up. v4 is excluded from
+    # convergence checks per CLAUDE.md hard invariant.
+    - name: chain_head_converges
+      description: Healthy validators stay within a small block-height window after recovery
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+      threshold: "< 50"
+      critical: true
+      post_fault_only: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - cometbft_p2p_peers
