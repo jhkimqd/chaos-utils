@@ -47,10 +47,20 @@ func init() {
 
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(listScenariosCmd)
+	rootCmd.AddCommand(validateCmd)
+	rootCmd.AddCommand(explainCmd)
+	rootCmd.AddCommand(listProbesCmd)
+	rootCmd.AddCommand(listFaultsCmd)
 }
 
 // Commands are defined in separate files:
 // - runCmd in run.go
+// - listScenariosCmd in list_scenarios.go
+// - validateCmd in validate.go
+// - explainCmd in explain.go
+// - listProbesCmd in list_probes.go
+// - listFaultsCmd in list_faults.go
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
