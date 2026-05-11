@@ -104,7 +104,7 @@ chaos-utils/
 │   ├── discovery/                 Kurtosis & Docker service discovery
 │   ├── injection/                 Fault injectors
 │   │   ├── container/             restart, kill, pause
-│   │   ├── disk/                  disk_io, disk_fill, file_delete, file_corrupt
+│   │   ├── disk/                  disk_io, disk_throttle, disk_fill, file_delete, file_corrupt
 │   │   ├── dns/                   DNS delay / failure
 │   │   ├── firewall/              connection_drop
 │   │   ├── http/                  http_fault (Envoy)
@@ -236,6 +236,7 @@ Dispatch: `pkg/injection/injector.go::InjectFault`.
 | `cpu_stress` (alias `cpu`)                        | `pkg/injection/stress/`         | stress-ng              |
 | `memory_stress` (aliases `memory`, `memory_pressure`) | `pkg/injection/stress/`     | stress-ng              |
 | `disk_io`, `disk_fill`, `file_delete`, `file_corrupt` | `pkg/injection/disk/`       | dd / truncate / rm     |
+| `disk_throttle`                                    | `pkg/injection/disk/`           | Docker API (blkio cgroup) |
 | `clock_skew`                                       | `pkg/injection/time/`           | libfaketime / date     |
 | `http_fault`                                       | `pkg/injection/http/`           | Envoy                  |
 | `corruption_proxy`                                 | `pkg/injection/http/corruption/`| corruption-proxy       |
@@ -339,6 +340,34 @@ duplicate must be set (validated in `pkg/injection/l3l4/tc_params.go`).
 | `operation`     | string  | `all`   | `read`, `write`, or `all`.                                             |
 | `method`        | string  | —       | Injector-specific variant (see `pkg/injection/disk/`).                 |
 
+#### `disk_throttle` — blkio cgroup bandwidth/IOPS cap
+
+Applies a Docker `ContainerUpdate` that sets `BlkioDevice*` lists on the
+target's host whole-disk device. At least one of the four caps must be
+> 0 (else the fault is rejected). One of `target_path` or `device` is
+required to identify the device. The throttle is restored to its pre-fault
+state at teardown.
+
+| Param         | Type   | Default | Notes                                                                                                          |
+| ------------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `target_path` | string | —       | Container path whose backing host device to throttle (auto-resolved via bind mount → mountinfo → whole-disk).  |
+| `device`      | string | —       | Explicit host block device (e.g. `/dev/sda`). Overrides `target_path` auto-detection.                          |
+| `read_bps`    | int    | 0       | Read bandwidth cap, **bytes/sec** (e.g. `5242880` for 5 MiB/s).                                                |
+| `write_bps`   | int    | 0       | Write bandwidth cap, **bytes/sec**.                                                                            |
+| `read_iops`   | int    | 0       | Read IOPS cap, ops/sec.                                                                                        |
+| `write_iops`  | int    | 0       | Write IOPS cap, ops/sec.                                                                                       |
+
+**Buffered writes are not throttled until `fsync`/`fdatasync`/`O_DIRECT`.**
+Bor and Heimdall both fdatasync on commit so the cap is observable there,
+but a workload doing async writes through the page cache will see no
+effect at the configured rate. Use `disk_io` instead if you need to model
+pure write-amplification rather than device bandwidth.
+
+**Throttle applies to the whole device, not per-process.** A `read_bps`
+cap on `/dev/sda` is shared by every container on that disk, so on a
+multi-tenant Docker host the throttle's effect bleeds across siblings.
+In Kurtosis devnets that is usually fine; on shared CI runners it is not.
+
 #### `disk_fill`
 
 | Param           | Type    | Default | Notes                                            |
@@ -411,9 +440,9 @@ find scenarios/polygon-cdk   -name '*.yaml' | sort
 | ----------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `network/`        | L3/L4 faults: partition, latency, packet loss, reorder, throttle.      | `single-node-isolation`, `three-validator-full-isolation`, `bor-p2p-bandwidth-throttle`, `progressive-partition-expansion`, `two-phase-partition-escalation` |
 | `applications/`   | Container lifecycle, crash, restart, OOM, operator mistakes.           | `simultaneous-validator-restart`, `rolling-restart`, `sigkill-mid-write`, `oom-kill-recovery`, `heimdall-restart-bor-running`, `bor-restart-heimdall-running` |
-| `disk/`           | Disk space / metadata corruption.                                      | `disk-fill-exhaustion`, `pebbledb-metadata-corruption-minor`, `pebbledb-metadata-corruption-severe` |
+| `disk/`           | Disk space, metadata corruption, blkio bandwidth/IOPS caps.            | `disk-fill-exhaustion`, `pebbledb-metadata-corruption-minor`, `pebbledb-metadata-corruption-severe`, `throttle-bor-write-bps`, `throttle-heimdall-read-iops` |
 | `semantic/`       | `corruption_proxy` app-level HTTP corruption.                          | `checkpoint-hash-corruption`, `span-empty-producers`, `span-wrong-chain-id`, `state-sync-truncation`, `bor-rpc-stale-height`, `ve-*` |
-| `compound/`       | Multi-fault composites.                                                | `disk-io-plus-network-latency`, `kill-during-disk-io-delay`, `heimdall-grpc-blackhole-bor-split`, `three-phase-nemesis`, `shifting-fault-combinations` |
+| `compound/`       | Multi-fault composites.                                                | `disk-io-plus-network-latency`, `kill-during-disk-io-delay`, `heimdall-grpc-blackhole-bor-split`, `three-phase-nemesis`, `shifting-fault-combinations`, `throttle-plus-network-latency` |
 | `boundary/`       | Sprint / span / epoch boundary edge cases.                             | `span-boundary-partition`, `rapid-span-transitions`, `fork-at-sprint-span-collision`, `validator-exit-during-checkpoint` |
 
 ### Polygon CDK categories

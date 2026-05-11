@@ -1,0 +1,95 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: throttle-bor-write-bps
+  description: >
+    Cap Bor's chaindata write bandwidth via the blkio cgroup. The kernel
+    throttles writes hitting the disk after fdatasync, so block commits
+    (which fdatasync) feel the cap while page-cache writeback is unaffected.
+    Tests whether Bor degrades gracefully when sustained write throughput
+    on the chaindata device is below normal headroom — does block production
+    continue at reduced speed, or does the node stall on writes? Recovery
+    is observed after teardown restores the original blkio config.
+  tags: [disk, throttle, bandwidth, bor]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-el-6-bor-heimdall-v2-validator"
+      alias: bor_6
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    - phase: throttle_write_bps
+      description: "Cap chaindata write bandwidth to 5 MiB/s"
+      target: bor_6
+      type: disk_throttle
+      params:
+        target_path: "/var/lib/bor/bor/chaindata"
+        write_bps: 5242880   # 5 MiB/s
+
+  success_criteria:
+    # Critical: healthy validators must keep producing throughout.
+    - name: healthy_validators_continue
+      description: Healthy validator set produces blocks during and after the throttle
+      type: prometheus
+      query: min(rate(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"}[3m]))
+      threshold: "> 0"
+      critical: true
+
+    - name: consensus_continues
+      description: Heimdall consensus advances
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-.*-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    # Observe the fault landed: throttled validator's sync rate drops below
+    # healthy baseline while the cap is active.
+    - name: throttled_validator_sync_degraded
+      description: Throttled Bor's sync rate is observably slower than healthy peers under the cap
+      type: prometheus
+      query: avg(rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[2m])) / clamp_min(avg(rate(chain_head_block{job=~"l2-el-[12358]-bor-heimdall-v2-validator"}[2m])), 0.001)
+      threshold: "< 0.95"
+      critical: false
+      during_fault: true
+      post_fault_only: false
+
+    # Observe recovery: post-teardown the throttled validator catches back up.
+    - name: throttled_validator_recovers
+      description: Throttled Bor resumes normal block sync after the cap is removed
+      type: prometheus
+      query: rate(chain_head_block{job="l2-el-6-bor-heimdall-v2-validator"}[1m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: chain_head_converges
+      description: Throttled validator catches up after teardown — head delta bounded
+      type: prometheus
+      query: >
+        max(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+        - min(chain_head_block{job=~"l2-el-[1235678]-bor-heimdall-v2-validator"})
+      threshold: "< 200"
+      critical: true
+      post_fault_only: true
+
+    - name: no_panic_under_throttle
+      description: No panic logged while writes are capped
+      type: log
+      pattern: "panic"
+      container_pattern: "l2-el-6-bor-heimdall-v2-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - chain_head_block
+    - cometbft_consensus_height
+    - up

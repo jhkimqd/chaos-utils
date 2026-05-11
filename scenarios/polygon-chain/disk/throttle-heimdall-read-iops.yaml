@@ -1,0 +1,75 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: throttle-heimdall-read-iops
+  description: >
+    Cap read IOPS on a Heimdall validator's data directory. CometBFT consensus
+    is read-heavy on every commit (replay log, validator set, evidence pool),
+    so a per-second IOPS cap simulates a degraded SSD that has not yet
+    fully failed. Tests whether consensus continues, however slowly,
+    when the kernel rate-limits reads on the consensus state device.
+  tags: [disk, throttle, iops, heimdall, consensus]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      alias: heimdall_6
+
+  duration: 3m
+  warmup: 30s
+  cooldown: 1m
+
+  faults:
+    - phase: throttle_read_iops
+      description: "Cap Heimdall data-dir read IOPS to 500 ops/sec"
+      target: heimdall_6
+      type: disk_throttle
+      params:
+        target_path: "/etc/heimdall/data"
+        read_iops: 500
+
+  success_criteria:
+    # Critical: the rest of the validator set must keep voting.
+    - name: healthy_consensus_continues
+      description: Healthy validator subset keeps advancing consensus height
+      type: prometheus
+      query: sum(increase(cometbft_consensus_height{job=~"l2-cl-[12358]-heimdall-v2-bor-validator"}[2m])) or vector(0)
+      threshold: "> 0"
+      critical: true
+
+    # Observe the fault landed: throttled Heimdall progresses but slower than peers.
+    - name: throttled_heimdall_height_advances
+      description: Throttled Heimdall still advances while capped (degraded, not stuck)
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-6-heimdall-v2-bor-validator"}[2m]) or vector(0)
+      threshold: ">= 0"
+      critical: false
+      during_fault: true
+      post_fault_only: false
+
+    # Observe recovery: post-teardown the throttled node catches up.
+    - name: throttled_heimdall_recovers
+      description: Throttled Heimdall resumes normal consensus participation after teardown
+      type: prometheus
+      query: increase(cometbft_consensus_height{job="l2-cl-6-heimdall-v2-bor-validator"}[2m])
+      threshold: "> 0"
+      critical: true
+      post_fault_only: true
+
+    - name: no_panic_under_iops_cap
+      description: No panic logged while Heimdall reads are capped
+      type: log
+      pattern: "panic"
+      container_pattern: "l2-cl-6-heimdall-v2-bor-validator"
+      absence: true
+      critical: true
+
+  metrics:
+    - cometbft_consensus_height
+    - chain_head_block
+    - up

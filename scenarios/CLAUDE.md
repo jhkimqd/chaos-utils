@@ -116,6 +116,22 @@ rules either inline via `rules_yaml:` or with a separate rule file.
 - `target_path` must exist in the container. Default Polygon paths:
   `/var/lib/bor/bor/chaindata`, `/heimdall-home/data`.
 
+### `disk_throttle`
+- Cgroup-honest blkio bandwidth / IOPS cap (Docker `ContainerUpdate`),
+  not in-container dd contention. Use it when you want a steady,
+  measurable rate limit rather than oversubscribed I/O queues.
+- Specify rates in **bytes/sec** (or ops/sec) — include the friendly
+  multiplier in a comment: `write_bps: 5242880  # 5 MiB/s`.
+- Buffered writes only feel the cap after `fsync`/`fdatasync`/`O_DIRECT`.
+  Bor and Heimdall fdatasync on commit so the throttle is observable;
+  workloads that go through page-cache writeback won't.
+- The cap is per whole-disk device, not per container — siblings on the
+  same `/dev/sda` will also feel it. Fine for Kurtosis devnets, not for
+  shared CI runners.
+- Don't compose `disk_throttle` with `disk_io` on the same target unless
+  you really mean to — the dd contention will fight the cap and produce
+  hard-to-interpret degradation.
+
 ### `container_*`
 - `stagger: 0` restarts all targets simultaneously — common for
   "all validators restart" scenarios.
