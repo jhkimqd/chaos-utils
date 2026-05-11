@@ -416,6 +416,122 @@ Verify that the network maintains consensus despite a complete network split, an
 
 ---
 
+## 8. Disk Throttle — Bor write_bps (throttle-bor-write-bps.yaml)
+
+### Test Objective
+Validate that capping write bandwidth on a Bor validator's chaindata
+device via the blkio cgroup degrades sync rate gracefully — block
+production continues at reduced speed and recovers cleanly when the cap
+is released.
+
+### Fault Injection Phase (3 minutes)
+
+**What happens**:
+- `disk_throttle` calls Docker `ContainerUpdate` with `BlkioDeviceWriteBps`
+  for the resolved whole-disk device backing `/var/lib/bor/bor/chaindata`.
+- Writes hitting the disk after fdatasync are rate-limited to 5 MiB/s.
+- Page-cache writeback that has not yet been fsynced is NOT throttled.
+
+**Expected metrics during fault**:
+
+| Metric                                                      | Expected     | Explanation                                                  |
+| ----------------------------------------------------------- | ------------ | ------------------------------------------------------------ |
+| `min(rate(chain_head_block{healthy-set}[3m]))`              | **> 0**      | Other validators are not affected by the per-container cap.   |
+| `rate(chain_head_block{job="l2-el-6-..."}[2m])` / healthy   | **< 0.95**   | Throttled validator visibly trails healthy peers.            |
+| `panic` (logs)                                              | **absent**   | No crashes induced by write rate limit.                      |
+
+### Recovery Phase (1m cooldown)
+
+**What happens**:
+- Teardown calls `ContainerUpdate` with the snapshotted (empty) blkio
+  lists. The throttle is removed.
+- Bor catches up to the chain head.
+
+**Expected metrics post-fault**:
+
+| Metric                                                                                       | Expected     |
+| -------------------------------------------------------------------------------------------- | ------------ |
+| `rate(chain_head_block{job="l2-el-6-..."}[1m])`                                              | **> 0**      |
+| `max(chain_head_block{healthy-set}) - min(chain_head_block{healthy-set})`                    | **< 200**    |
+
+### Failure Indicators
+- ❌ Throttled validator stops producing blocks entirely (cap too tight or
+  cgroup-v1 silently rejected — investigate post-update verify log).
+- ❌ Validator panics under sustained write pressure.
+- ❌ Head delta stays high (> 200) after teardown — validator cannot
+  catch up, suggesting throttle leaked or PebbleDB needs manual recovery.
+
+---
+
+## 9. Disk Throttle — Heimdall read_iops (throttle-heimdall-read-iops.yaml)
+
+### Test Objective
+Validate that capping read IOPS on a Heimdall consensus node's data
+directory degrades consensus participation gracefully — the node falls
+behind but does not crash, and rejoins quorum after the cap is released.
+
+### Fault Injection Phase (3 minutes)
+
+**What happens**:
+- `disk_throttle` caps the host device backing `/etc/heimdall/data` at
+  500 read ops/sec via `BlkioDeviceReadIOps`.
+- CometBFT's per-commit replay reads (WAL, validator set, evidence pool)
+  hit the cap.
+
+**Expected metrics during fault**:
+
+| Metric                                                                                   | Expected   |
+| ---------------------------------------------------------------------------------------- | ---------- |
+| `sum(increase(cometbft_consensus_height{healthy-set}[2m]))`                              | **> 0**    |
+| `increase(cometbft_consensus_height{job="l2-cl-6-..."}[2m])`                             | **>= 0**   |
+| `panic` (logs)                                                                           | **absent** |
+
+### Recovery Phase (1m cooldown)
+
+**Expected metrics post-fault**:
+
+| Metric                                                          | Expected |
+| --------------------------------------------------------------- | -------- |
+| `increase(cometbft_consensus_height{job="l2-cl-6-..."}[2m])`    | **> 0**  |
+
+### Failure Indicators
+- ❌ Throttled Heimdall is jailed for missing votes (cap too tight).
+- ❌ Consensus halts because the throttled node is the proposer and
+  cannot replay its WAL.
+
+---
+
+## 10. Compound — disk_throttle + network latency (throttle-plus-network-latency.yaml)
+
+### Test Objective
+Stack a blkio write cap with P2P latency on the same validator to test
+multiplicative degradation — neither alone would trip span rotation, but
+the combination may push block-import wall-time over the threshold.
+
+### Fault Injection Phase (3 minutes)
+
+**What happens**:
+- 2 s P2P latency on Bor RLPx (`30303`).
+- `BlkioDeviceWriteBps` cap at 8 MiB/s on the chaindata device.
+
+**Expected metrics**:
+
+| Metric                                                       | Expected      |
+| ------------------------------------------------------------ | ------------- |
+| `min(rate(chain_head_block{healthy-set}[3m]))`               | **> 0**       |
+| Target validator sync ratio vs healthy peers                  | **< 0.9**     |
+| `Span rotated due to ...` log                                | **absent**    |
+
+### Recovery Phase
+- Both faults are removed at teardown; target catches up; no span rotation.
+
+### Failure Indicators
+- ❌ Span rotation fires (compound fault crossed the threshold —
+  worth investigating Bor's chainmu lock hold time).
+- ❌ Target cannot catch up post-teardown.
+
+---
+
 ## General Patterns Across All Scenarios
 
 ### Healthy System Behaviors

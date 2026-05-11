@@ -12,12 +12,12 @@ import (
 	"github.com/jihwankim/chaos-utils/pkg/injection/disk"
 	"github.com/jihwankim/chaos-utils/pkg/injection/dns"
 	"github.com/jihwankim/chaos-utils/pkg/injection/firewall"
+	chaoshttp "github.com/jihwankim/chaos-utils/pkg/injection/http"
 	"github.com/jihwankim/chaos-utils/pkg/injection/l3l4"
 	chaosp2p "github.com/jihwankim/chaos-utils/pkg/injection/p2p/bor"
 	"github.com/jihwankim/chaos-utils/pkg/injection/process"
 	"github.com/jihwankim/chaos-utils/pkg/injection/sidecar"
 	"github.com/jihwankim/chaos-utils/pkg/injection/stress"
-	chaoshttp "github.com/jihwankim/chaos-utils/pkg/injection/http"
 	chaostime "github.com/jihwankim/chaos-utils/pkg/injection/time"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
 	"github.com/rs/zerolog/log"
@@ -40,6 +40,7 @@ type Injector struct {
 	diskInjector     *disk.IODelayWrapper
 	diskFillInjector *disk.FillWrapper
 	fileOpsInjector  *disk.FileOpsWrapper
+	throttleInjector *disk.ThrottleWrapper
 	clockInjector    *chaostime.ClockSkewWrapper
 	httpInjector     *chaoshttp.HTTPFaultWrapper
 	sidecarMgr       *sidecar.Manager
@@ -58,6 +59,7 @@ func New(sidecarMgr *sidecar.Manager, dockerClient *docker.Client) *Injector {
 		diskInjector:     disk.New(dockerClient),
 		diskFillInjector: disk.NewFillWrapper(dockerClient),
 		fileOpsInjector:  disk.NewFileOpsWrapper(dockerClient),
+		throttleInjector: disk.NewThrottleWrapper(dockerClient),
 		clockInjector:    chaostime.New(dockerClient),
 		httpInjector:     chaoshttp.New(sidecarMgr),
 		sidecarMgr:       sidecarMgr,
@@ -86,6 +88,8 @@ func (i *Injector) InjectFault(ctx context.Context, fault *scenario.Fault, targe
 		return i.injectDNSDelay(ctx, fault, targets)
 	case "disk_io":
 		return i.injectDiskIODelay(ctx, fault, targets)
+	case "disk_throttle":
+		return i.injectDiskThrottle(ctx, fault, targets)
 	case "disk_fill":
 		return i.injectDiskFill(ctx, fault, targets)
 	case "file_delete":
@@ -498,6 +502,69 @@ func (i *Injector) injectDiskIODelay(ctx context.Context, fault *scenario.Fault,
 	return nil
 }
 
+// injectDiskThrottle handles disk_throttle (blkio bandwidth/IOPS cap)
+// injection. Every numeric param accepts int or float64 to handle YAML's
+// type ambiguity (`5242880` vs `5.242880e+06`) the same way the rest of the
+// dispatcher does — bare int paths silently fall through otherwise.
+func (i *Injector) injectDiskThrottle(ctx context.Context, fault *scenario.Fault, targets []Target) error {
+	params := disk.ThrottleParams{}
+
+	if fault.Params != nil {
+		if targetPath, ok := fault.Params["target_path"].(string); ok {
+			params.TargetPath = targetPath
+		}
+		if device, ok := fault.Params["device"].(string); ok {
+			params.Device = device
+		}
+		params.ReadBps = parseUint64Param(fault.Params, "read_bps")
+		params.WriteBps = parseUint64Param(fault.Params, "write_bps")
+		params.ReadIOps = parseUint64Param(fault.Params, "read_iops")
+		params.WriteIOps = parseUint64Param(fault.Params, "write_iops")
+	}
+
+	if err := disk.ValidateThrottleParams(params); err != nil {
+		return fmt.Errorf("invalid disk throttle parameters: %w", err)
+	}
+
+	for _, target := range targets {
+		if err := i.throttleInjector.InjectThrottle(ctx, target.ContainerID, params); err != nil {
+			return fmt.Errorf("failed to inject disk throttle on %s: %w", target.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// parseUint64Param reads a non-negative integer fault param tolerant of YAML's
+// int/float64 ambiguity. Negative values are clamped to 0 — disk throttle
+// rates are unsigned and the validator catches the "all zero" case.
+func parseUint64Param(params map[string]interface{}, key string) uint64 {
+	raw, ok := params[key]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case int:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	case int64:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	case uint64:
+		return v
+	case float64:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	}
+	return 0
+}
+
 // RemoveFault removes a fault from a target
 func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerID string) error {
 	switch faultType {
@@ -519,6 +586,8 @@ func (i *Injector) RemoveFault(ctx context.Context, faultType string, containerI
 	case "disk_io":
 		// Kills dd stress processes and cleans up temp files.
 		return i.diskInjector.RemoveFault(ctx, containerID, disk.IODelayParams{Operation: "all"})
+	case "disk_throttle":
+		return i.throttleInjector.RemoveFault(ctx, containerID)
 	case "disk_fill":
 		return i.diskFillInjector.RemoveFault(ctx, containerID)
 	case "file_delete", "file_corrupt":
@@ -787,10 +856,10 @@ func (i *Injector) injectHTTPFault(ctx context.Context, fault *scenario.Fault, t
 //
 // Required parameters:
 //   - rpc_url  string  — Bor JSON-RPC URL for admin_nodeInfo enode discovery
-//                        (alternative: enode_url with a pre-resolved enode URL)
+//     (alternative: enode_url with a pre-resolved enode URL)
 //   - attack   string  — attack type (malformed-block | conflicting-chain |
-//                        invalid-txs | malicious-status | invalid-range |
-//                        flood-hashes | header-flood)
+//     invalid-txs | malicious-status | invalid-range |
+//     flood-hashes | header-flood)
 //
 // Optional parameters:
 //   - count      int    — number of messages to send (default 1)

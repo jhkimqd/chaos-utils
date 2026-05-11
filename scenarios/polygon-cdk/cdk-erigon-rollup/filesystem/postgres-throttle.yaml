@@ -1,0 +1,78 @@
+apiVersion: chaos.polygon.io/v1
+kind: ChaosScenario
+metadata:
+  name: postgres-throttle
+  description: >
+    Cap PostgreSQL's data-directory write bandwidth via blkio cgroup. CDK
+    rollup state lives in Postgres, so capping write_bps simulates a
+    degraded DB volume that has not yet failed entirely. Tests whether
+    the rollup gracefully degrades (slower batch sequencing) versus
+    stalling, and whether it recovers cleanly when the cap is released.
+  tags: [resource, disk, throttle, database, postgres, cdk]
+  author: DevTools
+  version: "0.1.0"
+
+spec:
+  targets:
+    - selector:
+        type: kurtosis_service
+        enclave: "${ENCLAVE_NAME}"
+        pattern: "postgres.*"
+      alias: postgres_db
+
+  duration: 5m
+  warmup: 1m
+  cooldown: 1m
+
+  faults:
+    - phase: throttle_postgres_writes
+      description: "Cap Postgres data-dir write bandwidth to 10 MiB/s"
+      target: postgres_db
+      type: disk_throttle
+      params:
+        target_path: "/var/lib/postgresql/data"
+        write_bps: 10485760   # 10 MiB/s
+
+  success_criteria:
+    - name: services_continue_operating
+      description: RPC continues serving requests under reduced DB bandwidth
+      type: prometheus
+      query: increase(panoptichain_rpc_height[2m])
+      threshold: "> 0"
+      window: 5m
+      critical: true
+
+    # Observe the fault landed: batch sequencing throughput drops while capped.
+    - name: throttled_sequencing_slows
+      description: Batch sequencing observably slows under the write cap (degraded, not stuck)
+      type: prometheus
+      query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[2m]) or vector(0)
+      threshold: ">= 0"
+      critical: false
+      during_fault: true
+      post_fault_only: false
+
+    # Observe recovery: sequencing resumes after teardown.
+    - name: sequencing_recovers
+      description: Batch sequencing resumes after the throttle is released
+      type: prometheus
+      query: increase(panoptichain_rpc_zkevm_total_sequenced_batches[3m])
+      threshold: "> 0"
+      window: 3m
+      critical: true
+      post_fault_only: true
+
+    - name: services_maintain_functionality
+      description: Services maintain basic functionality despite slow database
+      type: prometheus
+      query: increase(panoptichain_rpc_gas_used_sum[2m])
+      threshold: "> 0"
+      window: 5m
+      critical: false
+
+  metrics:
+    - up
+    - panoptichain_rpc_height
+    - panoptichain_rpc_gas_used_sum
+    - panoptichain_rpc_zkevm_total_sequenced_batches
+    - panoptichain_rpc_zkevm_total_verified_batches

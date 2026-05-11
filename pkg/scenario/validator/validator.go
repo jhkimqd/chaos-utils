@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jihwankim/chaos-utils/pkg/injection/disk"
 	"github.com/jihwankim/chaos-utils/pkg/scenario"
 )
 
@@ -277,7 +278,7 @@ func (v *Validator) validateFaultType(fault scenario.Fault, index int) {
 		"connection_drop",
 		"dns",
 		"process_kill",
-		"disk_io", "disk_fill", "file_delete", "file_corrupt",
+		"disk_io", "disk_throttle", "disk_fill", "file_delete", "file_corrupt",
 		"clock_skew",
 		"http_fault", "corruption_proxy", "p2p_attack",
 		"disk", "process", "custom",
@@ -299,8 +300,64 @@ func (v *Validator) validateFaultParams(fault scenario.Fault, index int) {
 	switch fault.Type {
 	case "network":
 		v.validateNetworkFaultParams(fault.Params, index)
-	// Add more fault type validations as needed
+	case "disk_throttle":
+		v.validateDiskThrottleParams(fault.Params, index)
+		// Add more fault type validations as needed
 	}
+}
+
+// validateDiskThrottleParams enforces the disk_throttle contract: a way to
+// identify the device, plus at least one non-zero cap. Mirrors the rules in
+// disk.ValidateThrottleParams so dry-run validation catches the same errors
+// the runtime would.
+func (v *Validator) validateDiskThrottleParams(params map[string]interface{}, index int) {
+	p := disk.ThrottleParams{}
+	if params != nil {
+		if s, ok := params["target_path"].(string); ok {
+			p.TargetPath = s
+		}
+		if s, ok := params["device"].(string); ok {
+			p.Device = s
+		}
+		p.ReadBps = parseValidatorUint64(params, "read_bps")
+		p.WriteBps = parseValidatorUint64(params, "write_bps")
+		p.ReadIOps = parseValidatorUint64(params, "read_iops")
+		p.WriteIOps = parseValidatorUint64(params, "write_iops")
+	}
+	if err := disk.ValidateThrottleParams(p); err != nil {
+		v.Errors = append(v.Errors, fmt.Sprintf("spec.faults[%d].params: %s", index, err.Error()))
+	}
+}
+
+// parseValidatorUint64 reads a non-negative integer param tolerant of YAML's
+// int/float64 ambiguity. Validator only checks the "all zero" boundary, so
+// clamping negatives to zero is harmless — disk.ValidateThrottleParams will
+// still flag the zero case.
+func parseValidatorUint64(params map[string]interface{}, key string) uint64 {
+	raw, ok := params[key]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case int:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	case int64:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	case uint64:
+		return v
+	case float64:
+		if v < 0 {
+			return 0
+		}
+		return uint64(v)
+	}
+	return 0
 }
 
 func (v *Validator) validateNetworkFaultParams(params map[string]interface{}, index int) {

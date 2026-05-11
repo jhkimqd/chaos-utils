@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/docker/docker/api/types/blkiodev"
 	"github.com/jihwankim/chaos-utils/pkg/discovery/docker"
 )
 
@@ -22,13 +23,14 @@ func New(dockerClient *docker.Client) *Verifier {
 
 // VerificationResult contains the results of a namespace verification check
 type VerificationResult struct {
-	ContainerID    string
-	Clean          bool
-	TCRulesFound   bool
-	IPTablesFound  bool
-	NFTablesFound  bool
-	EnvoyFound     bool
-	Details        []string
+	ContainerID         string
+	Clean               bool
+	TCRulesFound        bool
+	IPTablesFound       bool
+	NFTablesFound       bool
+	EnvoyFound          bool
+	BlkioThrottlesFound bool
+	Details             []string
 }
 
 // VerifyNamespaceClean checks if a container's network namespace is clean
@@ -89,7 +91,57 @@ func (v *Verifier) VerifyNamespaceClean(ctx context.Context, containerID string)
 		result.Details = append(result.Details, details...)
 	}
 
+	// Check for blkio throttle entries (disk_throttle residue). blkio config
+	// lives on the Docker HostConfig, not in a namespace, but conceptually it
+	// is the same "did we leave chaos artifacts?" question the other checks
+	// answer — orphaned blkio throttles would silently cap I/O on downstream
+	// runs against the same container.
+	hasBlkio, details, err := v.CheckBlkioThrottles(ctx, containerID)
+	if err != nil {
+		result.Clean = false
+		result.Details = append(result.Details, fmt.Sprintf("WARN: %v", err))
+	} else if hasBlkio {
+		result.BlkioThrottlesFound = true
+		result.Clean = false
+		result.Details = append(result.Details, details...)
+	}
+
 	return result, nil
+}
+
+// CheckBlkioThrottles inspects the container's HostConfig.Resources for any
+// BlkioDevice* entries. Returns (true, details, nil) when entries exist —
+// the caller decides whether to clear them or surface as a warning, since
+// blkio config is shared with operator-installed caps and indiscriminate
+// clearing could clobber legitimate state.
+func (v *Verifier) CheckBlkioThrottles(ctx context.Context, containerID string) (bool, []string, error) {
+	inspect, err := v.dockerClient.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, nil, fmt.Errorf("inspect container for blkio check: %w", err)
+	}
+	if inspect.HostConfig == nil {
+		return false, nil, nil
+	}
+	res := inspect.HostConfig.Resources
+	dims := []struct {
+		name string
+		list []*blkiodev.ThrottleDevice
+	}{
+		{"BlkioDeviceReadBps", res.BlkioDeviceReadBps},
+		{"BlkioDeviceWriteBps", res.BlkioDeviceWriteBps},
+		{"BlkioDeviceReadIOps", res.BlkioDeviceReadIOps},
+		{"BlkioDeviceWriteIOps", res.BlkioDeviceWriteIOps},
+	}
+	var details []string
+	for _, d := range dims {
+		for _, td := range d.list {
+			if td == nil {
+				continue
+			}
+			details = append(details, fmt.Sprintf("%s: %s @ %d", d.name, td.Path, td.Rate))
+		}
+	}
+	return len(details) > 0, details, nil
 }
 
 // checkTCRules checks for traffic control rules using tc command
@@ -166,4 +218,3 @@ func (v *Verifier) checkEnvoyProcesses(ctx context.Context, containerID string) 
 
 	return false, nil, nil
 }
-

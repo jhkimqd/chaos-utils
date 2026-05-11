@@ -128,11 +128,11 @@ type Orchestrator struct {
 	injector     *injection.Injector
 
 	// Test data
-	scenario      *scenario.Scenario
-	targets       []TargetInfo
-	scenarioPath  string
-	testID        string
-	injectTime    time.Time         // set at INJECT start; used to scope log capture to fault window
+	scenario     *scenario.Scenario
+	targets      []TargetInfo
+	scenarioPath string
+	testID       string
+	injectTime   time.Time // set at INJECT start; used to scope log capture to fault window
 	// injectedFaults tracks every fault currently installed on a container
 	// as an ordered slice so that:
 	//   - multiple faults on the same container are not conflated (a single
@@ -141,7 +141,7 @@ type Orchestrator struct {
 	//   - teardown can iterate in reverse injection order so stacked tc
 	//     qdiscs / iptables rules come off in LIFO order.
 	injectedFaults  []injectedFault
-	criteriaResults []CriterionOutcome      // populated during DETECT phase
+	criteriaResults []CriterionOutcome // populated during DETECT phase
 
 	// duringFaultSampler runs concurrently with INJECT/MONITOR and samples
 	// during_fault criteria repeatedly. Required because some inject calls
@@ -255,8 +255,8 @@ func New(cfg *config.Config) (*Orchestrator, error) {
 	logCol := logcollector.New(dockerClient)
 
 	return &Orchestrator{
-		cfg:        cfg,
-		sidecarMgr: sidecarMgr,
+		cfg:              cfg,
+		sidecarMgr:       sidecarMgr,
 		verifier:         verifier,
 		cleanupCoord:     cleanupCoord,
 		emergencyCtrl:    emergencyCtrl,
@@ -717,6 +717,19 @@ func (o *Orchestrator) executePrepare(ctx context.Context) error {
 				fmt.Printf("  ⚠ Failed to clear tc rules: %v\n", execErr)
 			} else {
 				fmt.Printf("  ✓ Cleaned tc rules on %s\n", target.Name)
+			}
+		}
+
+		if result.BlkioThrottlesFound {
+			// blkio throttles may be legitimate operator config or chaos
+			// residue from a crashed prior run — we cannot tell. Warn loudly
+			// so the operator notices and decides; auto-clearing risks
+			// clobbering intentional caps on shared infrastructure.
+			fmt.Printf("  ⚠ Found pre-existing blkio throttle on %s — disk_throttle scenarios may overlap with existing caps:\n", target.Name)
+			for _, d := range result.Details {
+				if strings.HasPrefix(d, "BlkioDevice") {
+					fmt.Printf("      %s\n", d)
+				}
 			}
 		}
 	}
@@ -1429,23 +1442,23 @@ func universalSafetyCriteria() []scenario.SuccessCriterion {
 			PostFaultOnly: true,
 		},
 		{
-			Name:          "[universal] no_panic_or_consensus_failure_bor",
-			Description:   "No panic, fatal error, or consensus failure in any Bor validator",
-			Type:          "log",
-			Pattern:       `(panic:|fatal:|CONSENSUS FAILURE)`,
-			Absence:       true,
-			Critical:      true,
-			PostFaultOnly: true,
+			Name:             "[universal] no_panic_or_consensus_failure_bor",
+			Description:      "No panic, fatal error, or consensus failure in any Bor validator",
+			Type:             "log",
+			Pattern:          `(panic:|fatal:|CONSENSUS FAILURE)`,
+			Absence:          true,
+			Critical:         true,
+			PostFaultOnly:    true,
 			ContainerPattern: "bor-heimdall-v2-validator",
 		},
 		{
-			Name:          "[universal] no_panic_or_consensus_failure_heimdall",
-			Description:   "No panic, fatal error, or consensus failure in any Heimdall validator",
-			Type:          "log",
-			Pattern:       `(panic:|fatal:|CONSENSUS FAILURE)`,
-			Absence:       true,
-			Critical:      true,
-			PostFaultOnly: true,
+			Name:             "[universal] no_panic_or_consensus_failure_heimdall",
+			Description:      "No panic, fatal error, or consensus failure in any Heimdall validator",
+			Type:             "log",
+			Pattern:          `(panic:|fatal:|CONSENSUS FAILURE)`,
+			Absence:          true,
+			Critical:         true,
+			PostFaultOnly:    true,
 			ContainerPattern: "heimdall-v2-bor-validator",
 		},
 		{
@@ -1469,11 +1482,11 @@ func universalSafetyCriteria() []scenario.SuccessCriterion {
 			ContainerPattern: "heimdall-v2-bor-validator",
 		},
 		{
-			Name:          "[universal] state_root_consensus",
-			Description:   "All validators converge on the same state root after chaos — catches silent state divergence",
-			Type:          "state_root_consensus",
-			Critical:      true,
-			PostFaultOnly: true,
+			Name:             "[universal] state_root_consensus",
+			Description:      "All validators converge on the same state root after chaos — catches silent state divergence",
+			Type:             "state_root_consensus",
+			Critical:         true,
+			PostFaultOnly:    true,
 			ContainerPattern: "bor-heimdall-v2-validator",
 		},
 		{
@@ -1755,7 +1768,6 @@ func (o *Orchestrator) executeTeardown(ctx context.Context) error {
 
 	return nil
 }
-
 
 // RequestStop requests the orchestrator to stop execution
 func (o *Orchestrator) RequestStop() {

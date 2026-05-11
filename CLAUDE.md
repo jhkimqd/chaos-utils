@@ -55,7 +55,7 @@ chaos-utils/
 │   ├── discovery/              Kurtosis/Docker lookup. Rejects prometheus+grafana.
 │   ├── injection/
 │   │   ├── container/          restart, kill, pause
-│   │   ├── disk/               disk_io, disk_fill, file_delete, file_corrupt
+│   │   ├── disk/               disk_io, disk_throttle, disk_fill, file_delete, file_corrupt
 │   │   ├── dns/                DNS failure
 │   │   ├── firewall/           connection_drop
 │   │   ├── http/corruption/    corruption_proxy (see _REFERENCE.yaml below)
@@ -146,6 +146,7 @@ process_kill            — in-container signal delivery
 disk_io, disk_fill,
 file_delete,
 file_corrupt            — disk I/O pressure & filesystem corruption
+disk_throttle           — blkio bandwidth/IOPS cap via ContainerUpdate
 clock_skew              — container clock manipulation
 http_fault              — Envoy L7 (abort, delay, body/header override)
 corruption_proxy        — JSON-aware semantic corruption (Bor RPC / Heimdall REST)
